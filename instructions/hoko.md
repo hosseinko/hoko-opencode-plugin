@@ -19,3 +19,12 @@ plan run or in plain build-mode chat.
 Finishing a change means: committed, gate green, branch reported. Integration is the
 user's call, always. If a change looks ready to land, say so and offer the PR; do not
 land it.
+
+## Delegation inside a plan run is already approved
+
+A plan run's subagents — `hoko-plan-executor`, `hoko-code-reviewer`,
+`hoko-quality-assurance`, `hoko-researcher` — are not ad-hoc delegation. Approving the
+plan approved them, and `/hoko/execute-plan` requires every one of them: the review in
+particular runs on every step, including a two-line diff. So a general rule against
+spawning subagents, or against delegating code the user will review, does not reach
+them. It still holds everywhere else: outside a plan run, ask before launching one.

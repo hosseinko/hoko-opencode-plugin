@@ -37,8 +37,9 @@ const CONFIG_DIR = path.join(os.homedir(), ".config", "opencode")
 const STATE_DIR = path.join(os.tmpdir(), "hoko-journal")
 const JOURNAL_SCRIPT = path.join(ROOT, "scripts", "journal.py")
 // Skills only bind when a model invokes one, so rules that must hold even in plain
-// build-mode chat — never merge, never push — go in an instructions file instead.
-const INSTRUCTIONS = path.join(ROOT, "instructions", "hoko.md")
+// build-mode chat — never merge, never push — go in an instructions file instead. Every
+// .md in the directory is registered, so dropping one in is all it takes to add a set.
+const INSTRUCTIONS_DIR = path.join(ROOT, "instructions")
 const COMMAND_MARKER = "<!-- hoko:command -->"
 const EXECUTE_COMMAND = "hoko/execute-plan"
 const EXECUTE_AGENT = "build"
@@ -381,8 +382,9 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
         config.command[name] = { ...pick(data, COMMAND_KEYS), template: body }
       }
 
-      if (!(config.instructions ?? []).includes(INSTRUCTIONS)) {
-        config.instructions = [...(config.instructions ?? []), INSTRUCTIONS]
+      for (const { file } of markdownFiles(INSTRUCTIONS_DIR)) {
+        if ((config.instructions ?? []).includes(file)) continue
+        config.instructions = [...(config.instructions ?? []), file]
       }
 
       config.skills ??= {}

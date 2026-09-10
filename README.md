@@ -349,8 +349,10 @@ skills/
   hoko-senior-php-developer/ PHP only: no-comment self-explanatory code, objects over
                           arrays, typed collections, mirrored test tree
 instructions/
-  hoko.md                 standing rules the plugin adds to config.instructions —
-                          git stops at the commit: never merge, never push, PR instead
+  hoko.md                 git stops at the commit: never merge, never push, PR instead;
+                          and plan-run delegation is pre-approved by the plan approval
+  communication.md        how to answer: lead with the answer, short by default, no
+                          preamble before a tool call, comments are the exception
 scripts/
   journal.py              write | report
   test_journal.py         tests, against a throwaway journal root
@@ -359,11 +361,21 @@ opencode.json.example     the one line that registers the plugin
 ```
 
 Agents, commands and skills are plain opencode files — the plugin only reads their
-frontmatter and body. `instructions/hoko.md` is different: it is appended to
+frontmatter and body. `instructions/` is different: **every** `.md` in it is appended to
 `config.instructions`, so it is in context on every agent whether or not a skill is
 invoked. That is where rules live that must hold in plain build-mode chat too — a skill
 only binds once a model decides to load it, which is exactly when "just commit this"
 turned into a local merge into the integration branch.
+
+Dropping a file into `instructions/` is all it takes to add a set, and deleting one is
+all it takes to remove it — which is how `communication.md` gets there. If you already
+list a file in `opencode.json`'s own `instructions` array, the plugin leaves it alone
+rather than adding it twice; move it into `instructions/` to have the plugin carry it
+instead. Two caveats: instructions cost context on every turn of every agent, cheap
+subagents included, so a long file is not free; and a general rule can collide with the
+workflow. `communication.md` says not to spawn subagents without asking, which a plan
+run does constantly — `hoko.md` carves that out explicitly, and any other collision
+belongs there too, not in an edit to the file it collides with.
 
 The frontmatter parser covers scalars and nested maps (`permission:`, `tools:`), which is
 all these files use; it is not a full YAML parser.
@@ -386,7 +398,10 @@ The parts most likely to want changing:
   comments, coverage only goes up) are the opinionated part.
 - **The reviewer's allowlist** — `agents/hoko-code-reviewer.md`, if it cannot run your
   project's check command.
-- **Standing rules** — `instructions/hoko.md`, in context on every agent, every turn.
+- **Standing rules** — anything in `instructions/`, in context on every agent, every
+  turn. `hoko.md` is the git and delegation policy; `communication.md` is response style
+  and code-comment policy, and is the most personal file here — replace it with your own
+  or delete it.
 - **Language conventions** — the two `*-php-*` skills are examples of the shape: a
   narrowly-scoped skill whose description names the language, so a model only loads it
   on a diff in that language. Copy one for your own stack, or delete them.

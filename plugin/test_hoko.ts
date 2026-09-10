@@ -183,6 +183,15 @@ check("an unset model leaves the agent alone", !cfg.agent.plan.model, JSON.strin
 check("the standing instructions are registered",
   (cfg.instructions ?? []).some((file: string) => file.endsWith("/instructions/hoko.md")),
   JSON.stringify(cfg.instructions))
+check("every instructions file is registered, not just hoko.md",
+  (cfg.instructions ?? []).length === fs.readdirSync(path.join(shell.env.HOKO_ROOT, "instructions"))
+    .filter((name) => name.endsWith(".md")).length,
+  JSON.stringify(cfg.instructions))
+check("an instructions file the user already listed is not added twice", await (async () => {
+  const twice: any = { instructions: [...cfg.instructions] }
+  await hooks.config(twice)
+  return twice.instructions.length === cfg.instructions.length
+})(), "duplicated")
 check("the new skills are on the skills path", (cfg.skills?.paths ?? []).length === 1, JSON.stringify(cfg.skills))
 check("execute-plan is registered as a command", !!cfg.command?.["hoko/execute-plan"], Object.keys(cfg.command ?? {}).join(","))
 check("execute-plan runs on build", cfg.command?.["hoko/execute-plan"].agent === "build", JSON.stringify(cfg.command?.["hoko/execute-plan"]?.agent))

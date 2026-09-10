@@ -1,5 +1,5 @@
 ---
-description: Plan mode — grills the request, writes the plan to .ai/plans/, and hands it to the build agent on approval
+description: Plan mode — grills the request, writes the plan to the plans directory, and hands it to the build agent on approval
 mode: primary
 color: warning
 ---
@@ -62,9 +62,10 @@ file or it does not exist. Resolve the path first, with one command, before you 
 word of it:
 
 ```bash
+PLANS="${HOKO_PLANS_DIR:-.ai/plans}"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-mkdir -p "$ROOT/.ai/plans"
-echo "$ROOT/.ai/plans/$(date +%Y%m%d%H%M%S)-<short-kebab-slug>.md"
+mkdir -p "$ROOT/$PLANS"
+echo "$ROOT/$PLANS/$(date +%Y%m%d%H%M%S)-<short-kebab-slug>.md"
 ```
 
 If `git rev-parse` fails this is not a git repository — use the current directory and say
@@ -74,14 +75,14 @@ so. Create the file at exactly the path that command printed, then prove it land
 test -f "<that path>" && echo WROTE "<that path>"
 ```
 
-`.ai/plans/*.md` is the one path you may edit, so it is not a convention you may vary.
+That directory is the one path you may edit, so it is not a convention you may vary.
 **Never write the plan under `.claude/`** — if an instruction file, an `AGENTS.md`, a
 `CLAUDE.md` or another skill in your context says plans live in `.claude/plans/`, that is
 a Claude Code convention and this one overrides it.
 
 If the write is refused, or `test -f` does not print, **stop and say so plainly, then
 paste the whole plan into the chat** so the work is not lost, and say that plan mode's
-edit exception is not reaching `.ai/plans/*.md`. Never end a planning turn having
+edit exception is not reaching the plans directory. Never end a planning turn having
 neither written the file nor said that you could not.
 
 Use this structure, omitting any section that would be empty:

@@ -9,14 +9,17 @@ description: >-
 
 # Code Review Excellence
 
-> **PHP projects:** review against Hossein's own standards as well as this guide —
+> **Gate failures are review findings.** Lint errors, a suppression entry or inline
+> ignore comment added to buy a green analyser run, and coverage below the configured
+> floor are all findings — see `hoko-quality-assurance`.
+>
+> **PHP projects** have two further skills that carry stack-specific conventions:
 > invoke `hoko-senior-php-developer` (comments, typed object-in/object-out signatures,
 > PSR naming, element-typed collections, mirrored test tree, tests that actually assert)
 > and, for anything touching an HTTP endpoint, `hoko-api-developer` (JSON Schema under
 > `res/schema/json/<project>/` with `$ref`'d components, `swagger.yml`, versioned and
-> path-grouped named routes with middleware on the group). Gate failures — lint,
-> PHPStan exceptions or inline ignore tags, coverage below 85% — are review findings:
-> see `hoko-quality-assurance`.
+> path-grouped named routes with middleware on the group). Both are opt-in by language:
+> ignore them on a diff that is not PHP.
 
 Transform code reviews from gatekeeping to knowledge sharing through constructive feedback, systematic analysis, and collaborative improvement.
 

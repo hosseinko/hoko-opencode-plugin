@@ -59,7 +59,9 @@ def main():
     with tempfile.TemporaryDirectory() as raw:
         tmp = Path(raw)
         home = tmp / "home"
-        journal = tmp / "Obsidian Vaults" / "Personal" / "Journal"
+        # A space in the root is deliberate — the default is unset, so every real root
+        # is one somebody typed, and notes directories have spaces in them.
+        journal = tmp / "my notes" / "journal"
         plan, prompt_file = make_repo(tmp)
         repo = plan.parents[2]
 
@@ -289,6 +291,19 @@ def main():
         check("invalid hoko.json is refused loudly",
               run("write", "--plan", str(plan), "--prompt-file", str(prompt_file),
                   home=broken).returncode != 0)
+
+        # journaling is opt-in: no root anywhere means a clear refusal, not a guess
+        bare_home = tmp / "bare-home"
+        (bare_home / ".config" / "opencode").mkdir(parents=True)
+        unconfigured = run("write", "--plan", str(plan), "--prompt-file", str(prompt_file),
+                           home=bare_home)
+        check("an unconfigured journal root is refused, not defaulted",
+              unconfigured.returncode != 0
+              and "HOKO_JOURNAL_PATH is not set" in unconfigured.stderr,
+              unconfigured.stdout.strip() + unconfigured.stderr.strip())
+        check("nothing is written outside the configured root",
+              not any(bare_home.rglob("*.md")),
+              str(sorted(str(f) for f in bare_home.rglob("*.md"))))
 
     print()
     if failures:

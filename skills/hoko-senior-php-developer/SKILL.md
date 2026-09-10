@@ -1,7 +1,7 @@
 ---
 name: hoko-senior-php-developer
 description: >-
-  How to write PHP in Hossein's projects — self-explanatory code with almost no comments, fully typed
+  Opinionated PHP conventions — self-explanatory code with almost no comments, fully typed
   signatures that take and return objects rather than arrays, PSR naming (Interface suffix), typed
   collections that reject foreign element types, and unit tests in a tests tree that mirrors the
   application tree. Use when writing, refactoring or reviewing PHP classes, services, DTOs,

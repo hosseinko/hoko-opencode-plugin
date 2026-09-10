@@ -1,5 +1,5 @@
 {
-  "name": "my-opencode-plugins",
+  "name": "hoko-opencode-plugin",
   "private": true,
   "type": "module",
   "scripts": {

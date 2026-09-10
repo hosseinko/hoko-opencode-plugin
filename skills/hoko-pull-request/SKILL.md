@@ -2,9 +2,9 @@
 name: hoko-pull-request
 description: >-
   Open a GitHub pull request instead of merging — checks that origin is GitHub, pushes the branch,
-  and opens a PR against the integration branch (default develop) with the run's closing report as
-  the body. Use at the end of a plan run, when asked to open a PR, or when asked how a finished
-  branch reaches develop.
+  and opens a PR against the integration branch with the run's closing report as the body. Use at
+  the end of a plan run, when asked to open a PR, or when asked how a finished branch reaches the
+  integration branch.
 ---
 
 # Pull requests
@@ -21,7 +21,8 @@ the PR is the end of the run.
 The plugin exports `hoko.env` into every shell, so `printf '%s' "$HOKO_PR_AUTO"` reads
 these:
 
-- **`HOKO_BASE_BRANCH`** — the branch the PR targets. Unset means `develop`.
+- **`HOKO_BASE_BRANCH`** — the branch the PR targets. Unset means the remote's own
+  default branch, resolved in step 3.
 - **`HOKO_PR_AUTO`** — unset, empty, or `0`: show what would be opened and wait for
   confirmation before pushing. `1`: push and open it without asking.
 
@@ -57,7 +58,14 @@ Missing or unauthenticated — stop, report exactly that with the branch name an
 ## 3. Is the branch ready?
 
 ```bash
-BASE="${HOKO_BASE_BRANCH:-develop}"
+BASE="$HOKO_BASE_BRANCH"
+if [ -z "$BASE" ]; then
+  BASE="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
+  BASE="${BASE#origin/}"
+fi
+if [ -z "$BASE" ]; then
+  BASE="$(git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p')"
+fi
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 git status --porcelain
 git ls-remote --exit-code --heads origin "$BASE"
@@ -68,8 +76,9 @@ Stop and report, without pushing, if:
 
 - `$BRANCH` is `$BASE` — there is nothing to open a PR from.
 - the worktree is dirty — uncommitted work means the run is not finished.
-- `$BASE` is not on the remote — say so and ask which branch to target; never retarget
-  to `main` on your own.
+- `$BASE` is still empty, or is not on the remote — say so and ask which branch to
+  target; never pick one on your own. Set `HOKO_BASE_BRANCH` if the project's
+  integration branch is not the remote's default (a `develop`-flow repository, say).
 - the commit count is `0` — the base already has this work.
 
 ## 4. Draft the title and body

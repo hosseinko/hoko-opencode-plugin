@@ -197,6 +197,56 @@ check("a hand-written plan agent keeps its prompt", own.agent.plan.prompt === "m
 check("it still gains the plan-file exception", own.agent.plan.permission.edit[".ai/plans/*.md"] === "allow")
 check("its own rules survive", own.agent.plan.permission.bash["rm*"] === "deny")
 
+// journaling is opt-in: with no root configured the handoff still happens and nothing
+// is written anywhere
+{
+  const before = { ...process.env }
+  process.env.HOKO_JOURNAL_PATH = ""
+  const quiet: any = await HokoPlugin({ client, worktree: proj, directory: proj })
+  const s = "sess-nojournal"
+  await quiet["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: "no journal please" }] })
+  await quiet["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: plan } })
+  const out: any = await quiet.tool.hoko_execute.execute({}, { ...ctx, sessionID: s })
+  const text = out.output ?? out
+  check("journaling off still hands the plan off", /Handed off/.test(text), text)
+  check("journaling off mentions no journal entry", !/[Jj]ournal/.test(text), text)
+  const shellOff = { env: {} as Record<string, string> }
+  await quiet["shell.env"]({ sessionID: s }, shellOff)
+  check("journaling off exports no journal path", !("HOKO_JOURNAL_PATH" in shellOff.env),
+    JSON.stringify(shellOff.env.HOKO_JOURNAL_PATH))
+  process.env = before
+}
+
+// the plans directory is configurable, and everything that keys off it follows
+{
+  const before = { ...process.env }
+  process.env.HOKO_PLANS_DIR = "docs/plans"
+  const moved: any = await HokoPlugin({ client, worktree: proj, directory: proj })
+  const cfg: any = {}
+  await moved.config(cfg)
+  check("plan edit allows the configured plans directory",
+    ["docs/plans/*.md", "*/docs/plans/*.md", "**/docs/plans/*.md"]
+      .every((g) => cfg.agent.plan.permission.edit[g] === "allow"),
+    Object.keys(cfg.agent.plan.permission.edit).join(","))
+  check("the default plans directory is no longer allowed",
+    cfg.agent.plan.permission.edit[".ai/plans/*.md"] === undefined,
+    Object.keys(cfg.agent.plan.permission.edit).join(","))
+  const s = "sess-moved"
+  const elsewhere = path.join(proj, "docs", "plans", "20260908130000-moved.md")
+  fs.mkdirSync(path.dirname(elsewhere), { recursive: true })
+  fs.writeFileSync(elsewhere, "## Goal\nMoved.\n")
+  await moved["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: elsewhere } })
+  check("a plan in the configured directory is remembered",
+    fs.readFileSync(state(s).replace(/\.prompt$/, ".plan"), "utf8") === elsewhere)
+  const shellMoved = { env: {} as Record<string, string> }
+  await moved["shell.env"]({ sessionID: s }, shellMoved)
+  check("the plans directory is exported", shellMoved.env.HOKO_PLANS_DIR === "docs/plans",
+    shellMoved.env.HOKO_PLANS_DIR)
+  check("the coverage floor defaults to 85", shellMoved.env.HOKO_COVERAGE_MIN === "85",
+    shellMoved.env.HOKO_COVERAGE_MIN)
+  process.env = before
+}
+
 console.log()
 if (fails.length) { console.log(`${fails.length} failed: ${fails.join(", ")}`); process.exit(1) }
 console.log("all passed")

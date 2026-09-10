@@ -1,11 +1,17 @@
-# my-opencode-plugins
+# hoko — a plan-and-execute workflow for opencode
 
-The plan-and-execute workflow, ported from my Claude Code plugins
-(`giata-claude-plugins` + `my-claude-plugins`) to opencode.
+Plan mode grills you, writes the plan to a file, and hands it to a build run that
+implements it one reviewed, committed step at a time. Every step gets a code review and
+a fast gate; the whole run gets a full quality gate and a pull request. Nothing merges.
 
 Everything lives under the **`hoko`** namespace — commands are `/hoko/…`, agents and
 skills are `hoko-…` — except `grill-me`, which keeps its bare name, and `plan`, which
 deliberately replaces opencode's own plan agent.
+
+It is stack-agnostic: the gates are expressed as *lint → static analysis → tests with
+coverage* and each agent finds the project's own commands rather than assuming tool
+names. Three optional skills carry PHP-specific conventions and trigger only on PHP
+diffs.
 
 ## Install
 
@@ -14,7 +20,7 @@ deliberately replaces opencode's own plan agent.
 | | |
 | --- | --- |
 | opencode | 1.18 or newer — `opencode --version` |
-| python3 | for the journal script — `python3 --version` (macOS ships it) |
+| python3 | only for the journal, and only if you enable it — `python3 --version` |
 | git | plan runs commit each step |
 | node modules | **none.** `plugin/hoko.ts` uses node's standard library only |
 
@@ -25,10 +31,11 @@ importing zod, and importing zod would mean an install step.
 ### 1. Put the repo somewhere stable
 
 opencode loads the plugin from an absolute path, so pick a home for this checkout and
-leave it there. Mine:
+leave it there:
 
 ```sh
-cd /Users/hossein.koozehgar/Sandbox/my-opencode-plugings && pwd
+git clone https://github.com/<you>/hoko-opencode-plugin.git
+cd hoko-opencode-plugin && pwd
 ```
 
 Keep that path — step 2 needs it.
@@ -38,20 +45,25 @@ Keep that path — step 2 needs it.
 opencode has no plugin marketplace, and agents and commands are only discovered inside
 `~/.config/opencode/` or a project's `.opencode/`. So the repo registers itself: one
 line in `~/.config/opencode/opencode.json` and the plugin injects its agents, commands
-and skills into the live config at startup.
+and skills into the live config at startup. `opencode.json.example` is that file:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///Users/hossein.koozehgar/Sandbox/my-opencode-plugings/plugin/hoko.ts"]
+  "plugin": ["file:///ABSOLUTE/PATH/TO/hoko-opencode-plugin/plugin/hoko.ts"]
 }
 ```
 
-It must be a `file://` URL with the absolute path, pointing at `plugin/hoko.ts` itself.
-If that file already exists, add the entry to the `plugin` array you have rather than
-replacing the file.
+Replace the placeholder with the path from step 1. It must be a `file://` URL with an
+absolute path, pointing at `plugin/hoko.ts` itself. If `~/.config/opencode/opencode.json`
+already exists, add the entry to the `plugin` array you have rather than replacing the
+file.
 
-### 3. Configure the models and the journal (optional)
+```sh
+cp opencode.json.example ~/.config/opencode/opencode.json   # only if you have none
+```
+
+### 3. Configure it (optional)
 
 ```sh
 cp hoko.env.example ~/.config/opencode/hoko.env
@@ -59,8 +71,8 @@ cp hoko.env.example ~/.config/opencode/hoko.env
 
 Uncomment what you want — the table under [Configuration](#configuration) says what each
 variable does. Everything has a working default: leave the file untouched and every
-agent runs on the session's model, with the journal at
-`~/Obsidian Vaults/Personal/Journal`. The journal directory is created on first use.
+agent runs on the session's model, plans go to `.ai/plans/`, the coverage floor is 85%, a
+PR targets the remote's default branch, and nothing is journaled.
 
 Keeping the file at `~/.config/opencode/hoko.env` rather than in the repo means a
 `git pull` never touches your settings.
@@ -103,9 +115,7 @@ Tab → Plan
 You should get grilled one question at a time, then a plan path under `.ai/plans/`, then
 a request to approve. Say **approved** and watch for three things: a toast naming the
 plan, the prompt box flipping from Plan to Build, and the run starting at step 1 with a
-`hoko-plan-executor` subagent. A journal entry appears under
-`<journal>/<project>/` the moment you approve, and gains its `## Final report`
-section when the run finishes.
+`hoko-plan-executor` subagent.
 
 To undo all of this, delete the plugin line from `opencode.json` and restart.
 
@@ -123,13 +133,14 @@ the tests after touching it.
 | --- | --- |
 | No `/hoko` commands, no `hoko-` agents | The plugin never loaded: check the path in `opencode.json` is absolute, `file://`, and ends in `plugin/hoko.ts`. Then restart. |
 | Plan mode answers like stock opencode | You have a `plan` block in `opencode.json`; the plugin leaves a hand-written agent's prompt alone. Remove the `prompt` from it. |
-| The plan arrives in the chat, not as a file | The edit exception is not reaching `.ai/plans/*.md` — check the permission map in `opencode debug agent plan`. The agent says so itself rather than losing the plan. |
+| The plan arrives in the chat, not as a file | The edit exception is not reaching the plans directory — check the permission map in `opencode debug agent plan`. The agent says so itself rather than losing the plan. |
 | "approved" produces a reply but no run | The plan agent did not call `hoko_execute`. Check it is in the tool map; if there is no plan *file* in the session, the tool refuses by design. |
 | Toast says the handoff failed | Run `/hoko/execute-plan <path>` yourself — the path is in the toast — and check `opencode debug config` for the command. |
 | The prompt box stays on Plan | Cosmetic only; the run is on build. The plugin walks the TUI round with `agent_cycle` and gives up quietly if it cannot work out the distance. |
-| No journal entry | `python3` missing, or the journal root is not writable. `hoko_execute` reports the reason in its output instead of failing silently. |
+| No journal entry | Expected unless `HOKO_JOURNAL_PATH` is set — journaling is off by default. With it set: `python3` missing, or the root is not writable. `hoko_execute` reports the reason in its output instead of failing silently. |
 | Entry has no `## Final report` | The run never set `Status: complete` — a blocker or a `not ready` gate — or the closing report was not the last thing posted. |
-| Plans land in `.claude/plans/` | Stale Claude Code skills are being picked up: `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1`. |
+| Plans land in `.claude/plans/` | Stale Claude Code skills are being picked up — see [Claude Code interference](#claude-code-interference). |
+| The reviewer says it could not run a check | Its bash allowlist does not cover your project's command. Add the pattern to `agents/hoko-code-reviewer.md`. |
 
 ## Configuration
 
@@ -137,28 +148,46 @@ Copy `hoko.env.example` to `~/.config/opencode/hoko.env` and uncomment what you 
 The plugin reads, in increasing order of precedence: `hoko.env` in this repo,
 `~/.config/opencode/hoko.env`, then any `HOKO_*` variable in the real environment.
 
-| Variable | Sets |
-| --- | --- |
-| `HOKO_PLAN_MODEL` | model for the `plan` agent |
-| `HOKO_BUILD_MODEL` | model for the `build` agent — the conductor of a plan run |
-| `HOKO_EXECUTOR_MODEL` | model for `hoko-plan-executor` |
-| `HOKO_REVIEWER_MODEL` | model for `hoko-code-reviewer` |
-| `HOKO_QA_MODEL` | model for `hoko-quality-assurance` |
-| `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` |
-| `HOKO_JOURNAL_PATH` | journal root (default: `~/Obsidian Vaults/Personal/Journal`) |
-| `HOKO_COMMIT_AUTO` | `1` = `hoko-commit` commits without confirming the message |
-| `HOKO_BASE_BRANCH` | branch a pull request targets (default: `develop`) |
-| `HOKO_PR_AUTO` | `1` = `hoko-pull-request` pushes and opens the PR without confirming |
+| Variable | Sets | Default |
+| --- | --- | --- |
+| `HOKO_PLAN_MODEL` | model for the `plan` agent | the session's model |
+| `HOKO_BUILD_MODEL` | model for the `build` agent — the conductor of a plan run | the session's model |
+| `HOKO_EXECUTOR_MODEL` | model for `hoko-plan-executor` | the session's model |
+| `HOKO_REVIEWER_MODEL` | model for `hoko-code-reviewer` | the session's model |
+| `HOKO_QA_MODEL` | model for `hoko-quality-assurance` | the session's model |
+| `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` | the session's model |
+| `HOKO_JOURNAL_PATH` | journal root | **unset — journaling is off** |
+| `HOKO_PLANS_DIR` | where plans are written, relative to the repo root | `.ai/plans` |
+| `HOKO_COVERAGE_MIN` | the full gate's coverage floor, in percent | `85` |
+| `HOKO_COMMIT_AUTO` | `1` = `hoko-commit` commits without confirming the message | off |
+| `HOKO_BASE_BRANCH` | branch a pull request targets | the remote's default branch |
+| `HOKO_PR_AUTO` | `1` = `hoko-pull-request` pushes and opens the PR without confirming | off |
 
-A model left unset means that agent runs on the session's model. Models are
-`provider/model-id`; `opencode models` lists them.
+Models are `provider/model-id`; `opencode models` lists them.
 
-The journal root can also come from `~/.config/opencode/hoko.json`
-(`{ "journalPath": "…" }`), which is what the Claude Code plugin used. Precedence:
-`HOKO_JOURNAL_PATH` → `hoko.json` → the built-in default.
+The plugin exports all of these, plus `HOKO_ROOT` and `HOKO_PROMPT_FILE` (this session's
+captured prompt), into every shell the agent runs — which is how the skills read the
+settings that apply to them.
 
-The plugin also exports `HOKO_ROOT`, `HOKO_JOURNAL_PATH` and `HOKO_PROMPT_FILE` (this
-session's captured prompt) into every shell the agent runs.
+### Claude Code interference
+
+Two of opencode's own environment variables, read from your shell at startup, so the
+plugin cannot set them for you. opencode loads `~/.claude/CLAUDE.md` as instructions and
+`~/.claude/skills/*/SKILL.md` as skills; a leftover Claude Code copy of a workflow like
+this one will tell the model plans live in `.claude/plans/`, which fights whatever
+`HOKO_PLANS_DIR` says. Put these in your shell profile:
+
+```sh
+export OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1
+export OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1
+```
+
+Both are stock opencode behaviour rather than this plugin's, as is the other surprise
+worth knowing: **a project `.opencode/` directory gets npm scaffolding.** For every
+config directory it finds, opencode writes a `.gitignore` and background-installs
+`@opencode-ai/plugin` into it — roughly 60 MB of `node_modules`. There is no setting to
+switch it off, which is why plans default to `.ai/plans/` rather than
+`.opencode/plans/`: a project that never needs a `.opencode/` directory never gets one.
 
 ## The workflow
 
@@ -168,7 +197,7 @@ One cycle, one Tab press:
 Tab → plan                    grill → plan file → "approve?"
 you: approved                 hoko_execute: journals, then runs execute-plan on build
 build (automatic)             delegate → verify → review → commit, one step per cycle
-                              → full gate → Status: complete → report journaled
+                              → full gate → PR → Status: complete → report journaled
 ```
 
 Commands, all optional entry points:
@@ -177,6 +206,7 @@ Commands, all optional entry points:
 /hoko/plan <request>          the planning protocol, from a command instead of a message
 /hoko/execute-plan <path>     run a plan by hand — a fresh session, or an older plan
 /hoko/commit                  commit the working tree to the message conventions
+/hoko/pr                      open the PR for the current branch
 /hoko/research <question>     research an external question, file it under .ai/research/
 /grill-me <topic>             get interrogated on anything, no plan required
 ```
@@ -186,15 +216,15 @@ Commands, all optional entry points:
 The protocol is the `plan` agent's own prompt (`agents/plan.md`), not something a
 command bolts on: Tab into plan mode, type the request, and it grills you one question
 at a time (the `grill-me` skill), reads the code, then writes
-`<project>/.ai/plans/<YmdHis>-<slug>.md`, posts the step breakdown and asks you to
+`<project>/<plans-dir>/<YmdHis>-<slug>.md`, posts the step breakdown and asks you to
 approve. Questions and exploration still get plain answers — the protocol starts when
 you ask for work. A task too small to plan gets handed back instead of a plan file.
 
 The plan agent writes that file through one permission exception the plugin adds, applied
 even if you keep a `plan` block of your own in `opencode.json`: `edit` is denied except
-`.ai/plans/*.md` (spelled relative, `*/`-prefixed and `**/`-prefixed, since opencode does
-not document which form the matcher sees), the writing tools are switched back on so the
-exception has something to act on, and `date`, `mkdir -p`, `git rev-parse`, `ls` and
+the plans directory (spelled relative, `*/`-prefixed and `**/`-prefixed, since opencode
+does not document which form the matcher sees), the writing tools are switched back on so
+the exception has something to act on, and `date`, `mkdir -p`, `git rev-parse`, `ls` and
 `test -f` are pre-allowed so resolving the path never stalls on a prompt. Configure a
 `plan` agent yourself and your prompt is kept — only the permissions and the plan-file
 exception are layered on.
@@ -204,8 +234,8 @@ exception are layered on.
 Say "approved" — or "go ahead", or anything that means yes — and the plan agent calls
 the `hoko_execute` tool. That tool, not the model, does the switching:
 
-1. files the plan and this cycle's original prompt in the journal, and remembers the
-   entry it opened;
+1. files the plan and this cycle's original prompt in the journal, if journaling is
+   configured, and remembers the entry it opened;
 2. queues the plan, and when the turn ends runs `/hoko/execute-plan <path>` in the same
    session **on the `build` agent** (opencode's `session.command` API takes the agent to
    run as), with a toast so you can see it start.
@@ -221,6 +251,7 @@ The conductor runs on whatever model the session was on when you approved, which
 always the one you want reading every diff. `HOKO_BUILD_MODEL` pins it. It sets the
 `build` agent's model like the other variables set theirs, so it applies to plain
 build-mode chat too — the conductor and build mode are the same agent.
+
 Ask for changes instead of approving and the plan file is edited in place at the same
 path — nothing is journaled until you approve.
 
@@ -239,21 +270,28 @@ the gate still hold. The plan's `## Progress` checklist tracks how far the run g
 survives a compaction or a restart.
 
 The gate is split so the loop stays cheap. Per step, `hoko-code-reviewer` runs the **fast
-gate** — PHPStan and the unit tests only — behind the same call as the review; the
-conductor re-runs nothing. Once every box is ticked, the `hoko-quality-assurance`
-subagent runs the **full gate** once over the whole run — lint, PHPStan, the full suite
-with coverage — fixes what it can, commits those fixes, and reports each gate and each
-fix. A `not ready` verdict means the plan file does not turn `Status: complete`, and the
-journal entry stays open.
+gate** — the project's static analyser and its unit tests, nothing else — behind the same
+call as the review; the conductor re-runs nothing. Once every box is ticked, the
+`hoko-quality-assurance` subagent runs the **full gate** once over the whole run — lint,
+static analysis, the full suite with coverage — fixes what it can, commits those fixes,
+and reports each gate and each fix. A `not ready` verdict means the plan file does not
+turn `Status: complete`.
+
+Neither agent assumes a toolchain. Both read the project's manifest scripts, analyser and
+test config, and CI workflow to find the commands it actually enforces, and say which
+command they settled on so a wrong one is visible. The reviewer runs under a bash
+allowlist covering the common runners across PHP, JS/TS, Python, Go, Rust, JVM, Ruby and
+.NET; if yours is missing it says so rather than substituting something else, and the
+list is one file to edit.
 
 A green gate is not an integration. Before the plan file turns complete, the run invokes
 `hoko-pull-request`: if `origin` is GitHub it pushes the branch and opens a pull request
-against `HOKO_BASE_BRANCH` (`develop` unless you say otherwise), with the run's closing
-report as the PR body, so the PR and the journal entry say the same thing. On any other
-remote — or none — the branch is simply left for you to integrate. Nothing in the
-workflow merges: no `git merge` into the base branch, no `gh pr merge`, no auto-merge.
-Without `HOKO_PR_AUTO=1` the push waits for you to confirm the base, branch and title;
-`/hoko/pr` runs the same skill on its own for a branch outside a plan run.
+against `HOKO_BASE_BRANCH` — or the remote's own default branch when that is unset — with
+the run's closing report as the PR body, so the PR and the journal entry say the same
+thing. On any other remote, or none, the branch is simply left for you to integrate.
+Nothing in the workflow merges: no `git merge` into the base branch, no `gh pr merge`, no
+auto-merge. Without `HOKO_PR_AUTO=1` the push waits for you to confirm the base, branch
+and title; `/hoko/pr` runs the same skill on its own for a branch outside a plan run.
 
 Both protocols delegate outward rather than guessing: when a decision turns on something
 outside the repo — what a pinned library version actually does, an API's semantics — they
@@ -262,8 +300,9 @@ go looking.
 
 ### 4. The journal is written by the tools, not by a reminder
 
-Each cycle is one file under `<journal>/<project>/<timestamp>-<slug>.md`: the initial
-prompt byte for byte, a full copy of the plan, and the run's final report.
+**Off unless you set `HOKO_JOURNAL_PATH`.** With a root configured, each cycle is one
+file under `<journal>/<project>/<timestamp>-<slug>.md`: the initial prompt byte for byte,
+a full copy of the plan, and the run's final report.
 
 - The plugin captures the first prompt of each cycle verbatim, before any model sees it,
   and retires it once filed so the next cycle captures its own.
@@ -279,29 +318,15 @@ first line of its `## Goal` — never from the plan's auto-generated filename. T
 is the git root, or the nearest ancestor with a `.git`, `.opencode` or `.claude`; the
 home directory never counts, and an unresolvable project lands in `<journal>/unsorted/`.
 
-### Two things opencode does on its own
-
-Both of these are stock opencode 1.18 behaviour, not this plugin's:
-
-- **A project `.opencode/` directory gets npm scaffolding.** For every config directory
-  it finds, opencode writes a `.gitignore` (`node_modules`, `package.json`,
-  `package-lock.json`, `bun.lock`, `.gitignore`) and background-installs
-  `@opencode-ai/plugin` into it — roughly 60 MB of `node_modules`. There is no setting
-  to switch it off, which is why plans live in `.ai/plans/` rather than
-  `.opencode/plans/`: a project that never needs a `.opencode/` directory never gets
-  one.
-- **Claude Code files are picked up.** `~/.claude/CLAUDE.md` is loaded as instructions
-  and `~/.claude/skills/*/SKILL.md` are loaded as skills. Left over Claude Code copies
-  of this workflow will tell the model plans live in `.claude/plans/`, which fights the
-  `.ai/plans/` convention. `OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1` and
-  `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1` turn the two pickups off.
+The journal root can also come from `~/.config/opencode/hoko.json`
+(`{ "journalPath": "…" }`). Precedence: `HOKO_JOURNAL_PATH` → `hoko.json` → off.
 
 ## Layout
 
 ```
 plugin/
-  hoko.ts             registers everything; models from .env; the hoko_execute tool;
-                      prompt capture, the handoff to build, and journaling
+  hoko.ts             registers everything; settings from hoko.env; the hoko_execute
+                      tool; prompt capture, the handoff to build, and journaling
   test_hoko.ts        tests for the plugin's hooks and tool
 agents/
   plan.md                 primary; replaces opencode's plan agent with the protocol:
@@ -309,7 +334,7 @@ agents/
   hoko-plan-executor.md   subagent; implements one step, never commits
   hoko-researcher.md      subagent; external research, writes .ai/research/<stamp>-<slug>.md
   hoko-code-reviewer.md   subagent; reviews a step's diff via hoko-code-review,
-                          plus the fast gate: PHPStan + unit tests
+                          plus the fast gate: static analysis + unit tests
   hoko-quality-assurance.md subagent; the end-of-run full gate, fixes and commits
 commands/
   grill-me.md
@@ -317,18 +342,20 @@ commands/
 skills/
   grill-me/               the grilling protocol
   hoko-commit/            commit message conventions
-  hoko-pull-request/      end of a run: push and open a PR against develop on GitHub
+  hoko-pull-request/      end of a run: push and open a PR on GitHub
   hoko-code-review/       review standards + per-language reference guides
-  hoko-api-developer/     JSON Schema + swagger.yml + versioned, grouped, named routes
-  hoko-quality-assurance/ lint, PHPStan with no exceptions, coverage above 85%
-  hoko-senior-php-developer/ no-comment self-explanatory PHP, objects over arrays,
-                          typed collections, mirrored test tree
+  hoko-quality-assurance/ lint → static analysis → tests, any stack
+  hoko-api-developer/     PHP only: JSON Schema + swagger.yml + versioned routes
+  hoko-senior-php-developer/ PHP only: no-comment self-explanatory code, objects over
+                          arrays, typed collections, mirrored test tree
 instructions/
   hoko.md                 standing rules the plugin adds to config.instructions —
                           git stops at the commit: never merge, never push, PR instead
 scripts/
   journal.py              write | report
   test_journal.py         tests, against a throwaway journal root
+hoko.env.example          every setting, commented, with its default
+opencode.json.example     the one line that registers the plugin
 ```
 
 Agents, commands and skills are plain opencode files — the plugin only reads their
@@ -336,7 +363,7 @@ frontmatter and body. `instructions/hoko.md` is different: it is appended to
 `config.instructions`, so it is in context on every agent whether or not a skill is
 invoked. That is where rules live that must hold in plain build-mode chat too — a skill
 only binds once a model decides to load it, which is exactly when "just commit this"
-turned into a local merge into `develop`.
+turned into a local merge into the integration branch.
 
 The frontmatter parser covers scalars and nested maps (`permission:`, `tools:`), which is
 all these files use; it is not a full YAML parser.
@@ -346,35 +373,54 @@ evaluates the **last** matching rule, so broad patterns go first and narrow ones
 and skill names are flat, which is why they are prefixed `hoko-` rather than namespaced
 like the commands.
 
-### PHP standards
+## Making it yours
 
-Three skills carry the PHP conventions, and they trigger on their own descriptions
-rather than through a command:
+The parts most likely to want changing:
 
-- **`hoko-api-developer`** — every JSON payload gets a JSON Schema under
+- **Commit and PR conventions** — `skills/hoko-commit/SKILL.md` carries the message
+  format (why-focused summary, one bullet per change, a trailing Jira-style key when the
+  branch name has one) and the protected-branch list. `skills/hoko-pull-request/SKILL.md`
+  carries the PR title and body rules.
+- **The gates** — `skills/hoko-quality-assurance/SKILL.md` is the whole gate in one
+  file, tool-agnostic. Its hard rules (no suppression entries, no inline ignore
+  comments, coverage only goes up) are the opinionated part.
+- **The reviewer's allowlist** — `agents/hoko-code-reviewer.md`, if it cannot run your
+  project's check command.
+- **Standing rules** — `instructions/hoko.md`, in context on every agent, every turn.
+- **Language conventions** — the two `*-php-*` skills are examples of the shape: a
+  narrowly-scoped skill whose description names the language, so a model only loads it
+  on a diff in that language. Copy one for your own stack, or delete them.
+
+### PHP-specific skills
+
+Three skills carry stack conventions and trigger on their own descriptions rather than
+through a command. Only the first is language-neutral; the other two are PHP and stay
+out of the way on any other diff.
+
+- **`hoko-quality-assurance`** — the gate: lint, then the project's static analyser with
+  no suppressions and no inline ignore comments, then tests with coverage above
+  `HOKO_COVERAGE_MIN` and rising. It comes in two shapes — the fast gate (analyser +
+  unit tests) that the reviewer runs per step, and the full gate that runs once at the
+  end of a run or before a standalone commit.
+- **`hoko-api-developer`** (PHP) — every JSON payload gets a JSON Schema under
   `res/schema/json/<project>/`, with shared shapes extracted into `components/` and
   reused by `$ref`; a `swagger.yml` at the project root references those files instead of
   inlining shapes; routes are versioned from `v1`, grouped by shared path, named, and
   carry their middleware on the group rather than per route.
-- **`hoko-quality-assurance`** — the gate: lint, then PHPStan with an empty
-  `ignoreErrors` and no inline ignore tags, then tests with coverage above 85% and
-  rising. It finds the project's own commands rather than assuming tool names. It comes
-  in two shapes — the fast gate (PHPStan + unit tests) that the reviewer runs per step,
-  and the full gate that runs once at the end of a run or before a standalone commit.
-- **`hoko-senior-php-developer`** — self-explanatory code with comments only for a
+- **`hoko-senior-php-developer`** (PHP) — self-explanatory code with comments only for a
   non-obvious *why*, fully typed signatures that take and return objects instead of
   arrays, PSR naming (`Interface` suffix), collections built per element type that
   reject foreign types, and a `tests/Unit` tree that mirrors the application tree path
   for path with feature tests grouped by feature.
 
-All three are framework-agnostic: they detect the stack and test tooling from the
-project and express the rules in its idioms. `hoko-commit` invokes the quality gate
-before drafting a message, and `hoko-code-review` points the reviewer at the other two,
-so a plan run picks them up at both the review and the commit step. Inside a plan run
-`hoko-commit` holds to the fast gate the reviewer already ran instead of starting the
-full one; every other commit runs all three.
+All three are framework-agnostic within their language: they detect the stack and test
+tooling from the project and express the rules in its idioms. `hoko-commit` invokes the
+quality gate before drafting a message, and `hoko-code-review` points the reviewer at the
+other two on a PHP diff, so a plan run picks them up at both the review and the commit
+step. Inside a plan run `hoko-commit` holds to the fast gate the reviewer already ran
+instead of starting the full one; every other commit runs all three.
 
-### Research
+## Research
 
 `hoko-researcher` answers one question from sources *outside* the repo — pinned-version
 documentation, changelogs, specs — and writes `.ai/research/<YmdHis>-<slug>.md` with an
@@ -402,31 +448,6 @@ cannot launch subagents at opencode's default `subagent_depth: 1`, so `hoko-plan
 and `hoko-code-reviewer` cannot research on their own — only the primary agent can, which
 is why the blocker path routes back through the conductor.
 
-## What changed from the Claude Code version
-
-- Claude Code hooks (`UserPromptSubmit`, `PostToolUse`, `Stop`) become opencode plugin
-  hooks (`chat.message`, `command.execute.before`, `tool.execute.after`, `shell.env`,
-  `event`) plus the `hoko_execute` tool. Journaling used to be nudged by appending a
-  reminder to a tool result and hoping the model acted on it; the plugin now writes both
-  halves itself. opencode's `session.idle` event turns out to be the `Stop` equivalent
-  the port was missing.
-- The grilling protocol was injected by a hook on entering plan mode; it is now the
-  `plan` agent's prompt, so plan mode grills whether you came in by Tab or by
-  `/hoko/plan`.
-- Approving a plan used to mean running the execute command yourself. `hoko_execute` now
-  runs it for you, on the build agent, in the same session.
-- Plans moved from `.claude/plans/` to `.ai/plans/`, and `execute-plan` gitignores
-  `/.ai/` unless the repo already tracks it. Plans under the older `.opencode/plans/`
-  and `.claude/plans/` layouts still resolve to their project when journaled.
-- Skills are invoked by name through opencode's `skill` tool rather than as
-  `/giata:<skill>` slash commands; the slash commands that remain are the workflow
-  entry points.
-- Code review is unconditional. The Claude Code version reviewed "proportional to the
-  step", which meant the conductor decided — and a conductor on a cheap model skips it.
-  Every step now goes to `hoko-code-reviewer`, which answers in one line on a trivial
-  diff.
-- `add-dynamic-pipelines` was GIATA-specific and did not come along.
-
 ## Tests
 
 ```sh
@@ -435,4 +456,4 @@ bun plugin/test_hoko.ts         # plugin: capture, the tool, the handoff, journa
 python3 scripts/test_journal.py # journal: entries, titles, projects, reports, config
 ```
 
-Both run against throwaway directories and never touch the real journal.
+Both run against throwaway directories and never touch a real journal.

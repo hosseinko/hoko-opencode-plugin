@@ -3,7 +3,7 @@
  *
  * One line in ~/.config/opencode/opencode.json points at this file:
  *
- *   { "plugin": ["file:///abs/path/to/my-opencode-plugings/plugin/hoko.ts"] }
+ *   { "plugin": ["file:///abs/path/to/hoko-opencode-plugin/plugin/hoko.ts"] }
  *
  * From there the plugin:
  *   - registers this repo's agents, commands, skills and standing instructions into the
@@ -15,11 +15,14 @@
  *   - serves `hoko_execute`: approval files the plan in the journal and runs
  *     /hoko/execute-plan on the build agent in this same session
  *   - journals the run's closing report once the plan file turns Status: complete
+ *   - exposes the resolved settings, HOKO_ROOT and HOKO_PROMPT_FILE to every shell
  *
  * It has no dependencies: everything here is node's standard library, which is why the
  * plugin needs no install step and its tools take no arguments (declaring arguments
  * would mean importing zod).
- *   - exposes HOKO_ROOT / HOKO_PROMPT_FILE / HOKO_JOURNAL_PATH to the shell
+ *
+ * Nothing here is specific to a language, a stack or a machine: every path, branch and
+ * threshold it uses comes from hoko.env. See hoko.env.example.
  */
 
 import fs from "node:fs"
@@ -37,14 +40,15 @@ const JOURNAL_SCRIPT = path.join(ROOT, "scripts", "journal.py")
 // build-mode chat — never merge, never push — go in an instructions file instead.
 const INSTRUCTIONS = path.join(ROOT, "instructions", "hoko.md")
 const COMMAND_MARKER = "<!-- hoko:command -->"
-const DEFAULT_JOURNAL_PATH = "/Users/hossein.koozehgar/Obsidian Vaults/Personal/Journal"
 const EXECUTE_COMMAND = "hoko/execute-plan"
 const EXECUTE_AGENT = "build"
 const PLAN_AGENT = "plan"
+const DEFAULT_PLANS_DIR = ".ai/plans"
+const DEFAULT_COVERAGE_MIN = "85"
 // opencode matches edit patterns with a plain wildcard matcher and does not document
 // whether the subject is the absolute path or one relative to the project root, so the
 // exception is spelled every way it can arrive. `*` matches across separators.
-const PLAN_GLOBS = [".ai/plans/*.md", "*/.ai/plans/*.md", "**/.ai/plans/*.md"]
+const planGlobs = (dir: string) => [`${dir}/*.md`, `*/${dir}/*.md`, `**/${dir}/*.md`]
 // The plan protocol shells out for the timestamp, the project root and the directory it
 // writes into. Left at plan mode's default these prompt mid-grilling, and a denied one
 // leaves the model with no path — which is how a plan ends up in the chat instead of a
@@ -100,16 +104,25 @@ function settings(): Record<string, string> {
     ...readEnvFile(path.join(CONFIG_DIR, "hoko.env")),
   }
   // Any HOKO_* variable in the real environment wins, whether or not a file mentions it.
+  // An explicitly empty one clears what a file set, so `HOKO_JOURNAL_PATH= opencode`
+  // turns journaling off for a session without editing anything.
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith("HOKO_") && value) merged[key] = value
+    if (!key.startsWith("HOKO_")) continue
+    if (value) merged[key] = value
+    else delete merged[key]
   }
+  // No built-in journal root: an unset HOKO_JOURNAL_PATH means journaling is off, not
+  // that entries land in somebody else's notes directory.
   if (!merged.HOKO_JOURNAL_PATH) {
     let configured: string | undefined
     try {
       configured = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, "hoko.json"), "utf8")).journalPath
     } catch {}
-    merged.HOKO_JOURNAL_PATH = configured || DEFAULT_JOURNAL_PATH
+    if (configured) merged.HOKO_JOURNAL_PATH = configured
+    else delete merged.HOKO_JOURNAL_PATH
   }
+  merged.HOKO_PLANS_DIR = (merged.HOKO_PLANS_DIR || DEFAULT_PLANS_DIR).replace(/^\.\//, "").replace(/\/+$/, "")
+  merged.HOKO_COVERAGE_MIN ||= DEFAULT_COVERAGE_MIN
   merged.HOKO_ROOT = ROOT
   return merged
 }
@@ -192,8 +205,8 @@ function write(file: string, text: string) {
 }
 
 /** The plan a session is working on: the one it wrote, else the newest on disk. */
-function newestPlan(cwd: string) {
-  const dir = path.join(cwd, ".ai", "plans")
+function newestPlan(cwd: string, plansDir: string) {
+  const dir = path.join(cwd, ...plansDir.split("/"))
   try {
     return (
       fs
@@ -224,6 +237,8 @@ function journal(env: Record<string, string>, cwd: string, args: string[]) {
 export const HokoPlugin = async ({ client, worktree, directory }: any) => {
   const env = settings()
   const project = worktree || directory || process.cwd()
+  const plansDir = env.HOKO_PLANS_DIR
+  const journaling = Boolean(env.HOKO_JOURNAL_PATH)
 
   const capture = (sessionID: string, text: string) => {
     const anchor = state(sessionID, ".prompt")
@@ -281,6 +296,7 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
   /** The closing report is the last thing the conductor posts once the plan is complete,
    *  so that message is the report — no model has to hand it over. */
   const fileReport = async (sessionID: string) => {
+    if (!journaling) return
     let report = ""
     try {
       const result: any = await client?.session?.messages?.({ path: { id: sessionID } })
@@ -344,7 +360,7 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
             edit: {
               "*": "deny",
               ...asMap(existing.edit),
-              ...Object.fromEntries(PLAN_GLOBS.map((glob) => [glob, "allow"])),
+              ...Object.fromEntries(planGlobs(plansDir).map((glob) => [glob, "allow"])),
             },
             bash: {
               ...asMap(existing.bash),
@@ -387,13 +403,15 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
         args: {},
         async execute(_args: any, ctx: any) {
           const cwd = ctx.worktree || ctx.directory || project
-          const plan = read(state(ctx.sessionID, ".plan")) || newestPlan(cwd)
+          const plan = read(state(ctx.sessionID, ".plan")) || newestPlan(cwd, plansDir)
           if (!plan || !fs.existsSync(plan)) {
-            return "No plan file in this session. Write the plan under .ai/plans/ first — a plan that is not a file cannot be executed."
+            return `No plan file in this session. Write the plan under ${plansDir}/ first — a plan that is not a file cannot be executed.`
           }
           const anchor = state(ctx.sessionID, ".prompt")
           const lines: string[] = []
-          if (fs.existsSync(anchor)) {
+          if (!journaling) {
+            // Journaling is opt-in: with no root configured the handoff is all this does.
+          } else if (fs.existsSync(anchor)) {
             try {
               const entry = journal(env, cwd, ["write", "--plan", plan, "--prompt-file", anchor])
               write(state(ctx.sessionID, ".entry"), entry)
@@ -407,7 +425,7 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
           write(state(ctx.sessionID, ".handoff"), plan)
           lines.push(
             `Handed off: /hoko/execute-plan ${plan} starts on the ${EXECUTE_AGENT} agent the moment this turn ends.`,
-            "Reply with one line — the plan path and the journal entry — then stop. Do not implement anything, do not call any other tool.",
+            `Reply with one line — the plan path${journaling ? " and the journal entry" : ""} — then stop. Do not implement anything, do not call any other tool.`,
           )
           return { title: `handed off ${path.basename(plan)}`, output: lines.join("\n") }
         },
@@ -437,7 +455,9 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
       if (!["write", "edit", "patch"].includes(input.tool)) return
       const file = input.args?.filePath
       if (typeof file !== "string" || !file.endsWith(".md")) return
-      if (!file.split(path.sep).includes("plans")) return
+      // The plans directory's own last segment is what marks a plan file, so a plan
+      // still registers when it was written through a symlink or a relative path.
+      if (!file.split(path.sep).includes(plansDir.split("/").pop()!)) return
       write(state(input.sessionID, ".plan"), path.resolve(file))
       // A plan turning complete is the one deterministic end-of-run signal there is, and
       // the closing report the conductor posts next is what the journal entry wants.

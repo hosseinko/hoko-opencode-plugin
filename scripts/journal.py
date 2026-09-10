@@ -11,7 +11,8 @@ Ships with the `hoko` opencode plugin. Two modes:
   report  Appends the run's final report to that same entry, once the plan is done.
 
 The journal root comes from HOKO_JOURNAL_PATH, else "journalPath" in
-~/.config/opencode/hoko.json, else the default below.
+~/.config/opencode/hoko.json. There is no default: with neither set, journaling is off
+and this script says so instead of writing anywhere.
 """
 
 import argparse
@@ -24,7 +25,6 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-DEFAULT_JOURNAL_PATH = "/Users/hossein.koozehgar/Obsidian Vaults/Personal/Journal"
 CONFIGS = (Path.home() / ".config" / "opencode" / "hoko.json",)
 STATE_DIR = Path(os.environ.get("HOKO_STATE_DIR") or Path(tempfile.gettempdir()) / "hoko-journal")
 PROJECT_MARKERS = (".git", ".ai", ".opencode", ".claude")
@@ -48,7 +48,10 @@ def journal_root():
             configured = config.get("journalPath")
             if configured:
                 break
-    return Path(os.path.expandvars(configured or DEFAULT_JOURNAL_PATH)).expanduser()
+    if not configured:
+        die("HOKO_JOURNAL_PATH is not set — journaling is off. "
+            "Set it in hoko.env to keep a journal.")
+    return Path(os.path.expandvars(configured)).expanduser()
 
 
 def git_toplevel(start):
@@ -99,11 +102,17 @@ def resolve_project(explicit, plan, anchor):
     if root is None and plan is not None:
         # A loose plan file: step over a <marker>/plans/ layout if there is one.
         root = plan.parent
-        while root.name in ("plans", ".ai", ".opencode", ".claude") and root != root.parent:
+        while root.name in plan_dir_segments() and root != root.parent:
             root = root.parent
     if root is None or root == Path.home() or root.name in ("", ".", "/"):
         return "unsorted"
     return slugify(root.name)
+
+
+def plan_dir_segments():
+    """Directory names that are part of a plans path rather than a project name."""
+    configured = os.environ.get("HOKO_PLANS_DIR") or ".ai/plans"
+    return {*configured.strip("/").split("/"), "plans", ".ai", ".opencode", ".claude"}
 
 
 def slugify(value, limit=60):

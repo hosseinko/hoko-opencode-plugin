@@ -1,6 +1,6 @@
 ---
 name: hoko-commit
-description: Format git commit messages to Hossein's standard - a plain why-focused summary line plus one bullet per change. Use when asked to commit changes, write a commit message, or clean up a commit history.
+description: Format git commit messages to this workflow's convention - a plain why-focused summary line plus one bullet per change. Use when asked to commit changes, write a commit message, or clean up a commit history.
 ---
 
 # Commit conventions
@@ -78,15 +78,13 @@ ABC-123
    - If they give a complete name, use it as-is.
    - Create it with `git checkout -b <name>`, then continue.
 3. Group unrelated changes into separate commits — don't bundle a refactor with a fix.
-4. **Run the quality gate.** If the diff touches PHP, invoke the
-   `hoko-quality-assurance` skill and follow it: lint, then PHPStan, then tests with
-   coverage. Do not commit while any gate is red — report the failure instead. For a
-   non-PHP diff, run whatever lint and test commands the project defines and hold to the
-   same rule.
+4. **Run the quality gate.** Invoke the `hoko-quality-assurance` skill and follow it:
+   find the project's own commands, then lint, then static analysis, then tests with
+   coverage. Do not commit while any gate is red — report the failure instead.
 
    **One exception: a step commit inside a plan run.** When the caller says this commit
-   is one step of `/hoko/execute-plan`, the fast gate — PHPStan clean and the unit tests
-   green — has already run in `hoko-code-reviewer`, and that is the gate for this
+   is one step of `/hoko/execute-plan`, the fast gate — the analyser clean and the unit
+   tests green — has already run in `hoko-code-reviewer`, and that is the gate for this
    commit. Do not re-run it, and do not start the full one: linting, the whole suite and
    coverage run once at the end of the run, in the `hoko-quality-assurance` subagent. If
    the reviewer's fast gate was red, there is no commit to make — that is a finding to

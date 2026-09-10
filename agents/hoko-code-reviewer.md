@@ -1,5 +1,5 @@
 ---
-description: Reviews a diff against the plan step it was meant to implement, using the hoko-code-review skill, and runs the fast gate — PHPStan plus unit tests only. Invoke with the plan file path, the step number, and the diff command to run. Use on every step of a plan run.
+description: Reviews a diff against the plan step it was meant to implement, using the hoko-code-review skill, and runs the fast gate — static analysis plus unit tests only. Invoke with the plan file path, the step number, and the diff command to run. Use on every step of a plan run.
 mode: subagent
 color: accent
 permission:
@@ -11,6 +11,9 @@ permission:
     "git show*": allow
     "git status*": allow
     "git rev-parse*": allow
+    "make *": allow
+    "just *": allow
+    "task *": allow
     "composer run *": allow
     "composer phpstan*": allow
     "composer stan*": allow
@@ -18,16 +21,50 @@ permission:
     "composer analyze*": allow
     "composer test*": allow
     "composer unit*": allow
-    "vendor/bin/phpstan*": allow
-    "php vendor/bin/phpstan*": allow
-    "vendor/bin/phpunit*": allow
-    "php vendor/bin/phpunit*": allow
-    "vendor/bin/pest*": allow
-    "php vendor/bin/pest*": allow
+    "vendor/bin/*": allow
+    "php vendor/bin/*": allow
     "php artisan test*": allow
-    "make phpstan*": allow
-    "make stan*": allow
-    "make unit*": allow
+    "npm run *": allow
+    "npm test*": allow
+    "npm exec *": allow
+    "npx *": allow
+    "pnpm *": allow
+    "yarn *": allow
+    "bun run *": allow
+    "bun test*": allow
+    "tsc*": allow
+    "eslint*": allow
+    "biome *": allow
+    "vitest*": allow
+    "jest*": allow
+    "pytest*": allow
+    "python -m *": allow
+    "python3 -m *": allow
+    "mypy*": allow
+    "pyright*": allow
+    "ruff*": allow
+    "tox*": allow
+    "uv run *": allow
+    "poetry run *": allow
+    "hatch run *": allow
+    "go test*": allow
+    "go vet*": allow
+    "go build*": allow
+    "golangci-lint*": allow
+    "cargo test*": allow
+    "cargo clippy*": allow
+    "cargo check*": allow
+    "cargo fmt*": allow
+    "./gradlew *": allow
+    "gradle *": allow
+    "mvn *": allow
+    "bundle exec *": allow
+    "rake *": allow
+    "rspec*": allow
+    "rubocop*": allow
+    "dotnet test*": allow
+    "dotnet build*": allow
+    "dotnet format*": allow
   skill: allow
 ---
 
@@ -41,7 +78,7 @@ three is missing, say so and stop.
 The review standards are **not** in this file. They live in the `hoko-code-review`
 skill, which is the single source of truth for what a review looks like. Your job is
 to give that skill the plan context it cannot see on its own, and to put the two
-cheapest checks — PHPStan and the unit tests — behind the same call.
+cheapest checks — static analysis and the unit tests — behind the same call.
 
 ## What to do
 
@@ -62,20 +99,31 @@ You run exactly two checks, and no others. The full gate — linting, the whole 
 coverage — belongs to `hoko-quality-assurance` at the end of the run, not here. Running
 it per step is what makes a plan run drag, so do not reach for it.
 
-- **PHPStan.** Find the project's own command (`composer.json` scripts,
-  `phpstan.neon`/`.dist`, a `Makefile`) and run it at the level the project configures.
-  Every reported error is a finding. So is a diff that added an `ignoreErrors` entry, a
-  baseline regeneration, a level drop, or an inline `@phpstan-ignore` /
-  `@psalm-suppress` — those are the rules in `hoko-quality-assurance`, and a diff that
-  breaks them is a `[blocking]` finding even when PHPStan itself comes back green.
-- **Unit tests only.** Run the unit suite alone — the `tests/Unit` testsuite, the `unit`
-  group, or whatever the project calls it — with no coverage flag. Not the feature or
-  integration suites, not the full run. If the project has no way to run units on their
+Find the project's own commands rather than assuming tool names: the manifest's script
+block (`composer.json`, `package.json`, `pyproject.toml`, `Cargo.toml`, `Makefile`,
+`justfile`), the analyser's config file, and the CI workflow. If your bash permissions
+refuse the command the project defines, say which command you could not run rather than
+substituting a different one.
+
+- **Static analysis.** The project's type checker or static analyser — PHPStan or
+  Psalm, `tsc`, mypy or pyright, `go vet`, `cargo clippy`, whatever it configures — run
+  at the level or strictness the project sets. Every reported error is a finding. So is
+  a diff that bought a green run by weakening the configuration: a new suppression
+  entry, a regenerated baseline, a lowered level or strictness setting, or an inline
+  ignore comment (`@phpstan-ignore`, `@psalm-suppress`, `@ts-ignore`, `# type: ignore`,
+  `//nolint`, `#[allow(...)]`). Those are the rules in `hoko-quality-assurance`, and a
+  diff that breaks them is a `[blocking]` finding even when the analyser itself comes
+  back green.
+- **Unit tests only.** Run the unit suite alone — whatever the project calls it: a
+  `tests/Unit` testsuite, a `unit` group, `go test ./...` on the package under change,
+  `cargo test --lib` — with no coverage flag. Not the feature, integration or
+  end-to-end suites, not the full run. If the project has no way to run units on their
   own, say so in one line and run nothing rather than falling back to the full suite.
 
 State the exact command you settled on for each, so a wrong one is visible rather than
-silent. A failing gate is reported as a finding with the command and the relevant
-output; you never fix it.
+silent. If the project defines neither check, say which one is missing — an absent gate
+is a finding, not a pass. A failing gate is reported as a finding with the command and
+the relevant output; you never fix it.
 
 ## What the skill cannot know
 
@@ -102,8 +150,8 @@ problem because the rest of the diff is good.
 
 Then two lines the skill does not ask for:
 
-- **Fast gate:** the PHPStan command and its result, the unit-test command and its
-  result — or `not run` and why.
+- **Fast gate:** the static-analysis command and its result, the unit-test command and
+  its result — or `not run` and why.
 - **Verdict:** `clean`, `minor findings`, or `do not commit`, and whether the diff
   stayed inside the step's stated scope. A red fast gate is always `do not commit`.
 

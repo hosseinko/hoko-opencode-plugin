@@ -18,8 +18,9 @@ If a path was given and the file exists, use it. Otherwise — no path, or a pat
 not there — look before you ask:
 
 ```bash
+PLANS="${HOKO_PLANS_DIR:-.ai/plans}"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-ls -t "$ROOT"/.ai/plans/*.md "$ROOT"/.opencode/plans/*.md "$ROOT"/.claude/plans/*.md 2>/dev/null
+ls -t "$ROOT/$PLANS"/*.md "$ROOT"/.ai/plans/*.md "$ROOT"/.opencode/plans/*.md "$ROOT"/.claude/plans/*.md 2>/dev/null
 ```
 
 - Exactly one candidate, or one clearly newest and not yet `Status: complete` — say which
@@ -27,7 +28,7 @@ ls -t "$ROOT"/.ai/plans/*.md "$ROOT"/.opencode/plans/*.md "$ROOT"/.claude/plans/
 - Several plausible ones — list them newest first and ask which.
 - **Nothing at all, but this session's earlier messages contain the plan text** (plan
   mode could not write it): write it to
-  `$ROOT/.ai/plans/$(date +%Y%m%d%H%M%S)-<short-kebab-slug>.md` yourself, verbatim, then
+  `$ROOT/$PLANS/$(date +%Y%m%d%H%M%S)-<short-kebab-slug>.md` yourself, verbatim, then
   execute that file. Say that you recovered it from the conversation.
 - Nothing at all and no plan in the conversation — ask for a path and stop. Never invent
   a plan.
@@ -38,16 +39,18 @@ The executor subagent reads this file directly and cannot see this conversation,
 the path must be stable and inside the repo. Run:
 
 ```bash
+PLANS="${HOKO_PLANS_DIR:-.ai/plans}"
+TOP="${PLANS%%/*}"
 ROOT="$(git rev-parse --show-toplevel)" || exit 1
-mkdir -p "$ROOT/.ai/plans"
-if git -C "$ROOT" ls-files --error-unmatch .ai >/dev/null 2>&1; then
-  : # repo tracks .ai/ — the plan is reviewed source, commit it with the work
+mkdir -p "$ROOT/$PLANS"
+if git -C "$ROOT" ls-files --error-unmatch "$TOP" >/dev/null 2>&1; then
+  : # repo tracks it — the plan is reviewed source, commit it with the work
 else
-  grep -qxF '/.ai/' "$ROOT/.gitignore" 2>/dev/null || printf '/.ai/\n' >> "$ROOT/.gitignore"
+  grep -qxF "/$TOP/" "$ROOT/.gitignore" 2>/dev/null || printf '/%s/\n' "$TOP" >> "$ROOT/.gitignore"
 fi
 ```
 
-If the plan file is not already under `$ROOT/.ai/plans/`, copy it there as
+If the plan file is not already under `$ROOT/$PLANS/`, copy it there as
 `$(date +%Y%m%d%H%M%S)-<short-kebab-slug>.md` and use the copy from here on. Print the
 path you settled on. If this is not a git repository, ask me which directory is the
 project root before doing anything.
@@ -109,8 +112,8 @@ Work the unticked steps in checklist order, **one step per cycle**.
 
 3. **Verify.** When it returns, run `git status --short` and `git diff` yourself.
    Trust the diff, not the subagent's summary of it. Do **not** re-run tests, lint,
-   PHPStan or coverage here — the reviewer in the next step runs the fast gate, and the
-   full gate runs once at the end of the run. Re-running them per step is exactly the
+   static analysis or coverage here — the reviewer in the next step runs the fast gate,
+   and the full gate runs once at the end of the run. Re-running them per step is exactly the
    drag this loop is shaped to avoid.
 
    Stop and ask me if the subagent reported a blocker, the diff is empty, or the diff
@@ -130,10 +133,10 @@ Work the unticked steps in checklist order, **one step per cycle**.
    `hoko-code-reviewer` subagent (`subagent_type: hoko-code-reviewer`) with the absolute
    plan path, the step number, and the exact diff command to run, for example
    `git diff` or `git diff HEAD~1`. It reads the diff in its own context, reviews it
-   with the `hoko-code-review` skill, runs the fast gate — PHPStan and the unit tests,
-   nothing else — and reports back with both.
+   with the `hoko-code-review` skill, runs the fast gate — static analysis and the unit
+   tests, nothing else — and reports back with both.
 
-   Its fast gate is the step's only verification. A red PHPStan or a failing unit test
+   Its fast gate is the step's only verification. A red analyser or a failing unit test
    comes back as a finding and is handled like any other finding; you do not re-run
    either yourself to confirm it.
 
@@ -155,9 +158,10 @@ Work the unticked steps in checklist order, **one step per cycle**.
    plan-run step commit so it holds to the fast gate the reviewer already ran rather
    than starting the full one. One commit per step — never batch steps into one commit. Then tick that step's box in the plan's
    `## Progress` section (`- [ ] 3.` → `- [x] 3.`) and mark its todo `completed`. Tick
-   nothing before the commit lands, and never tick a step you had to stop on. If `.ai/` is gitignored, the plan file is never part of a commit and
-   must never be force-added. If the repo tracks `.ai/`, the plan file is
-   reviewed source and is committed along with the step.
+   nothing before the commit lands, and never tick a step you had to stop on. If the
+   plans directory is gitignored, the plan file is never part of a commit and must never
+   be force-added. If the repo tracks it, the plan file is reviewed source and is
+   committed along with the step.
 
 6. **Report** one line: step done, commit subject, tests run — and name the subagents you
    launched for it, so a skipped delegation is visible rather than silent. Then move to
@@ -170,8 +174,9 @@ whole run:
 
 Launch the `hoko-quality-assurance` subagent (`subagent_type: hoko-quality-assurance`)
 with the absolute plan path and the commit range this run produced, for example
-`<first commit>^..HEAD`. It runs lint, PHPStan and the full suite with coverage, fixes
-what it can, commits those fixes, and reports every gate, every fix and every blocker.
+`<first commit>^..HEAD`. It runs lint, static analysis and the full suite with coverage,
+fixes what it can, commits those fixes, and reports every gate, every fix and every
+blocker.
 
 Do not run the gate yourself and do not invoke `hoko-quality-assurance` as a skill
 here — the subagent runs it in its own context, which is the point of delegating it.
@@ -184,8 +189,8 @@ If it comes back `not ready`, the run is not finished: the plan file does not ge
 With the gate green the branch is finished but not integrated. Invoke the
 `hoko-pull-request` skill and follow it: it checks whether `origin` is GitHub and, if it
 is, pushes the branch and opens a PR against the integration branch — `HOKO_BASE_BRANCH`,
-`develop` by default. On any other remote, or none at all, it leaves the branch where it
-is and says so, which is a normal ending.
+or the remote's own default branch when that is unset. On any other remote, or none at
+all, it leaves the branch where it is and says so, which is a normal ending.
 
 Do this before you set `Status: complete`, because the PR body is the closing report you
 are about to post: draft the report first, hand it to the skill as the body, then add the

@@ -1,0 +1,8 @@
+{
+  "name": "my-opencode-plugins",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun plugin/test_hoko.ts && python3 scripts/test_journal.py"
+  }
+}

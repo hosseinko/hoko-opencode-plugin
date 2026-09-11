@@ -34,6 +34,20 @@ Cover, proportional to the size of the change:
 - Edge cases and failure behaviour
 - How we will know it works
 
+Drive the grilling toward behaviour you can state in EARS form, because that is what
+goes into the plan's *Requirements*. The five shapes double as a completeness check — a
+bucket you cannot fill is usually one nobody thought about:
+
+- **Always true** — invariants, limits, contracts.         → ubiquitous
+- **Only in a state** — while empty, while degraded.       → While
+- **On a trigger** — a call, a message, a timer.           → When
+- **When it goes wrong** — bad input, timeout, conflict.   → If / Then
+- **Only if configured** — a flag, an optional dependency. → Where
+
+The `If / Then` bucket is the one that ends up silently empty. If the user has not said
+what happens on bad input, on a timeout or on a partial failure, the grilling is not
+finished.
+
 Cover performance **only** if this touches a hot path, a loop over unbounded data, or a
 query in a request path. Cover security **only** if it touches untrusted input,
 authentication, authorization, secrets, or PII. Otherwise skip both silently and leave
@@ -91,6 +105,7 @@ Use this structure, omitting any section that would be empty:
 ## Goal
 ## Non-goals
 ## Decisions          — every answer from the grilling that constrains implementation
+## Requirements       — the observable behaviour this change owes, in EARS form
 ## Test conventions   — framework; test file location and naming; exact run command;
                         lint/typecheck command, or none
 ## Progress
@@ -100,7 +115,8 @@ Use this structure, omitting any section that would be empty:
 ### 1. <imperative title>
 - Files: <paths>
 - Change: <what, concretely>
-- Tests: <what proves it, in the project's style>
+- Satisfies: <the requirement ids this step delivers, or `none — internal`>
+- Tests: <what proves those requirements, in the project's style>
 - Risks: <omit this line unless there is a concrete, specific risk>
 ## Open questions     — omit if none
 ```
@@ -109,6 +125,30 @@ Write it for a stranger. A subagent with **no access to this conversation** will
 implement from that file alone, so every decision you reached must be written down
 rather than assumed. The *Test conventions* section is load-bearing: the subagent runs
 exactly the command you record there.
+
+The **Requirements** section states the change's observable behaviour as numbered
+`R<N>` lines in EARS form — one behaviour per line, in the project's own vocabulary,
+naming the actual component rather than "the system":
+
+    R1. The <component> shall <response>.
+    R2. While <precondition>, the <component> shall <response>.
+    R3. When <trigger>, the <component> shall <response>.
+    R4. If <unwanted trigger>, then the <component> shall <response>.
+    R5. Where <feature is configured>, the <component> shall <response>.
+    R6. While <precondition>, when <trigger>, the <component> shall <response>.
+
+One `shall` per line — an "and" joining two responses is two requirements. Nothing that
+cannot fail a test: "shall be efficient", "shall handle errors gracefully" and "shall be
+robust" are not requirements. Nothing about implementation either; how it is built
+belongs in *Decisions*, what it does belongs here.
+
+Omit the section entirely when the change has no externally observable behaviour — a
+rename, an extraction, a dependency bump, a pure refactor. Never invent requirements to
+fill it and never restate a Decision as one.
+
+Every requirement must be claimed by exactly one step's `Satisfies:` line. A requirement
+no step claims is a hole in the plan; a step that claims none is internal plumbing and
+says so.
 
 The **Progress** section is mandatory and is never omitted: one unchecked
 `- [ ] <N>. <title>` line per step, in order, titles matching the `### <N>.` headings

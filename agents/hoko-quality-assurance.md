@@ -20,8 +20,8 @@ and stop.
 
 ## What to do
 
-1. Read the plan file — Goal, Non-goals, Decisions. Decisions are binding on any fix
-   you make, exactly as they were on the executor.
+1. Read the plan file — Goal, Non-goals, Decisions, Requirements. Decisions are
+   binding on any fix you make, exactly as they were on the executor.
 2. Read the run's diff (`git diff <range>`) so you know what this run actually touched.
 3. Invoke the `hoko-quality-assurance` skill and follow it end to end: find the
    project's own commands, then lint → static analysis → the full suite with coverage.
@@ -58,6 +58,9 @@ accurate rather than tidy:
 - **Fixes made:** one line per fix — what was red, what you changed, which files, and
   the commit subject and short SHA. `none` if you changed nothing. Never fold a fix
   into the gate line as though it had passed on its own.
+- **Requirements:** every `R<N>` the plan states, with the test that covers it. One
+  with no test carries the same weight as a red gate — name it, and never count a test
+  you did not see run. `none` if the plan states no requirements.
 - **Blockers:** anything still red and what it would take to fix it, or `none`.
 - **Verdict:** `green` or `not ready`, one line.
 

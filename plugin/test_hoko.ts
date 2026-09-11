@@ -25,7 +25,7 @@ process.env.HOKO_JOURNAL_PATH = journalRoot
 delete process.env.HOKO_PLAN_MODEL
 process.env.HOKO_BUILD_MODEL = "anthropic/claude-test"
 
-const { HokoPlugin } = await import("./hoko.ts")
+const { HokoPlugin, gitVerdict } = await import("./hoko.ts")
 
 const proj = fs.mkdtempSync(path.join(os.tmpdir(), "proj-"))
 fs.mkdirSync(path.join(proj, ".ai", "plans"), { recursive: true })
@@ -254,6 +254,43 @@ check("its own rules survive", own.agent.plan.permission.bash["rm*"] === "deny")
   check("the coverage floor defaults to 85", shellMoved.env.HOKO_COVERAGE_MIN === "85",
     shellMoved.env.HOKO_COVERAGE_MIN)
   process.env = before
+}
+
+// the git guard
+{
+  const bases = { integration: "develop", release: "main" }
+  const verdict = (command: string, branch = "feature/ABC-1-thing") => gitVerdict(command, branch, bases)
+  const level = (command: string, branch?: string) => verdict(command, branch)?.level ?? "allow"
+  check("a commit on develop is refused", level("git commit -m 'x'", "develop") === "refuse")
+  check("a commit on main is refused", level("git add -A && git commit -m 'x'", "main") === "refuse")
+  check("a commit on a working branch is allowed", level("git commit -m 'x'") === "allow")
+  check("an off-convention branch name is refused", level("git checkout -b wip-thing") === "refuse")
+  check("a ticketless name is allowed", level("git checkout -b feature/token-refresh origin/develop") === "allow")
+  check("a ticketed name is allowed", level("git checkout -b feature/ABC-123-token-refresh origin/develop") === "allow")
+  check("a feature cut from main is refused", level("git checkout -b feature/ABC-1-x origin/main") === "refuse")
+  check("a hotfix cut from develop is refused", level("git switch -c hotfix/ABC-1-x origin/develop") === "refuse")
+  check("a hotfix cut from main is allowed", level("git switch -c hotfix/ABC-1-x origin/main") === "allow")
+  check("a bare create off the right base is allowed",
+    level("git checkout -b feature/ABC-1-x", "develop") === "allow")
+  check("a bare create off the wrong base only warns",
+    level("git checkout -b feature/ABC-1-x", "main") === "warn",
+    JSON.stringify(verdict("git checkout -b feature/ABC-1-x", "main")))
+
+  let threw = ""
+  try {
+    await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "git checkout -b wip" } })
+  } catch (error: any) {
+    threw = String(error.message)
+  }
+  check("the hook refuses the bash tool's bad branch name", threw.includes("branch naming rule"), threw)
+  const before = toasts.length
+  await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "git checkout -b feature/ABC-1-x" } })
+  check("the hook toasts a warning instead of throwing",
+    toasts.length === before + 1 && toasts[toasts.length - 1].includes("was cut from"),
+    toasts[toasts.length - 1])
+  await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "ls -la" } })
+  await hooks["tool.execute.before"]({ tool: "write", args: { command: "git commit" } })
+  check("the hook lets everything else through", true)
 }
 
 console.log()

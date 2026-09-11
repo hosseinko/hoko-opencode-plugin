@@ -15,6 +15,9 @@
  *   - serves `hoko_execute`: approval files the plan in the journal and runs
  *     /hoko/execute-plan on the build agent in this same session
  *   - journals the run's closing report once the plan file turns Status: complete
+ *   - refuses git commands that break the branching rules: a commit on a protected
+ *     branch, a branch name off the convention, a branch cut from an explicitly wrong
+ *     base (a bare create off the wrong branch only toasts)
  *   - exposes the resolved settings, HOKO_ROOT and HOKO_PROMPT_FILE to every shell
  *
  * It has no dependencies: everything here is node's standard library, which is why the
@@ -59,6 +62,10 @@ const PLAN_BASH = ["date*", "mkdir -p*", "git rev-parse*", "ls*", "test -f*"]
 // above has nothing to act on until they are switched back on. Permission still denies
 // every path but the plan file.
 const PLAN_TOOLS = { write: true, edit: true, bash: true, hoko_execute: true }
+const PROTECTED_BRANCHES = ["main", "master", "staging", "develop"]
+const BRANCH_NAME = /^(feature|bugfix|hotfix|release)\/(?:[A-Z][A-Z0-9]*-\d+-)?[a-z0-9]+(?:-[a-z0-9]+)*$/
+const GIT_CREATE = /\bgit\s+(?:checkout\s+-b|switch\s+-c)\s+(\S+)(?:\s+(\S+))?/
+const GIT_COMMIT = /\bgit\s+(?:-\S+\s+)*commit\b/
 
 const MODEL_ENV: Record<string, string> = {
   plan: "HOKO_PLAN_MODEL",
@@ -186,6 +193,48 @@ function pick(data: Record<string, any>, allowed: Set<string>) {
   return Object.fromEntries(Object.entries(data).filter(([key]) => allowed.has(key)))
 }
 
+/**
+ * What to do about a git command: refuse it, warn about it, or nothing. The branching
+ * rules in instructions/hoko.md say this in prose; a model can talk itself past prose.
+ *
+ * A branch created without an explicit start point only warns — stacking a branch on the
+ * one you are standing on is sometimes what you meant.
+ */
+export function gitVerdict(
+  command: string,
+  branch: string,
+  bases: { integration: string; release: string },
+): { level: "refuse" | "warn"; message: string } | undefined {
+  const create = command.match(GIT_CREATE)
+  if (create) {
+    const [, name, from] = create
+    if (!BRANCH_NAME.test(name)) {
+      return {
+        level: "refuse",
+        message: `"${name}" does not match the branch naming rule. Use <feature|bugfix|hotfix|release>/<TICKET-><slug>, e.g. feature/ABC-123-token-refresh.`,
+      }
+    }
+    const want = name.startsWith("hotfix/") ? bases.release : bases.integration
+    const start = (from ?? branch).replace(/^origin\//, "")
+    if (start === want) return
+    return from
+      ? {
+          level: "refuse",
+          message: `${name} is cut from ${want}, not ${start}. Run: git fetch origin && git checkout -b ${name} origin/${want}`,
+        }
+      : {
+          level: "warn",
+          message: `${name} was cut from ${start}, not ${want}.`,
+        }
+  }
+  if (GIT_COMMIT.test(command) && PROTECTED_BRANCHES.includes(branch)) {
+    return {
+      level: "refuse",
+      message: `${branch} is protected — never commit to it. Branch first: git fetch origin && git checkout -b <feature|bugfix|hotfix|release>/<slug> origin/${bases.integration}`,
+    }
+  }
+}
+
 /** Per-session scratch: `.prompt` and `.project` hold the captured prompt, `.entry` the
  *  journal entry opened for the running cycle, `.handoff` a plan waiting for build. */
 function state(sessionID: string, suffix: string) {
@@ -240,6 +289,23 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
   const project = worktree || directory || process.cwd()
   const plansDir = env.HOKO_PLANS_DIR
   const journaling = Boolean(env.HOKO_JOURNAL_PATH)
+
+  const git = (...args: string[]) => {
+    try {
+      return execFileSync("git", args, { cwd: project, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()
+    } catch {
+      return ""
+    }
+  }
+
+  /** Which real branches play the `develop` and `main` roles in this repository. */
+  const baseBranches = () => {
+    const has = (name: string) =>
+      Boolean(git("rev-parse", "--verify", "--quiet", name) || git("rev-parse", "--verify", "--quiet", `origin/${name}`))
+    const fallback = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").replace(/^origin\//, "")
+    const release = has("main") ? "main" : has("master") ? "master" : fallback || "main"
+    return { release, integration: env.HOKO_BASE_BRANCH || (has("develop") ? "develop" : release) }
+  }
 
   const capture = (sessionID: string, text: string) => {
     const anchor = state(sessionID, ".prompt")
@@ -451,6 +517,16 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
       if (!read(due)) return
       fs.rmSync(due, { force: true })
       await fileReport(sessionID)
+    },
+
+    "tool.execute.before": async (input: { tool: string }, output: { args: any }) => {
+      if (input.tool !== "bash") return
+      const command = String(output?.args?.command ?? "")
+      if (!/\bgit\b/.test(command)) return
+      const verdict = gitVerdict(command, git("rev-parse", "--abbrev-ref", "HEAD"), baseBranches())
+      if (!verdict) return
+      if (verdict.level === "refuse") throw new Error(verdict.message)
+      toast(verdict.message, "info")
     },
 
     "tool.execute.after": async (input: { tool: string; sessionID: string; args: any }) => {

@@ -20,6 +20,12 @@ description: >-
 > `res/schema/json/<project>/` with `$ref`'d components, `swagger.yml`, versioned and
 > path-grouped named routes with middleware on the group). Both are opt-in by language:
 > ignore them on a diff that is not PHP.
+>
+> **TypeScript/React projects** have `hoko-senior-frontend-developer` (feature-first
+> structure with one-way imports, the `schemas` / `endpoints` / `queries` API layer,
+> composition over boolean prop flags, server state left in the query cache, and the
+> list of hacks that are never the fix). Same deal: ignore it on a diff that is not
+> frontend.
 
 Transform code reviews from gatekeeping to knowledge sharing through constructive feedback, systematic analysis, and collaborative improvement.
 

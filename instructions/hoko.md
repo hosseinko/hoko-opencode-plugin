@@ -3,6 +3,34 @@
 These hold in every session and on every agent, with or without a skill loaded, in a
 plan run or in plain build-mode chat.
 
+## Branching
+
+`main`, `master`, `staging` and `develop` are protected: never commit to them, and never
+cut a branch from whatever happens to be checked out. Every branch starts from an
+explicit, freshly fetched base:
+
+| Branch     | Cut from  | Lands as                                    |
+| ---------- | --------- | ------------------------------------------- |
+| `feature/` | `develop` | PR → `develop`                              |
+| `bugfix/`  | `develop` | PR → `develop`                              |
+| `hotfix/`  | `main`    | PR → `main`, then a second PR → `develop`   |
+| `release/` | `develop` | PR → `main`, then a second PR → `develop`   |
+
+```bash
+git fetch origin && git checkout -b <name> origin/<base>
+```
+
+Names are `<type>/<TICKET-><slug>`: `feature/ABC-123-token-refresh`, or
+`feature/token-refresh` when the change has no ticket. Lowercase, hyphens only, the
+ticket key uppercase and verbatim and never invented, the slug at most five words naming
+the change rather than the files. The key comes from the plan's `Ticket:` line, or from
+the request when there is no plan; from there the commit trailer and the PR title are
+read back off the branch name, so the branch is where a ticket enters the workflow.
+
+A repository without `develop` has no integration branch separate from its default one:
+the default branch takes `develop`'s place in the table and `hotfix/` has nothing to
+back-merge into. `HOKO_BASE_BRANCH` overrides which branch plays the `develop` role.
+
 ## Git stops at the commit
 
 - **Never merge.** No `git merge`, `git rebase` or fast-forward that moves `main`,

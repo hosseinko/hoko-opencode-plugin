@@ -26,7 +26,7 @@ Check `HOKO_COMMIT_AUTO` (the plugin exports `hoko.env` into every shell, so
   the short SHA so the user can see what landed.
 
 Two things auto mode never waives: the protected-branch check (step 2 — a protected
-branch still stops and asks for a branch name) and the quality gate (step 4 — a red gate
+branch still stops and confirms the new branch) and the quality gate (step 4 — a red gate
 is never committed through). `HOKO_COMMIT_AUTO` never authorises a push.
 
 ## Commit messages
@@ -50,8 +50,10 @@ Structure:
    obvious from the change itself.
 4. **Ticket reference** — if the current branch name contains a ticket key (a
    Jira-style key: uppercase letters, a hyphen, then digits, e.g. `ABC-123`),
-   add a blank line and the key on its own as the last line — no label. If the
-   branch has no such key, omit it entirely — never invent one.
+   add a blank line and the key on its own as the last line — no label. The branch name
+   is the only source for this: a key in the plan or the conversation that never made it
+   into the branch name does not go in the message. If the branch has no such key, omit
+   it entirely — never invent one.
 
 Example (on branch `feature/ABC-123-token-refresh`):
 
@@ -69,14 +71,22 @@ ABC-123
 
 1. Run `git status` and `git diff` (staged + unstaged) to see exactly what changed.
 2. **Check the current branch.** If it is a protected branch (`main`, `master`,
-   `staging`, or `develop`), never commit directly to it — create a new branch
-   first:
-   - Ask the user what the new branch should be called.
-   - If they give only a prefix ending in `/` (e.g. `feature/`, `bugfix/`), append
-     a short, meaningful slug derived from the staged changes, then show the full
-     name and ask them to confirm it or supply a different one before creating it.
-   - If they give a complete name, use it as-is.
-   - Create it with `git checkout -b <name>`, then continue.
+   `staging`, or `develop`), never commit directly to it — create a new branch first,
+   under the branching rules in the standing instructions. Propose the name rather than
+   asking for one:
+   - **Type** from what the change is: a defect in released code → `hotfix/`, any other
+     defect → `bugfix/`, cutting a release → `release/`, anything else → `feature/`.
+   - **Ticket key** — the plan's `Ticket:` line, or the key in the user's request when
+     there is no plan. Uppercase and verbatim. Neither carries one, the branch has no
+     key — never invent one, and never lift one from an unrelated file or an old branch.
+   - **Slug** of at most five words from the diff, lowercase and hyphenated, naming the
+     change rather than the files.
+   - Show the full name and the base it will be cut from (`develop` for everything but
+     `hotfix/`, which is cut from `main`) and get a yes before creating it. The user can
+     hand you a complete name instead, and it is used as-is. `HOKO_COMMIT_AUTO=1` does
+     not waive this confirmation.
+   - Create it with `git fetch origin && git checkout -b <name> origin/<base>`, then
+     continue.
 3. Group unrelated changes into separate commits — don't bundle a refactor with a fix.
 4. **Run the quality gate.** Invoke the `hoko-quality-assurance` skill and follow it:
    find the project's own commands, then lint, then static analysis, then tests with

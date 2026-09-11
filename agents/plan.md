@@ -102,6 +102,8 @@ neither written the file nor said that you could not.
 Use this structure, omitting any section that would be empty:
 
 ```
+Ticket: <KEY>        — the issue key the request carried, e.g. ABC-123; omit the line
+                        entirely when it carried none
 ## Goal
 ## Non-goals
 ## Decisions          — every answer from the grilling that constrains implementation
@@ -123,7 +125,10 @@ Use this structure, omitting any section that would be empty:
 
 Write it for a stranger. A subagent with **no access to this conversation** will
 implement from that file alone, so every decision you reached must be written down
-rather than assumed. The *Test conventions* section is load-bearing: the subagent runs
+rather than assumed. The `Ticket:` line is part of that: the key is copied verbatim from
+the request — never invented, never guessed from a branch or a file — and it is what the
+run's branch name, commit trailers and PR title are built from. No key in the request,
+no line. The *Test conventions* section is load-bearing: the subagent runs
 exactly the command you record there.
 
 The **Requirements** section states the change's observable behaviour as numbered

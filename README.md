@@ -72,7 +72,7 @@ cp hoko.env.example ~/.config/opencode/hoko.env
 Uncomment what you want — the table under [Configuration](#configuration) says what each
 variable does. Everything has a working default: leave the file untouched and every
 agent runs on the session's model, plans go to `.ai/plans/`, the coverage floor is 85%, a
-PR targets the remote's default branch, and nothing is journaled.
+PR targets `develop` where the repository has one, and nothing is journaled.
 
 Keeping the file at `~/.config/opencode/hoko.env` rather than in the repo means a
 `git pull` never touches your settings.
@@ -160,7 +160,7 @@ The plugin reads, in increasing order of precedence: `hoko.env` in this repo,
 | `HOKO_PLANS_DIR` | where plans are written, relative to the repo root | `.ai/plans` |
 | `HOKO_COVERAGE_MIN` | the full gate's coverage floor, in percent | `85` |
 | `HOKO_COMMIT_AUTO` | `1` = `hoko-commit` commits without confirming the message | off |
-| `HOKO_BASE_BRANCH` | branch a pull request targets | the remote's default branch |
+| `HOKO_BASE_BRANCH` | branch playing the `develop` role — what features branch from and target | `develop`, else the remote's default branch |
 | `HOKO_PR_AUTO` | `1` = `hoko-pull-request` pushes and opens the PR without confirming | off |
 
 Models are `provider/model-id`; `opencode models` lists them.
@@ -297,9 +297,9 @@ list is one file to edit.
 
 A green gate is not an integration. Before the plan file turns complete, the run invokes
 `hoko-pull-request`: if `origin` is GitHub it pushes the branch and opens a pull request
-against `HOKO_BASE_BRANCH` — or the remote's own default branch when that is unset — with
-the run's closing report as the PR body, so the PR and the journal entry say the same
-thing. On any other remote, or none, the branch is simply left for you to integrate.
+against the base the branch prefix calls for — `develop` for `feature/` and `bugfix/`,
+the release branch plus a back-merge PR for `hotfix/` and `release/` — with the run's
+closing report as the PR body, so the PR and the journal entry say the same thing. On any other remote, or none, the branch is simply left for you to integrate.
 Nothing in the workflow merges: no `git merge` into the base branch, no `gh pr merge`, no
 auto-merge. Without `HOKO_PR_AUTO=1` the push waits for you to confirm the base, branch
 and title; `/hoko/pr` runs the same skill on its own for a branch outside a plan run.
@@ -402,8 +402,14 @@ The parts most likely to want changing:
 
 - **Commit and PR conventions** — `skills/hoko-commit/SKILL.md` carries the message
   format (why-focused summary, one bullet per change, a trailing Jira-style key when the
-  branch name has one) and the protected-branch list. `skills/hoko-pull-request/SKILL.md`
-  carries the PR title and body rules.
+  branch name has one). `skills/hoko-pull-request/SKILL.md` carries the PR title and body
+  rules.
+- **The branching rules** — `instructions/hoko.md` states them (protected branches, which
+  base each prefix is cut from, the `<type>/<TICKET-><slug>` naming); `gitVerdict` in
+  `plugin/hoko.ts` enforces them, refusing the bash tool a commit on a protected branch, a
+  name off the convention, or a branch cut from an explicitly wrong base. A branch created
+  without a start point is only toasted, so stacking one branch on another still works.
+  Change both together, or the guard contradicts the prose.
 - **The gates** — `skills/hoko-quality-assurance/SKILL.md` is the whole gate in one
   file, tool-agnostic. Its hard rules (no suppression entries, no inline ignore
   comments, coverage only goes up) are the opinionated part.

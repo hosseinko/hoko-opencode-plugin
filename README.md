@@ -10,8 +10,8 @@ deliberately replaces opencode's own plan agent.
 
 It is stack-agnostic: the gates are expressed as *lint → static analysis → tests with
 coverage* and each agent finds the project's own commands rather than assuming tool
-names. Three optional skills carry PHP-specific conventions and trigger only on PHP
-diffs.
+names. Optional skills carry stack conventions — PHP, and TypeScript/React — and trigger
+only on a diff in that stack.
 
 ## Install
 
@@ -348,6 +348,8 @@ skills/
   hoko-api-developer/     PHP only: JSON Schema + swagger.yml + versioned routes
   hoko-senior-php-developer/ PHP only: no-comment self-explanatory code, objects over
                           arrays, typed collections, mirrored test tree
+  hoko-senior-frontend-developer/ TS/React only: feature-first structure, schemas +
+                          endpoints + queries API layer, composition over prop flags
 instructions/
   hoko.md                 git stops at the commit: never merge, never push, PR instead;
                           and plan-run delegation is pre-approved by the plan approval
@@ -402,15 +404,15 @@ The parts most likely to want changing:
   turn. `hoko.md` is the git and delegation policy; `communication.md` is response style
   and code-comment policy, and is the most personal file here — replace it with your own
   or delete it.
-- **Language conventions** — the two `*-php-*` skills are examples of the shape: a
-  narrowly-scoped skill whose description names the language, so a model only loads it
-  on a diff in that language. Copy one for your own stack, or delete them.
+- **Language conventions** — the `*-php-*` and `*-frontend-*` skills are examples of the
+  shape: a narrowly-scoped skill whose description names the stack, so a model only loads
+  it on a diff in that stack. Copy one for your own stack, or delete them.
 
-### PHP-specific skills
+### Stack-specific skills
 
-Three skills carry stack conventions and trigger on their own descriptions rather than
-through a command. Only the first is language-neutral; the other two are PHP and stay
-out of the way on any other diff.
+Four skills carry stack conventions and trigger on their own descriptions rather than
+through a command. Only the first is stack-neutral; the rest stay out of the way on a
+diff that is not theirs.
 
 - **`hoko-quality-assurance`** — the gate: lint, then the project's static analyser with
   no suppressions and no inline ignore comments, then tests with coverage above
@@ -427,12 +429,19 @@ out of the way on any other diff.
   arrays, PSR naming (`Interface` suffix), collections built per element type that
   reject foreign types, and a `tests/Unit` tree that mirrors the application tree path
   for path with feature tests grouped by feature.
+- **`hoko-senior-frontend-developer`** (TypeScript/React) — feature-first structure with
+  imports flowing `shared → features → app` and no cross-feature imports; an API layer
+  split by role into `*.schemas.ts`, `*.endpoints.ts` and `*.queries.ts` so one endpoint
+  has one obvious home and no URL is written twice; components built by composition and
+  slots instead of boolean prop flags; server state left in the query cache; and a named
+  list of hacks — `setTimeout` to wait for a render, `any` to silence a type, `!important`
+  — that are never the fix.
 
-All three are framework-agnostic within their language: they detect the stack and test
+All four are framework-agnostic within their stack: they detect the framework and test
 tooling from the project and express the rules in its idioms. `hoko-commit` invokes the
 quality gate before drafting a message, and `hoko-code-review` points the reviewer at the
-other two on a PHP diff, so a plan run picks them up at both the review and the commit
-step. Inside a plan run `hoko-commit` holds to the fast gate the reviewer already ran
+PHP pair on a PHP diff and at the frontend skill on a TypeScript/React one, so a plan run
+picks them up at both the review and the commit step. Inside a plan run `hoko-commit` holds to the fast gate the reviewer already ran
 instead of starting the full one; every other commit runs all three.
 
 ## Research

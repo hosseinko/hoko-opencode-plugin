@@ -65,6 +65,13 @@ permission:
     "dotnet test*": allow
     "dotnet build*": allow
     "dotnet format*": allow
+    "docker *": ask
+    "docker-compose *": ask
+    "docker exec *": allow
+    "docker compose exec *": allow
+    "docker compose run *": allow
+    "docker-compose exec *": allow
+    "docker-compose run *": allow
   skill: allow
 ---
 
@@ -104,6 +111,12 @@ block (`composer.json`, `package.json`, `pyproject.toml`, `Cargo.toml`, `Makefil
 `justfile`), the analyser's config file, and the CI workflow. If your bash permissions
 refuse the command the project defines, say which command you could not run rather than
 substituting a different one.
+
+**When the project runs its checks in a container**, start the command with `docker` —
+`docker exec <container> <check>` or `docker compose exec -T <service> <check>`. Your
+permissions match from the first token, so a command prefixed with anything else
+(`cd api && docker …`, `sh -c "docker …"`) is refused. Never pass `-it` or `-t`: there
+is no terminal here and the command will hang.
 
 - **Static analysis.** The project's type checker or static analyser — PHPStan or
   Psalm, `tsc`, mypy or pyright, `go vet`, `cargo clippy`, whatever it configures — run

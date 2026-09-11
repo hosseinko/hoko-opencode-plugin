@@ -94,7 +94,8 @@ plan already states.
 
 Work the unticked steps in checklist order, **one step per cycle**.
 
-1. **State** the step number, title, and what "done" means — one line. Mark that
+1. **State** the step number, title, and what "done" means — one line, naming the
+   requirement ids on the step's `Satisfies:` line when it has them. Mark that
    step's todo `in_progress` with `todowrite` before you delegate — exactly one todo is
    `in_progress` at a time.
 

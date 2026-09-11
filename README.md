@@ -220,6 +220,17 @@ at a time (the `grill-me` skill), reads the code, then writes
 approve. Questions and exploration still get plain answers — the protocol starts when
 you ask for work. A task too small to plan gets handed back instead of a plan file.
 
+The plan carries a `## Requirements` section: the change's observable behaviour as
+numbered `R<N>` lines in EARS form — *While `<state>`, when `<trigger>`, the
+`<component>` shall `<response>`* — one behaviour per line. The grilling is shaped to
+fill the five EARS buckets, so a failure path nobody asked about shows up as an empty
+one rather than as silence. Each step then claims the ids it delivers on a `Satisfies:`
+line, and that line is what the executor builds to, what the reviewer checks the diff
+against — a requirement claimed but not delivered blocks the commit, behaviour no
+requirement asks for is scope creep — and what the final gate reports coverage against.
+A change with no observable behaviour, a rename or a pure refactor, states no
+requirements and says so.
+
 The plan agent writes that file through one permission exception the plugin adds, applied
 even if you keep a `plan` block of your own in `opencode.json`: `edit` is denied except
 the plans directory (spelled relative, `*/`-prefixed and `**/`-prefixed, since opencode

@@ -13,14 +13,18 @@ You have no access to the conversation that delegated this to you. Everything yo
 need is in the plan file and the codebase. If the prompt did not give you an
 absolute plan path and a step number, say so and stop.
 
-1. Read the whole plan file — Goal, Non-goals, Decisions, Test conventions — then
-   the step you were assigned. The Decisions section is binding: it records choices
-   already made and closed, not suggestions.
+1. Read the whole plan file — Goal, Non-goals, Decisions, Requirements, Test
+   conventions — then the step you were assigned. The Decisions section is binding:
+   it records choices already made and closed, not suggestions. The requirement ids
+   on your step's `Satisfies:` line are what done means — deliver those, and leave a
+   requirement belonging to another step to that step.
 2. Implement only that step, following the patterns already in the codebase. Do not
    start other steps, do not expand scope, do not refactor opportunistically. Add no
    comments that restate the code; comment only non-obvious *why*.
 3. Write or update tests per the plan's *Test conventions*, matching a neighbouring
-   test's structure and assertion style. Run the suite plus lint/typecheck using
+   test's structure and assertion style. Every requirement your step claims needs a
+   test that fails without your change, named after the requirement's own clause so
+   the behaviour is readable from the test list. Run the suite plus lint/typecheck using
    exactly the commands the plan records. Fix until green. Never weaken, skip, or
    delete a test to make it pass.
 4. Do **not** commit. Do **not** edit the plan file. Leave the work in the working
@@ -34,5 +38,7 @@ Return a compact report and nothing else:
 
 - **Files changed:** paths only
 - **What you did:** 2–4 lines
+- **Requirements:** each id from the step's `Satisfies:` line and the test covering it,
+  or `none — internal`
 - **Tests:** exact commands run and their result
 - **Deviations / blockers:** anything you could not do as written, or none

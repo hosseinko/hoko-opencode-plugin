@@ -89,8 +89,8 @@ cheapest checks — static analysis and the unit tests — behind the same call.
 
 ## What to do
 
-1. Read the plan file — Goal, Non-goals, Decisions, and the step you are reviewing.
-   The Decisions section records choices already made and closed; a diff that follows
+1. Read the plan file — Goal, Non-goals, Decisions, Requirements, and the step you
+   are reviewing. The Decisions section records choices already made and closed; a diff that follows
    a Decision is correct even if you would have chosen differently. Say so and move on.
 2. Run the diff command. Read the whole diff.
 3. Invoke the `hoko-code-review` skill and review the diff by it — its phases, its
@@ -145,6 +145,11 @@ from the plan rather than the code:
 
 - **Scope.** Does the diff do what the step says, and nothing more? Work belonging to
   a later step, opportunistic refactors, and drive-by renames are findings.
+- **Requirements.** Take the ids on the step's `Satisfies:` line and check each one
+  against the diff: the behaviour is there, and a test fails without it. A requirement
+  claimed but not delivered is a `[blocking]` finding. Behaviour the diff adds that no
+  requirement asks for is scope creep and is reported as such. A step claiming no ids is
+  internal plumbing, judged on scope alone.
 - **Decisions.** A diff that contradicts a closed Decision is a finding; one that
   follows it is not, whatever you would have chosen.
 - **Risks.** If the step listed a mitigation, confirm it is actually present in the
@@ -165,8 +170,9 @@ Then two lines the skill does not ask for:
 
 - **Fast gate:** the static-analysis command and its result, the unit-test command and
   its result — or `not run` and why.
-- **Verdict:** `clean`, `minor findings`, or `do not commit`, and whether the diff
-  stayed inside the step's stated scope. A red fast gate is always `do not commit`.
+- **Verdict:** `clean`, `minor findings`, or `do not commit`; whether the diff stayed
+  inside the step's stated scope; and whether every requirement the step claims is
+  delivered and covered. A red fast gate is always `do not commit`.
 
 You do not fix anything. You do not edit files, and you do not commit. Read, run the
 two checks, report.

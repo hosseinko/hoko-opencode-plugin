@@ -11,6 +11,11 @@ permission:
     "git show*": allow
     "git status*": allow
     "git rev-parse*": allow
+    # rtk (opencode-rtk plugin) rewrites these before permission checks run.
+    "rtk git diff*": allow
+    "rtk git log*": allow
+    "rtk git show*": allow
+    "rtk git status*": allow
     "make *": allow
     "just *": allow
     "task *": allow

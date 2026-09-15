@@ -73,7 +73,10 @@ has got, so it survives a compaction or a session restart. Before starting:
 
 Then mirror the checklist into the session todo list with `todowrite`: one todo per
 unticked step, `<N>. <title>`, all `pending`. Keep the two in sync for the rest of the
-run — the todo list is what I watch live, the checklist is what survives the session.
+run — the todo list is what I watch live, the checklist is what survives the session. It
+is session state: a compaction or a restart can lose it, and the plan file's `## Progress`
+is what the run is rebuilt from, so a tick in the todo list is never the record of a
+finished step.
 
 ## Division of labour
 
@@ -136,6 +139,19 @@ Work the unticked steps in checklist order, **one step per cycle**.
    `git diff` or `git diff HEAD~1`. It reads the diff in its own context, reviews it
    with the `hoko-code-review` skill, runs the fast gate — static analysis and the unit
    tests, nothing else — and reports back with both.
+
+   Pick the reviewer deliberately per step — the agent's own default is the cheap one,
+   and a review is the run's most expensive repeated call. When any of these holds,
+   launch `hoko-code-reviewer-deep` (`subagent_type: hoko-code-reviewer-deep`) instead,
+   and say in one clause which criterion did:
+
+   - the diff is large — roughly 400 changed lines or more, or more than ten files
+   - it touches authentication, authorization, secrets, money, personal data, a database
+     migration, concurrency, or a public contract other code depends on
+   - the step carries a `Risks:` line
+   - the previous step's review came back `do not commit`
+
+   When in doubt, escalate: a missed defect costs more than the review did.
 
    Its fast gate is the step's only verification. A red analyser or a failing unit test
    comes back as a finding and is handled like any other finding; you do not re-run
@@ -209,6 +225,11 @@ number and its direction, one line per fix the QA subagent made with its commit
 subject, and the PR URL or the reason there is none — because that report is what gets
 journaled. A fix that happened but is not in
 the report is a fix nobody will find again.
+
+If the run changed behaviour a spec in `specs/` describes, that spec is now wrong until
+someone fixes it: say which file and which requirement ids, and offer `hoko-feature-specs`
+to update it. It is a separate, reviewed commit — never folded into a step commit, and
+never rewritten silently as part of the gate.
 
 That report is journaled for you. Setting `Status: complete` is the signal: the plugin
 takes the last thing you post in this run and appends it to the journal entry it opened

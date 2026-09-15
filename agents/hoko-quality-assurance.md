@@ -37,8 +37,9 @@ limits:
   nobody wrote — no: that is a blocker to report, not a fix to make.
 - The skill's hard rules bind you too. Never add a suppression entry to the analyser's
   configuration, regenerate a baseline, lower its level or strictness, add an inline
-  ignore comment, lower a coverage threshold, or skip, delete or weaken a test to get
-  green. If a gate cannot pass without one of those, stop and report it as a blocker.
+  ignore comment, lower a coverage threshold, hand-edit `.ai/coverage-baseline`, or
+  skip, delete or weaken a test to get green. If a gate cannot pass without one of those,
+  stop and report it as a blocker.
 - Format-only changes stay out of behaviour changes: if lint rewrites files, keep that
   as its own commit.
 - Re-run a gate after fixing it, and re-run the ones after it. A fix in lint that
@@ -53,8 +54,11 @@ accurate rather than tidy:
 
 - **Lint:** exact command, result.
 - **Static analysis:** exact command, the level or strictness it ran at, result.
-- **Tests:** exact command, result, coverage number and which direction it moved. If
-  the project has no coverage tooling, say that — never a number you did not measure.
+- **Tests:** exact command, result, coverage number, the mode it was graded in
+  (`strict` / `legacy` / `absent`) and which direction it moved. In legacy mode: the
+  baseline compared against, whether `.ai/coverage-baseline` was created or updated,
+  and any line in the diff left uncovered. If the project has no coverage tooling, say
+  that — never a number you did not measure.
 - **Fixes made:** one line per fix — what was red, what you changed, which files, and
   the commit subject and short SHA. `none` if you changed nothing. Never fold a fix
   into the gate line as though it had passed on its own.

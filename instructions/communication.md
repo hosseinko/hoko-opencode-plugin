@@ -90,6 +90,11 @@ Comments are the exception, not the default.
 - Prefer a better name or an extracted function over a comment.
 - If you change code that an existing comment describes, update or delete that comment.
 
+Imports name what the file borrows, nothing else.
+
+- No import for a symbol the language already resolves without one: built-in functions, constants, and globals are called directly.
+- No alias that does not resolve a real collision, and no import left unused after an edit.
+
 Keep the implementation as small as the requirement.
 
 - No defensive branches for inputs the caller cannot produce.

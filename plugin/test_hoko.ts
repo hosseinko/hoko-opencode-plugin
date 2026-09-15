@@ -24,6 +24,7 @@ process.env.HOKO_JOURNAL_PATH = journalRoot
 // The plan model must not leak in from the developer's own hoko.env.
 delete process.env.HOKO_PLAN_MODEL
 process.env.HOKO_BUILD_MODEL = "anthropic/claude-test"
+process.env.HOKO_REVIEWER_DEEP_MODEL = "anthropic/claude-deep-test"
 
 const { HokoPlugin, gitVerdict } = await import("./hoko.ts")
 
@@ -179,6 +180,9 @@ check("an agent the user configured is left alone", !cfg.agent["hoko-plan-execut
   JSON.stringify(Object.keys(cfg.agent["hoko-plan-executor"])))
 check("the build agent takes its model from the environment",
   cfg.agent.build?.model === "anthropic/claude-test", JSON.stringify(cfg.agent.build))
+check("with HOKO_REVIEWER_DEEP_MODEL set, hoko-code-reviewer-deep runs on that model",
+  cfg.agent["hoko-code-reviewer-deep"]?.model === "anthropic/claude-deep-test",
+  JSON.stringify(cfg.agent["hoko-code-reviewer-deep"]))
 check("an unset model leaves the agent alone", !cfg.agent.plan.model, JSON.stringify(cfg.agent.plan.model))
 check("the standing instructions are registered",
   (cfg.instructions ?? []).some((file: string) => file.endsWith("/instructions/hoko.md")),

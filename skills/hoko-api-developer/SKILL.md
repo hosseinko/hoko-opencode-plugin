@@ -1,9 +1,11 @@
 ---
 name: hoko-api-developer
 description: >-
-  API design rules for PHP projects — a JSON Schema per JSON payload under res/schema/json/<project>/
-  with shared components reused by $ref, a swagger.yml at the project root that references them, and
-  routes that are versioned, grouped by shared path, named, and carry middleware on the group.
+  API design rules — REST conventions for URLs, methods, status codes, error shape, pagination,
+  filtering and versioning in any stack, plus the PHP project layout: a JSON Schema per JSON payload
+  under res/schema/json/<project>/ with shared components reused by $ref, a swagger.yml at the project
+  root that references them, and routes that are versioned, grouped by shared path, named, and carry
+  middleware on the group.
   Use when adding, changing or reviewing an HTTP API endpoint, a request payload, a route file, or the
   OpenAPI/Swagger definition.
 ---
@@ -17,6 +19,12 @@ route name is unfinished, not "to be tidied later".
 Detect the framework and router from the project (`composer.json`, the route files,
 existing endpoints) and express these rules in that project's idioms. Match the
 conventions already in the repo where they do not contradict what follows.
+
+Sections 1–5 below are the PHP project layout — where the schema lives, what the router
+looks like. The contract itself — URL shape, method, status codes, error envelope,
+pagination, filtering, versioning, rate limiting — is stack-agnostic and lives in
+[REST conventions](reference/rest-conventions.md). Read it when designing or reviewing an
+endpoint in any language; apply sections 1–5 on top of it for a PHP project.
 
 ## 1. A JSON Schema for every JSON payload
 
@@ -110,3 +118,5 @@ Before you call an endpoint finished:
 - [ ] The route sits inside a version group (`v1` or later) and inside a path group.
 - [ ] Middleware, prefix and name prefix are set on the group, not repeated per route.
 - [ ] The route has a name, and the code refers to it by that name.
+- [ ] The contract passes the endpoint review checklist in
+      [REST conventions](reference/rest-conventions.md).

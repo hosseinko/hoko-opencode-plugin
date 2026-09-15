@@ -140,6 +140,19 @@ Work the unticked steps in checklist order, **one step per cycle**.
    with the `hoko-code-review` skill, runs the fast gate — static analysis and the unit
    tests, nothing else — and reports back with both.
 
+   Pick the reviewer deliberately per step — the agent's own default is the cheap one,
+   and a review is the run's most expensive repeated call. When any of these holds,
+   launch `hoko-code-reviewer-deep` (`subagent_type: hoko-code-reviewer-deep`) instead,
+   and say in one clause which criterion did:
+
+   - the diff is large — roughly 400 changed lines or more, or more than ten files
+   - it touches authentication, authorization, secrets, money, personal data, a database
+     migration, concurrency, or a public contract other code depends on
+   - the step carries a `Risks:` line
+   - the previous step's review came back `do not commit`
+
+   When in doubt, escalate: a missed defect costs more than the review did.
+
    Its fast gate is the step's only verification. A red analyser or a failing unit test
    comes back as a finding and is handled like any other finding; you do not re-run
    either yourself to confirm it.

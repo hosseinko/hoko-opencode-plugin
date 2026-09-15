@@ -86,10 +86,12 @@ files, `hoko.env`, `opencode.json` — needs a restart, not a new session.
 
 ```sh
 opencode agent list          # plan, hoko-plan-executor, hoko-code-reviewer,
-                             #   hoko-quality-assurance, hoko-researcher
+                             #   hoko-code-reviewer-deep, hoko-quality-assurance,
+                             #   hoko-researcher
 opencode debug skill         # grill-me, hoko-commit, hoko-pull-request, hoko-code-review,
                              #   hoko-api-developer, hoko-quality-assurance,
-                             #   hoko-senior-php-developer
+                             #   hoko-senior-php-developer, hoko-senior-frontend-developer,
+                             #   hoko-feature-specs
 opencode debug config        # the /hoko commands, and the model each agent resolved to
 opencode debug agent plan    # the important one — see below
 ```
@@ -154,6 +156,7 @@ The plugin reads, in increasing order of precedence: `hoko.env` in this repo,
 | `HOKO_BUILD_MODEL` | model for the `build` agent — the conductor of a plan run | the session's model |
 | `HOKO_EXECUTOR_MODEL` | model for `hoko-plan-executor` | the session's model |
 | `HOKO_REVIEWER_MODEL` | model for `hoko-code-reviewer` | the session's model |
+| `HOKO_REVIEWER_DEEP_MODEL` | model for `hoko-code-reviewer-deep`, the reviewer the conductor escalates to for a large or risky diff | the session's model |
 | `HOKO_QA_MODEL` | model for `hoko-quality-assurance` | the session's model |
 | `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` | the session's model |
 | `HOKO_JOURNAL_PATH` | journal root | **unset — journaling is off** |
@@ -346,6 +349,8 @@ agents/
   hoko-researcher.md      subagent; external research, writes .ai/research/<stamp>-<slug>.md
   hoko-code-reviewer.md   subagent; reviews a step's diff via hoko-code-review,
                           plus the fast gate: static analysis + unit tests
+  hoko-code-reviewer-deep.md subagent; the escalated reviewer for a large or risky
+                          diff, on HOKO_REVIEWER_DEEP_MODEL
   hoko-quality-assurance.md subagent; the end-of-run full gate, fixes and commits
 commands/
   grill-me.md
@@ -356,6 +361,9 @@ skills/
   hoko-pull-request/      end of a run: push and open a PR on GitHub
   hoko-code-review/       review standards + per-language reference guides
   hoko-quality-assurance/ lint → static analysis → tests, any stack
+  hoko-feature-specs/     specs/<capability>.md — EARS requirements, selective
+                          Gherkin criteria, design notes; written from intent or
+                          derived from existing code
   hoko-api-developer/     PHP only: JSON Schema + swagger.yml + versioned routes
   hoko-senior-php-developer/ PHP only: no-comment self-explanatory code, objects over
                           arrays, typed collections, mirrored test tree
@@ -427,15 +435,21 @@ The parts most likely to want changing:
 
 ### Stack-specific skills
 
-Four skills carry stack conventions and trigger on their own descriptions rather than
-through a command. Only the first is stack-neutral; the rest stay out of the way on a
-diff that is not theirs.
+Five skills trigger on their own descriptions rather than through a command. Two are
+stack-neutral — the quality gate and the spec writer; the other three carry stack
+conventions and stay out of the way on a diff that is not theirs.
 
 - **`hoko-quality-assurance`** — the gate: lint, then the project's static analyser with
   no suppressions and no inline ignore comments, then tests with coverage above
-  `HOKO_COVERAGE_MIN` and rising. It comes in two shapes — the fast gate (analyser +
-  unit tests) that the reviewer runs per step, and the full gate that runs once at the
-  end of a run or before a standalone commit.
+  `HOKO_COVERAGE_MIN` and rising — with the floor graded in one of three modes:
+  `strict` when the project meets it or has met it before, `legacy` when it never has
+  (held to its own gitignored `.ai/coverage-baseline` instead), or `absent` when there
+  is no suite or no coverage tooling. It comes in two shapes — the fast gate (analyser + unit tests)
+  that the reviewer runs per step, and the full gate that runs once at the end of a run
+  or before a standalone commit.
+- **`hoko-feature-specs`** — writes `specs/<capability>.md`: numbered EARS requirements,
+  selective Gherkin acceptance criteria and short design notes, from intent before the
+  code exists or derived from code that already runs.
 - **`hoko-api-developer`** (PHP) — every JSON payload gets a JSON Schema under
   `res/schema/json/<project>/`, with shared shapes extracted into `components/` and
   reused by `$ref`; a `swagger.yml` at the project root references those files instead of
@@ -454,11 +468,12 @@ diff that is not theirs.
   list of hacks — `setTimeout` to wait for a render, `any` to silence a type, `!important`
   — that are never the fix.
 
-All four are framework-agnostic within their stack: they detect the framework and test
-tooling from the project and express the rules in its idioms. `hoko-commit` invokes the
-quality gate before drafting a message, and `hoko-code-review` points the reviewer at the
-PHP pair on a PHP diff and at the frontend skill on a TypeScript/React one, so a plan run
-picks them up at both the review and the commit step. Inside a plan run `hoko-commit` holds to the fast gate the reviewer already ran
+The three stack skills are framework-agnostic within their stack: they detect the
+framework and test tooling from the project and express the rules in its idioms.
+`hoko-commit` invokes the quality gate before drafting a message, and `hoko-code-review`
+points the reviewer at the PHP pair on a PHP diff and at the frontend skill on a
+TypeScript/React one, so a plan run picks them up at both the review and the commit step.
+Inside a plan run `hoko-commit` holds to the fast gate the reviewer already ran
 instead of starting the full one; every other commit runs all three.
 
 ## Research

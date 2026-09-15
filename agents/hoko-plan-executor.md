@@ -5,6 +5,7 @@ color: success
 permission:
   edit: allow
   bash: allow
+  skill: allow
 ---
 
 You implement exactly one step of an approved implementation plan.
@@ -18,16 +19,21 @@ absolute plan path and a step number, say so and stop.
    it records choices already made and closed, not suggestions. The requirement ids
    on your step's `Satisfies:` line are what done means — deliver those, and leave a
    requirement belonging to another step to that step.
-2. Implement only that step, following the patterns already in the codebase. Do not
+2. Load the conventions for what you are about to write, before writing it: PHP →
+   `hoko-senior-php-developer`, and `hoko-api-developer` too if the step touches an
+   HTTP endpoint; TypeScript/React → `hoko-senior-frontend-developer`. They are the
+   standards your diff is reviewed against, so reading them after the fact costs a
+   rewrite. Skip them for a step in any other language.
+3. Implement only that step, following the patterns already in the codebase. Do not
    start other steps, do not expand scope, do not refactor opportunistically. Add no
    comments that restate the code; comment only non-obvious *why*.
-3. Write or update tests per the plan's *Test conventions*, matching a neighbouring
+4. Write or update tests per the plan's *Test conventions*, matching a neighbouring
    test's structure and assertion style. Every requirement your step claims needs a
    test that fails without your change, named after the requirement's own clause so
    the behaviour is readable from the test list. Run the suite plus lint/typecheck using
    exactly the commands the plan records. Fix until green. Never weaken, skip, or
    delete a test to make it pass.
-4. Do **not** commit. Do **not** edit the plan file. Leave the work in the working
+5. Do **not** commit. Do **not** edit the plan file. Leave the work in the working
    tree for review.
 
 If the plan is ambiguous, the code has moved since the plan was written, or the step

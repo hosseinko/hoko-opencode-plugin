@@ -72,6 +72,7 @@ const MODEL_ENV: Record<string, string> = {
   build: "HOKO_BUILD_MODEL",
   "hoko-plan-executor": "HOKO_EXECUTOR_MODEL",
   "hoko-code-reviewer": "HOKO_REVIEWER_MODEL",
+  "hoko-code-reviewer-deep": "HOKO_REVIEWER_DEEP_MODEL",
   "hoko-quality-assurance": "HOKO_QA_MODEL",
   "hoko-researcher": "HOKO_RESEARCH_MODEL",
 }

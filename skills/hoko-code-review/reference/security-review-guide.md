@@ -104,6 +104,41 @@ if (!filePath.startsWith(path.resolve('./uploads'))) {
 }
 ```
 
+### File Upload Validation
+
+```typescript
+// ❌ Trusting the client
+const ext = file.originalname.split('.').pop();
+fs.writeFileSync(`./uploads/${file.originalname}`, file.buffer);
+
+// ✅ Validate type, size and name; never trust the supplied filename
+const ALLOWED = new Map([
+  ['image/png', 'png'],
+  ['image/jpeg', 'jpg'],
+  ['application/pdf', 'pdf'],
+]);
+
+const sniffed = await fileTypeFromBuffer(file.buffer);   // read magic bytes
+if (!sniffed || !ALLOWED.has(sniffed.mime)) throw new BadRequest('unsupported_file_type');
+if (file.size > MAX_UPLOAD_BYTES) throw new BadRequest('file_too_large');
+
+const name = `${randomUUID()}.${ALLOWED.get(sniffed.mime)}`;  // generated, not supplied
+await writeFile(path.join(UPLOAD_ROOT, name), file.buffer);
+```
+
+Checklist:
+- [ ] Content type derived from the file's magic bytes, not the `Content-Type` header or
+      the extension
+- [ ] Allow-list of accepted types, never a deny-list
+- [ ] Maximum size enforced before the whole body is buffered in memory
+- [ ] Stored filename is generated, never the user's (blocks traversal, null bytes,
+      overwrite of existing files)
+- [ ] Upload directory is outside the web root, or served through a handler that sets
+      `Content-Disposition: attachment` and a non-executable content type
+- [ ] Archives (zip, tar) are not expanded without a decompressed-size and entry-count
+      limit — zip bombs and `../` entries
+- [ ] SVG and HTML uploads are treated as executable content (stored XSS) or refused
+
 ## Data Protection
 
 ### Sensitive Data Handling
@@ -152,6 +187,35 @@ catch (error) {
 - [ ] Stricter limits on authentication endpoints
 - [ ] Per-user and per-IP limits
 - [ ] Graceful handling when limits exceeded
+
+### CSRF Protection
+
+Any state-changing endpoint authenticated by something the browser attaches
+automatically — a session cookie, HTTP basic auth — needs CSRF protection. An API
+authenticated purely by an `Authorization` header the client sets explicitly does not.
+
+```typescript
+// ✅ Cookies that cannot be sent from a third-party context
+res.cookie('session', token, {
+  httpOnly: true,
+  secure: true,
+  sameSite: 'lax',    // 'strict' where no cross-site entry flow exists
+  path: '/',
+});
+```
+
+Checklist:
+- [ ] Session cookies set `SameSite=Lax` or `Strict`, plus `HttpOnly` and `Secure`
+- [ ] `SameSite=None` appears only where a cross-site flow genuinely requires it, and
+      that endpoint has a token check
+- [ ] State-changing operations use POST/PUT/PATCH/DELETE — never GET, which
+      `SameSite=Lax` still permits cross-site
+- [ ] A per-session CSRF token is required on cookie-authenticated mutations, compared
+      in constant time, and rotated on login
+- [ ] The token is not readable cross-origin (double-submit cookie must not be
+      `HttpOnly: false` on a wildcard-CORS origin)
+- [ ] Login, logout and password-change endpoints are covered — login CSRF is real
+- [ ] CORS `credentials: true` is never combined with a reflected or wildcard origin
 
 ### CORS Configuration
 ```typescript

@@ -2,7 +2,8 @@
 name: hoko-quality-assurance
 description: >-
   The quality gate for any stack — lint before committing, static analysis clean with no suppression
-  entries or inline ignore comments, and test coverage held above the configured floor and climbing.
+  entries or inline ignore comments, and test coverage held above the configured floor and climbing,
+  or, on a legacy project that has never met the floor, held against its own baseline.
   Use at the end of a plan run, before a standalone commit, when a lint/static-analysis/coverage
   failure needs handling, or when asked whether a change is ready to commit.
 ---
@@ -92,26 +93,94 @@ blocker rather than silencing it.
 
 ## 3. Tests and coverage
 
-Run the full suite plus coverage. **Coverage must be above the configured floor** —
-`HOKO_COVERAGE_MIN`, 85% when unset (the plugin exports it into every shell, so
-`printf '%s' "$HOKO_COVERAGE_MIN"` reads it). That is a floor, not a target, and the
-direction is always up:
+Run the full suite. It must be green: never delete, skip, mark incomplete, or weaken an
+assertion to get there. A test that fails is telling you something.
 
-- Never lower the configured threshold to make a run pass.
-- Code you touched in this change should come out at or near full coverage; a change
-  that drags the number down is not ready.
-- Never delete, skip, mark incomplete, or weaken an assertion to get green. A test
-  that fails is telling you something.
-- Coverage percentage alone is not the gate. Lines executed by a test with no
-  meaningful assertion count for nothing — for what a real test looks like in a PHP
-  project, see `hoko-senior-php-developer`; elsewhere, match the assertion style of the
-  suite you are adding to.
+Coverage is graded against the configured floor — `HOKO_COVERAGE_MIN`, 85% when unset
+(the plugin exports it into every shell, so `printf '%s' "$HOKO_COVERAGE_MIN"` reads
+it). That is a floor, not a target, and the direction is always up.
 
-If the project has no coverage tooling configured, report that and give the actual
-number once it does; do not claim a percentage you did not measure.
+### Which coverage mode applies
+
+Not every codebase can meet that floor, and a legacy project with 40% coverage and no
+seams does not become testable because a gate says so. So the floor is graded in one of
+three modes, and the mode is detected — never configured, never chosen by hand.
+
+**A. No suite, or no coverage tooling.** The coverage gate is absent. Report it as an
+absent gate and move on; an absent gate is a finding, not a pass, and never a number you
+did not measure. Lint and static analysis still run at full strength. If the project has
+a test runner but no coverage configuration, say which is missing. New code added by
+this change still gets a test wherever a runner exists at all.
+
+**B. Legacy mode — the project has never met the floor.** The floor does not block. Two
+checks replace it, both in section 3b.
+
+**C. Strict mode — the project meets the floor, or has met it before.** The floor
+blocks, exactly as before. Never lower the configured threshold to make a run pass. Code
+you touched should come out at or near full coverage; a change that drags the number
+down is not ready.
+
+The distinction between B and C is *has never met the floor*, not *is below it right
+now*. A project that once passed 85% and now measures 60% has regressed — that is red,
+not legacy. The baseline file below is what remembers the difference.
+
+### 3a. The baseline file
+
+Legacy mode needs a number to measure against, so it keeps one in the project at
+`.ai/coverage-baseline`:
+
+```json
+{
+  "last": 62.4,
+  "best": 64.1,
+  "measured": "2026-09-15",
+  "command": "composer test:coverage"
+}
+```
+
+- `best` is the highest coverage ever measured here. **Legacy mode applies while
+  `best` is below the floor** — once a run measures at or above it, `best` crosses over
+  and the project is in strict mode permanently.
+- `last` is the previous measurement, and what the no-regression check compares against.
+- The file is machine-measured state, not source: it is always gitignored and never
+  committed.
+
+Create it the first time a full gate runs on a project below the floor, and say in the
+report that you created it. Update `last` and `best` on every full gate. Never edit it
+by hand to make a run pass — that is the same move as regenerating an analyser baseline.
+
+### 3b. The two legacy-mode checks
+
+**Do not make it worse.** Measured coverage must be at or above `last`. A drop is red,
+and the fix is a test, not a new baseline. Report the gap to `best` too when the number
+has drifted down over several runs without any single run failing.
+
+**Cover what you touched.** Every line this change added or modified is covered. Take
+the changed lines from `git diff <range>` and intersect them with the coverage report —
+most tools emit one that carries line data (clover, cobertura, lcov, `coverage.json`).
+Where the tool cannot produce line-level output, fall back to naming, for each function
+or class the diff added, the test that exercises it. Either way, name what is uncovered
+rather than reporting a percentage.
+
+Untestable surroundings are a finding, not an excuse and not a blocker. When a change
+cannot be covered because the code around it has no seam — a constructor doing I/O, a
+static call to a live service, a 600-line method — say so, name the seam that is
+missing, and let the commit proceed. Introducing that seam is its own piece of work,
+worth a plan, not something to smuggle into an unrelated change.
+
+### In every mode
+
+Coverage percentage alone is not the gate. Lines executed by a test with no meaningful
+assertion count for nothing — for what a real test looks like in a PHP project, see
+`hoko-senior-php-developer`; elsewhere, match the assertion style of the suite you are
+adding to. A legacy project earns no discount here: its thin coverage is precisely why
+the tests that do exist have to assert something.
 
 ## Reporting
 
 Report one compact block — the exact command run and its result for each of the three
-gates, plus the coverage number and the direction it moved. If anything is red, report
-the failure and what it would take to fix it; do not report "ready to commit".
+gates, plus the coverage number, which mode it was graded in, and the direction it
+moved. In legacy mode also report the baseline it was compared against, whether the
+baseline file was created or updated, and anything in the diff that came out uncovered.
+If anything is red, report the failure and what it would take to fix it; do not report
+"ready to commit".

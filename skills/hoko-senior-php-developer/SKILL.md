@@ -26,6 +26,12 @@ information a signature cannot express (generics, array shapes) or a tool requir
 If a method needs a comment to be understood, first try a better name, a smaller method,
 or a named value object — that is usually the actual fix.
 
+## Imports
+
+`use` lines are for namespaced symbols. Built-in functions and constants resolve on
+their own: call `array_map`, `count`, `sprintf`, `PHP_EOL` directly, with no
+`use function` or `use const` line. Remove unused imports in files you touch.
+
 ## Types, and objects instead of arrays
 
 Everything is typed: parameters, return types, properties, constants where the language

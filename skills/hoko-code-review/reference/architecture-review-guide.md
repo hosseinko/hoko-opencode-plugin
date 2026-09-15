@@ -415,6 +415,61 @@ When limits are exceeded:
 
 ---
 
+## Type Design Review
+
+Types are the cheapest place to enforce a rule: an invariant the type system holds can
+never be violated at runtime, and no reviewer has to remember it. When a change
+introduces or reshapes a domain type, judge it on four dimensions.
+
+### 1. Encapsulation
+
+- Are internal details reachable from outside — public mutable fields, a getter handing
+  out the live collection, a constructor that accepts a half-built state?
+- Can an invariant be broken by a caller without touching this class?
+- Is there exactly one way to construct a valid instance?
+
+### 2. Invariant Expression
+
+- Do the types encode the business rule, or is the rule only in a validator somewhere
+  else? `Email` beats `string` with a regex check at three call sites.
+- Are impossible states unrepresentable? A record with `status` plus four nullable
+  fields, where only some combinations are legal, is an enum/union wearing a disguise.
+- Is a required value optional in the type just because it is absent during
+  construction? That is a construction problem, not a nullability one.
+
+### 3. Invariant Usefulness
+
+- Does this invariant prevent a bug that actually occurs, or is it ceremony?
+- Is it the domain's rule or the current implementation's convenience? Types built
+  around today's storage format rot with it.
+- One well-chosen value object beats five wrappers around primitives that nothing
+  enforces.
+
+### 4. Enforcement
+
+- Is the invariant checked by the compiler/analyser, or only at runtime, or only by
+  convention?
+- Are there escape hatches — a public setter, a `fromArray()` that skips validation, a
+  cast — that make the guarantee advisory?
+- Does serialisation round-trip through the constructor, or does it rebuild the object
+  field by field and bypass every check?
+
+### Review Questions
+
+```markdown
+□ Does this type make at least one illegal state impossible?
+□ Can a caller construct an invalid instance? Through any path, including deserialisation?
+□ Is a primitive carrying a domain meaning that deserves its own type (id, money, code)?
+□ Is a bare array or map standing in for a shape that has rules? (see Data Modeling)
+□ Is the invariant enforced, or merely documented?
+```
+
+Related: the **models over arrays** rule in the main skill — a public method returning a
+bare associative array is the most common form of "no type, no invariant, no
+enforcement".
+
+---
+
 ## Quick Reference Checklist
 
 ### 5-Minute Architecture Review

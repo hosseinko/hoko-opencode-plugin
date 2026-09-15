@@ -27,6 +27,47 @@ Language-specific bugs and issues to watch for during code review.
 - [ ] Incorrect error types thrown
 - [ ] Missing finally/cleanup blocks
 
+### Silent Failures
+
+A silent failure is worse than a crash: the run goes green, the data is wrong, and the
+bug surfaces three layers downstream with no stack trace pointing home. Treat every one
+of these as a finding, not a style note.
+
+**Swallowed errors**
+- [ ] `catch {}`, `except: pass`, `if err != nil {}` — the error is caught and dropped
+- [ ] Error converted to `null`, `[]`, `0` or `false` with no record that it happened
+- [ ] `.catch(() => [])` / `->catch(fn () => [])` — a failed fetch and an empty result
+      are now indistinguishable to every caller
+
+**Dangerous fallbacks**
+- [ ] A default value substituted for a failed lookup, so the caller cannot tell a real
+      zero from a missing one
+- [ ] Retry or degrade paths that succeed silently — the degraded mode must be visible
+      in the response or the logs, not just in the code
+- [ ] Partial results returned as if complete (a batch where some items failed)
+
+**Log-and-forget**
+- [ ] Logged at the wrong severity — a dropped record logged at `debug` or `info`
+- [ ] Logged without the identifiers needed to find the row again (id, key, batch,
+      source)
+- [ ] Logged and then execution continues as if nothing happened, where the correct
+      behaviour is to fail the operation
+
+**Lost propagation**
+- [ ] Stack trace discarded by rethrowing a new error without wrapping the original
+      (`raise NewError()` instead of `raise NewError() from e`; no `previous` argument;
+      no `%w` / `.context()`)
+- [ ] Generic rethrow that flattens several distinct failures into one type
+- [ ] Async errors never awaited, so the rejection is unhandled or invisible
+
+**Missing handling entirely**
+- [ ] Network, file or database call with no timeout — it hangs instead of failing
+- [ ] Transactional work with no rollback on the failure path
+- [ ] A loop that continues past a failed iteration with no count of what was skipped
+
+For each finding report: location, severity, what fails silently, what the downstream
+impact is, and the fix.
+
 ## TypeScript/JavaScript
 
 ### Type Issues

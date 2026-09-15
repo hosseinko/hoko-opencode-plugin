@@ -117,7 +117,7 @@ Before diving into code, understand:
 1. **Architecture & Design** - Does the solution fit the problem?
    - For significant changes, consult [Architecture Review Guide](reference/architecture-review-guide.md)
    - Check: SOLID principles, coupling/cohesion, anti-patterns
-   - **Data modeling**: flag public methods returning bare/associative arrays where a typed **model, value object, or DTO** should represent domain data (default: models over arrays). Boundary/serialized/domain data → a model; transient internal projections may stay *typed* arrays. PHP specifics in the [PHP Guide](reference/php.md#data-modeling).
+   - **Data modeling**: flag public methods returning bare/associative arrays where a typed **model, value object, or DTO** should represent domain data (default: models over arrays). Boundary/serialized/domain data → a model; transient internal projections may stay *typed* arrays. PHP specifics in the [PHP Guide](reference/php.md#data-modeling). For a new or reshaped domain type, apply the four-dimension check in [Type Design Review](reference/architecture-review-guide.md#type-design-review).
 2. **Performance Assessment** - Are there performance concerns?
    - For performance-critical code, consult [Performance Review Guide](reference/performance-review-guide.md)
    - Check: Algorithm complexity, N+1 queries, memory usage
@@ -128,6 +128,7 @@ Before diving into code, understand:
 
 For each file, check:
 - **Logic & Correctness** - Edge cases, off-by-one, null checks, race conditions
+- **Silent failures** - Swallowed errors, `.catch(() => [])`, defaults hiding a failed lookup, log-and-forget, missing timeouts or rollback. See [Silent Failures](reference/common-bugs-checklist.md#silent-failures)
 - **Security** - Input validation, injection risks, XSS, sensitive data
 - **Performance** - N+1 queries, unnecessary loops, memory leaks
 - **Maintainability** - Clear names, single responsibility, comments

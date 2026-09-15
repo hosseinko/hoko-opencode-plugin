@@ -69,6 +69,15 @@ Inspect the code the change touches and record the existing patterns and abstrac
 reuse, the test framework and where its files live, and the exact commands to run tests
 and lint/typecheck.
 
+If `specs/` exists at the repository root and a spec covers what this change touches,
+read it first: it already states the behaviour that must hold, so the plan's
+*Requirements* are the subset this change delivers, carrying the spec's ids as
+`R1 (SPEC-012/REQ-3) …`, and anything the change contradicts is an *Open question*, not
+a silent override. If the change adds a capability that deserves a spec and has none —
+rules with thresholds or precedence, a contract with something outside the repo,
+behaviour on bad input — say so and offer `hoko-feature-specs` before planning. Do not
+write the spec yourself here, and do not create `specs/` where the project has none.
+
 ## 3. Write the plan file
 
 This step is not optional and it is not the last thing you do — the plan exists as a

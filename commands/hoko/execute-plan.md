@@ -85,9 +85,9 @@ the `hoko-plan-executor` subagent does, on a cheaper model, in its own context w
 
 Concretely: **you must not call `edit`, `write` or `patch` on source files for a step.**
 Those calls belong to the subagent. If you find yourself about to make one, you have
-skipped the delegation — stop and launch the `task` tool instead. The only files you may
-write yourself are the plan file's `## Progress` checklist and a small fix to something
-the subagent already produced.
+skipped the delegation — stop and launch the `task` tool instead. The only file you may
+write yourself is the plan file: its `## Progress` checklist, its `Status`, and a note
+on why a finding does not apply.
 
 Keep your own context small. Do not read source files the subagent is about to
 rewrite, do not paste its report back to me verbatim, and do not re-derive what the
@@ -167,13 +167,22 @@ Work the unticked steps in checklist order, **one step per cycle**.
 
    If the step listed a *Risks* mitigation, confirm it is actually present.
 
-   Fix small findings yourself. If a fix is substantial, send it back to the same
-   `hoko-plan-executor` task as a follow-up — it still has the full context, so the
-   correction happens there instead of being rebuilt here.
+   No finding is small enough for you to fix yourself. Send every one back to the same
+   `hoko-plan-executor` task as a follow-up, quoting the finding verbatim — it still has
+   the full context, so the correction happens there instead of being rebuilt here.
 
-5. **Commit.** Invoke the `hoko-commit` skill and follow it, telling it this is a
-   plan-run step commit so it holds to the fast gate the reviewer already ran rather
-   than starting the full one. One commit per step — never batch steps into one commit. Then tick that step's box in the plan's
+   A correction changes the diff, so the step you reviewed is no longer the one on disk:
+   re-launch the same reviewer for it before the commit, bounded to the delta — the
+   finding's subject area and the lines that changed since the last review. The
+   re-review's fast gate is the gate of record; the earlier review's result no longer
+   stands.
+
+5. **Commit.** The commit requires the latest review of the current diff to be clean: a
+   red fast gate, or a re-review that has not come back, blocks it. Correct and re-review
+   until one returns with no red gate. Then invoke the `hoko-commit` skill and follow it,
+   telling it this is a plan-run step commit so it holds to the fast gate the reviewer
+   already ran rather than starting the full one. One commit per step — never batch steps
+   into one commit. Then tick that step's box in the plan's
    `## Progress` section (`- [ ] 3.` → `- [x] 3.`) and mark its todo `completed`. Tick
    nothing before the commit lands, and never tick a step you had to stop on. If the
    plans directory is gitignored, the plan file is never part of a commit and must never

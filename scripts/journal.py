@@ -67,10 +67,20 @@ def git_toplevel(start):
     return None
 
 
+def home_path():
+    """The home directory with symlinks resolved, so it compares equal to the
+    resolved paths this script builds. Falls back to the raw path."""
+    home = Path.home()
+    try:
+        return home.resolve()
+    except OSError:
+        return home
+
+
 def project_root(start):
     """The project a path belongs to: its git root, else the nearest ancestor
     holding one of PROJECT_MARKERS. The home directory is never a project."""
-    home = Path.home()
+    home = home_path()
     top = git_toplevel(start)
     if top is not None and top != home:
         return top
@@ -93,7 +103,7 @@ def resolve_project(explicit, plan, anchor):
             recorded = Path(anchor.with_suffix(".project").read_text(encoding="utf-8").strip())
         except OSError:
             recorded = None
-        if recorded is not None and recorded.name and recorded != Path.home():
+        if recorded is not None and recorded.name and recorded != home_path():
             return slugify(recorded.name)
 
     root = project_root(Path.cwd())
@@ -104,7 +114,7 @@ def resolve_project(explicit, plan, anchor):
         root = plan.parent
         while root.name in plan_dir_segments() and root != root.parent:
             root = root.parent
-    if root is None or root == Path.home() or root.name in ("", ".", "/"):
+    if root is None or root == home_path() or root.name in ("", ".", "/"):
         return "unsorted"
     return slugify(root.name)
 

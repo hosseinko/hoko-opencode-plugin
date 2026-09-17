@@ -25,12 +25,14 @@ points at the topic file that carries the detail.
   golangci-lint v2 `formatters`, never as hand edits `[community]`.
 - Top-level packages, `internal/` for anything not exported, `cmd/` only with two or more
   binaries, and no `pkg/`. `internal` is compiler-enforced; `pkg/` is not. `[contested]`
-- Wrap an error once, at the layer that adds information, with `%w` and context — not at
-  every layer. Compare sentinels with `errors.Is` and types with `errors.As`. `panic` is
-  for programmer error or unrecoverable init only; never `log.Fatal` in a library.
-  `[official]`
+- Wrap only what the API commits to exposing: `%w` exposes the chain, `%v` hides it
+  `[official]`; "wrap once, at the layer that adds information" is a community heuristic
+  `[community]`. Compare sentinels with `errors.Is` and extract types with `errors.As` or
+  `errors.AsType` (1.26). `panic` is for programmer error or unrecoverable init only; never
+  `log.Fatal` in a library. `[official]`
 - `context.Context` is the first parameter and is never stored in a struct; every
-  goroutine has an exit; `-race` runs in CI. `[official]`
+  goroutine has an exit `[official]`; `-race` runs in CI as a community convention
+  `[community]`.
 - Stdlib `net/http` `ServeMux` by default. chi only when middleware or route grouping
   genuinely demand it; gin and echo are not the default guidance. `[contested]`
 - Hand-written fakes by default. testify `assert`/`require` are accepted; `testify/mock`

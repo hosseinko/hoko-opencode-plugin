@@ -23,6 +23,8 @@ and anything else of that shape.
   minimal compose file plus Dockerfile when it does not. Mount the working tree and run
   the command from inside it, so the artefacts are the ones in the repo.
 - Otherwise `docker run --rm -v "$PWD":/work -w /work <image> <command>`.
+- A compose file you write is named `docker-compose.yml`, never `compose.yaml`. Leave an
+  existing compose file untouched, whatever its name: run against it as it is.
 - Take the newest version the project supports that also publishes a `linux/arm64`
   image, and check the registry at use time rather than assuming a tag exists. A compose
   file you write records the tag you verified; this rule pins nothing.

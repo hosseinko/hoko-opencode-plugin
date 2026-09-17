@@ -26,6 +26,10 @@ description: >-
 > composition over boolean prop flags, server state left in the query cache, and the
 > list of hacks that are never the fix). Same deal: ignore it on a diff that is not
 > frontend.
+>
+> **Go projects** have `hoko-senior-go-developer` (Go idioms, error handling,
+> concurrency safety, and test coverage). Same deal: ignore it on a diff that is not
+> Go.
 
 Transform code reviews from gatekeeping to knowledge sharing through constructive feedback, systematic analysis, and collaborative improvement.
 

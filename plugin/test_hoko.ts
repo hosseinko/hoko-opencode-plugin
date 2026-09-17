@@ -21,8 +21,11 @@ const state = (sessionID: string) =>
 
 const journalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "journal-"))
 process.env.HOKO_JOURNAL_PATH = journalRoot
-// The plan model must not leak in from the developer's own hoko.env.
-delete process.env.HOKO_PLAN_MODEL
+// Neither the developer's own hoko.env nor this machine's exported HOKO_* may decide
+// these. An empty value clears what a file set, so `= ""` covers both, where `delete`
+// only covers the exported one.
+process.env.HOKO_PLAN_MODEL = ""
+process.env.HOKO_COVERAGE_MIN = ""
 process.env.HOKO_BUILD_MODEL = "anthropic/claude-test"
 process.env.HOKO_REVIEWER_DEEP_MODEL = "anthropic/claude-deep-test"
 // The main body below predates fresh sessions, so it runs the off path. The fresh

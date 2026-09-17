@@ -10,8 +10,8 @@ deliberately replaces opencode's own plan agent.
 
 It is stack-agnostic: the gates are expressed as *lint → static analysis → tests with
 coverage* and each agent finds the project's own commands rather than assuming tool
-names. Optional skills carry stack conventions — PHP, and TypeScript/React — and trigger
-only on a diff in that stack.
+names. Optional skills carry stack conventions — PHP, TypeScript/React, and Go — and
+trigger only on a diff in that stack.
 
 ## Install
 
@@ -87,11 +87,12 @@ files, `hoko.env`, `opencode.json` — needs a restart, not a new session.
 ```sh
 opencode agent list          # plan, hoko-plan-executor, hoko-code-reviewer,
                              #   hoko-code-reviewer-deep, hoko-quality-assurance,
-                             #   hoko-researcher
+                             #   hoko-researcher, hoko-go-code-reviewer, hoko-go-test-writer,
+                             #   hoko-go-architect
 opencode debug skill         # grill-me, hoko-commit, hoko-pull-request, hoko-code-review,
                              #   hoko-api-developer, hoko-quality-assurance,
                              #   hoko-senior-php-developer, hoko-senior-frontend-developer,
-                             #   hoko-feature-specs
+                             #   hoko-senior-go-developer, hoko-feature-specs
 opencode debug config        # the /hoko commands, and the model each agent resolved to
 opencode debug agent plan    # the important one — see below
 ```
@@ -352,6 +353,12 @@ agents/
   hoko-code-reviewer-deep.md subagent; the escalated reviewer for a large or risky
                           diff, on HOKO_REVIEWER_DEEP_MODEL
   hoko-quality-assurance.md subagent; the end-of-run full gate, fixes and commits
+  hoko-go-code-reviewer.md subagent; reviews a Go diff against hoko-senior-go-developer,
+                          findings tagged official/community/contested, read-only
+  hoko-go-test-writer.md  subagent; writes table-driven Go tests, edits only _test.go
+                          files and testdata/ fixtures
+  hoko-go-architect.md    subagent; decides where a Go library, CLI or service belongs,
+                          read-only
 commands/
   grill-me.md
   hoko/{plan,execute-plan,commit,research,pr}.md
@@ -369,6 +376,10 @@ skills/
                           arrays, typed collections, mirrored test tree
   hoko-senior-frontend-developer/ TS/React only: feature-first structure, schemas +
                           endpoints + queries API layer, composition over prop flags
+  hoko-senior-go-developer/ Go only: top-level packages and internal/ with no pkg/,
+                          errors wrapped only where the API exposes the chain, stdlib
+                          net/http, hand-written fakes, log/slog; a reference per topic
+                          plus check/test/scaffold scripts
 instructions/
   hoko.md                 git stops at the commit: never merge, never push, PR instead;
                           and plan-run delegation is pre-approved by the plan approval
@@ -432,11 +443,14 @@ The parts most likely to want changing:
 - **Language conventions** — the `*-php-*` and `*-frontend-*` skills are examples of the
   shape: a narrowly-scoped skill whose description names the stack, so a model only loads
   it on a diff in that stack. Copy one for your own stack, or delete them.
+  `hoko-senior-go-developer` is the fullest example: a reference per topic, the
+  `go_check.py` / `go_test.py` / `go_scaffold.py` scripts, and the `hoko-go-code-reviewer`,
+  `hoko-go-test-writer` and `hoko-go-architect` subagents.
 
 ### Stack-specific skills
 
-Five skills trigger on their own descriptions rather than through a command. Two are
-stack-neutral — the quality gate and the spec writer; the other three carry stack
+Six skills trigger on their own descriptions rather than through a command. Two are
+stack-neutral — the quality gate and the spec writer; the other four carry stack
 conventions and stay out of the way on a diff that is not theirs.
 
 - **`hoko-quality-assurance`** — the gate: lint, then the project's static analyser with
@@ -467,12 +481,17 @@ conventions and stay out of the way on a diff that is not theirs.
   slots instead of boolean prop flags; server state left in the query cache; and a named
   list of hacks — `setTimeout` to wait for a render, `any` to silence a type, `!important`
   — that are never the fix.
+- **`hoko-senior-go-developer`** (Go) — top-level packages and `internal/` with no `pkg/`,
+  errors wrapped only where the API exposes the chain (`%w` exposes it, `%v` hides it) and
+  read with `errors.Is`/`errors.As`, the standard library `net/http` `ServeMux` by
+  default, hand-written fakes over generated mocks, and structured `log/slog`.
 
-The three stack skills are framework-agnostic within their stack: they detect the
+The four stack skills are framework-agnostic within their stack: they detect the
 framework and test tooling from the project and express the rules in its idioms.
 `hoko-commit` invokes the quality gate before drafting a message, and `hoko-code-review`
-points the reviewer at the PHP pair on a PHP diff and at the frontend skill on a
-TypeScript/React one, so a plan run picks them up at both the review and the commit step.
+points the reviewer at the PHP pair on a PHP diff, at the frontend skill on a
+TypeScript/React one and at the Go skill on a Go one, so a plan run picks them up at both
+the review and the commit step.
 Inside a plan run `hoko-commit` holds to the fast gate the reviewer already ran
 instead of starting the full one; every other commit runs all three.
 
@@ -510,6 +529,8 @@ is why the blocker path routes back through the conductor.
 bun plugin/test_hoko.ts         # plugin: capture, the tool, the handoff, journaling
 #   or: node --experimental-strip-types plugin/test_hoko.ts
 python3 scripts/test_journal.py # journal: entries, titles, projects, reports, config
+python3 skills/hoko-senior-go-developer/scripts/test_go_scripts.py
+                                # Go scripts: check order, skips, coverage, scaffold
 ```
 
-Both run against throwaway directories and never touch a real journal.
+All three run against throwaway directories and never touch a real journal.

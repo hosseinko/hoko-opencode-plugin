@@ -2,6 +2,10 @@
 
 A code review checklist based on the official Go guidelines, Effective Go, and community best practices.
 
+> The conventions themselves live in the [`hoko-senior-go-developer`](../../hoko-senior-go-developer/SKILL.md)
+> skill. This guide is the generic, diff-level bug checklist; where the two disagree,
+> the skill's decisions and their `[official]`/`[community]`/`[contested]` markers win.
+
 ## Quick Review Checklist
 
 ### Must-Check Items
@@ -12,7 +16,7 @@ A code review checklist based on the official Go guidelines, Effective Go, and c
 - [ ] Code is formatted with `gofmt`
 
 ### High-Frequency Issues
-- [ ] Loop variable capture (Go < 1.22)
+- [ ] Loop variable capture — only below `go 1.22`: 1.22 made each iteration's variable distinct, so the defensive `x := x` is unnecessary at or above it
 - [ ] Nil checks are complete
 - [ ] Maps are initialized before use
 - [ ] Use of defer inside loops

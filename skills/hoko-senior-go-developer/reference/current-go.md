@@ -39,11 +39,11 @@ step rather than a default.
 
 Every claim in this skill is tagged:
 
-- `[official]` — go.dev, the Go blog, the language spec, Effective Go, Go Code Review
-  Comments, Go team proposals, or the tool's own documentation.
+- `[official]` — go.dev documentation, the Go blog, the language spec, Effective Go, Go Code
+  Review Comments, Go team proposals, or the tool's own documentation.
 - `[community]` — the Uber Go Style Guide, the Google Go Style Guide,
-  `golang-standards/project-layout` and its criticisms, or a tooling organisation's
-  documentation.
+  `golang-standards/project-layout` and its criticisms, the community-maintained `go.dev/wiki`
+  pages, or a tooling organisation's documentation.
 - `[contested]` — the community does not agree; the topic file where the call is made
   states both sides and which side this skill takes.
 

@@ -403,6 +403,9 @@ instructions/
                           and plan-run delegation is pre-approved by the plan approval
   communication.md        how to answer: lead with the answer, short by default, no
                           preamble before a tool call, comments are the exception
+  docker-first.md         docker first: never install or run a language runtime on the
+                          host — use docker and docker compose, newest version, and stop
+                          when docker does not work
 scripts/
   journal.py              write | report
   test_journal.py         tests, against a throwaway journal root

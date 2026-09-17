@@ -22,12 +22,14 @@ so every version-gated rule in this skill is stated against the directive.
 
 | Behaviour | Minimum `go` directive |
 | --- | --- |
-| Loop-variable semantics: each iteration gets its own variable | 1.22 |
-| `net/http` `ServeMux` method and wildcard patterns (`GET /items/{id}`) | 1.22 |
-| Range-over-func and the `iter` package | 1.23 |
-| `testing.B.Loop` | 1.24 |
-| `os.Root` | 1.24 |
-| `testing/synctest` (GA) | 1.25 |
+| Loop-variable semantics: each iteration gets its own variable `[official]` | 1.22 |
+| `net/http` `ServeMux` method and wildcard patterns (`GET /items/{id}`) `[official]` | 1.22 |
+| Range-over-func and the `iter` package `[official]` | 1.23 |
+| `testing.B.Loop` `[official]` | 1.24 |
+| `os.Root` `[official]` | 1.24 |
+| `testing/synctest` (GA) `[official]` | 1.25 |
+| Generic methods: a method may declare its own type parameters (e.g. `math/rand/v2` `(*Rand).N`); interface methods may not, and cannot be implemented by generic methods `[official]` | 1.27 |
+| Struct literal keys may be any valid field selector for the struct type `[official]` | 1.27 |
 
 From Go 1.26 the `go` command writes a new module one major below the toolchain: `go mod
 init` on a 1.27 toolchain writes `go 1.26.0`, and raising the directive is a deliberate
@@ -48,6 +50,7 @@ Every claim in this skill is tagged:
 ## Sources
 
 - [Go release history](https://go.dev/doc/devel/release)
-- [Go 1.27 release notes](https://go.dev/blog/go1.27)
+- [Go 1.27 announcement](https://go.dev/blog/go1.27)
+- [Go 1.27 release notes](https://go.dev/doc/go1.27)
 - [Go 1.26 release notes](https://go.dev/doc/go1.26)
 - [Go support timeline](https://endoflife.date/go)

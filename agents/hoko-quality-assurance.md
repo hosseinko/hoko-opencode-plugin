@@ -44,6 +44,8 @@ limits:
   as its own commit.
 - Re-run a gate after fixing it, and re-run the ones after it. A fix in lint that
   breaks static analysis is not a fix.
+- Commit a fix only after the affected gate has passed again on the fixed tree. You make
+  those commits yourself: never leave an uncommitted fix for the conductor to commit.
 - Commit your fixes by invoking the `hoko-commit` skill, one commit per concern. If
   every gate was green, you commit nothing.
 

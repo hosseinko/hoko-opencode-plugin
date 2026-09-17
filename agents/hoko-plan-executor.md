@@ -21,9 +21,10 @@ absolute plan path and a step number, say so and stop.
    requirement belonging to another step to that step.
 2. Load the conventions for what you are about to write, before writing it: PHP →
    `hoko-senior-php-developer`, and `hoko-api-developer` too if the step touches an
-   HTTP endpoint; TypeScript/React → `hoko-senior-frontend-developer`. They are the
-   standards your diff is reviewed against, so reading them after the fact costs a
-   rewrite. Skip them for a step in any other language.
+   HTTP endpoint; TypeScript/React → `hoko-senior-frontend-developer`; Go →
+   `hoko-senior-go-developer`. They are the standards your diff is reviewed against,
+   so reading them after the fact costs a rewrite. Skip them for a step in any other
+   language.
 3. Implement only that step, following the patterns already in the codebase. Do not
    start other steps, do not expand scope, do not refactor opportunistically. Add no
    comments that restate the code; comment only non-obvious *why*.

@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun plugin/test_hoko.ts && python3 scripts/test_journal.py"
+    "test": "bun plugin/test_hoko.ts && python3 scripts/test_journal.py && python3 skills/hoko-senior-go-developer/scripts/test_go_scripts.py"
   }
 }

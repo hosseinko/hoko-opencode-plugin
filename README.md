@@ -10,8 +10,8 @@ deliberately replaces opencode's own plan agent.
 
 It is stack-agnostic: the gates are expressed as *lint → static analysis → tests with
 coverage* and each agent finds the project's own commands rather than assuming tool
-names. Optional skills carry stack conventions — PHP, and TypeScript/React — and trigger
-only on a diff in that stack.
+names. Optional skills carry stack conventions — PHP, TypeScript/React, and Go — and
+trigger only on a diff in that stack.
 
 ## Install
 
@@ -87,11 +87,12 @@ files, `hoko.env`, `opencode.json` — needs a restart, not a new session.
 ```sh
 opencode agent list          # plan, hoko-plan-executor, hoko-code-reviewer,
                              #   hoko-code-reviewer-deep, hoko-quality-assurance,
-                             #   hoko-researcher
+                             #   hoko-researcher, hoko-go-code-reviewer, hoko-go-test-writer,
+                             #   hoko-go-architect
 opencode debug skill         # grill-me, hoko-commit, hoko-pull-request, hoko-code-review,
                              #   hoko-api-developer, hoko-quality-assurance,
                              #   hoko-senior-php-developer, hoko-senior-frontend-developer,
-                             #   hoko-feature-specs
+                             #   hoko-senior-go-developer, hoko-feature-specs
 opencode debug config        # the /hoko commands, and the model each agent resolved to
 opencode debug agent plan    # the important one — see below
 ```
@@ -161,6 +162,7 @@ The plugin reads, in increasing order of precedence: `hoko.env` in this repo,
 | `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` | the session's model |
 | `HOKO_JOURNAL_PATH` | journal root | **unset — journaling is off** |
 | `HOKO_PLANS_DIR` | where plans are written, relative to the repo root | `.ai/plans` |
+| `HOKO_FRESH_SESSION` | approval starts the run in a fresh session and switches the TUI to it; `0`, `false`, `no` or `off` hand off in the approval session | on |
 | `HOKO_COVERAGE_MIN` | the full gate's coverage floor, in percent | `85` |
 | `HOKO_COMMIT_AUTO` | `1` = `hoko-commit` commits without confirming the message | off |
 | `HOKO_BASE_BRANCH` | branch playing the `develop` role — what features branch from and target | `develop`, else the remote's default branch |
@@ -198,8 +200,8 @@ One cycle, one Tab press:
 
 ```
 Tab → plan                    grill → plan file → "approve?"
-you: approved                 hoko_execute: journals, then runs execute-plan on build
-build (automatic)             delegate → verify → review → commit, one step per cycle
+you: approved                 hoko_execute: opens a fresh session, journals, runs execute-plan on build
+build (fresh session)         delegate → verify → review → commit, one step per cycle
                               → full gate → PR → Status: complete → report journaled
 ```
 
@@ -248,23 +250,39 @@ exception are layered on.
 Say "approved" — or "go ahead", or anything that means yes — and the plan agent calls
 the `hoko_execute` tool. That tool, not the model, does the switching:
 
-1. files the plan and this cycle's original prompt in the journal, if journaling is
-   configured, and remembers the entry it opened;
-2. queues the plan, and when the turn ends runs `/hoko/execute-plan <path>` in the same
-   session **on the `build` agent** (opencode's `session.command` API takes the agent to
-   run as), with a toast so you can see it start.
+1. creates a new opencode session for the run, titled from the plan's `#` heading (or the
+   plan's filename when it has none), and switches the TUI to it — the planning session
+   keeps its transcript and is left untouched;
+2. files the plan and this cycle's original prompt in the journal, if journaling is
+   configured, then moves the entry it opened and the cycle's other state onto the run's
+   session, so the closing report is still filed into the entry opened at approval;
+3. queues the plan on the approval session, and when that turn ends runs
+   `/hoko/execute-plan <path>` in the fresh session **on the `build` agent** (opencode's
+   `session.command` API takes the agent to run as), with a toast so you can see it
+   start.
 
-So there is no Tab-to-build step and no command to remember, and build never starts from
-a blank slate: it starts inside the execute-plan protocol with the plan path in hand. The
-prompt box follows: the TUI keeps its own idea of the active agent and the API has no
-setter for it, so the plugin walks it round with `agent_cycle` (it reads the primary
-agents from `app.agents()` to know how far), leaving the indicator on Build where the run
-is. That step is cosmetic — the run is on the build agent either way.
+The run's context is the plan file and nothing else — none of the planning transcript
+rides along. So there is no Tab-to-build step and no command to remember, and build never
+starts from a blank slate: it starts inside the execute-plan protocol with the plan path
+in hand. The prompt box follows: the TUI keeps its own idea of the active agent and the
+API has no setter for it, so the plugin walks it round with `agent_cycle` (it reads the
+primary agents from `app.agents()` to know how far), leaving the indicator on Build where
+the run is. That step is cosmetic — the run is on the build agent either way.
 
-The conductor runs on whatever model the session was on when you approved, which is not
-always the one you want reading every diff. `HOKO_BUILD_MODEL` pins it. It sets the
-`build` agent's model like the other variables set theirs, so it applies to plain
-build-mode chat too — the conductor and build mode are the same agent.
+`HOKO_FRESH_SESSION=0` — or `false`, `no`, `off` — skips the new session and queues the
+handoff on the approval session, so the plan runs there as before. When the opencode build
+has no `session.create` or no `tui.publish`, or creating the session fails, the tool
+refuses before anything is journaled or queued; when it did create the session but the TUI
+does not open it within the tool's retries, it deletes that session too. Either way the
+failure comes back in the tool result for the plan agent to report, naming
+`HOKO_FRESH_SESSION=0` and the manual `/hoko/execute-plan <path>` as the ways out.
+
+In fresh mode the run starts in a session the plugin created, not the planning session, so
+it no longer inherits the planning session's model. `HOKO_BUILD_MODEL` is what pins the
+conductor, which is worth doing either way — the model a run otherwise lands on is not
+always the one you want reading every diff. It sets the `build` agent's model like the
+other variables set theirs, so it applies to plain build-mode chat too — the conductor and
+build mode are the same agent.
 
 Ask for changes instead of approving and the plan file is edited in place at the same
 path — nothing is journaled until you approve.
@@ -340,7 +358,8 @@ The journal root can also come from `~/.config/opencode/hoko.json`
 ```
 plugin/
   hoko.ts             registers everything; settings from hoko.env; the hoko_execute
-                      tool; prompt capture, the handoff to build, and journaling
+                      tool; prompt capture, the fresh-session handoff to build, and
+                      journaling
   test_hoko.ts        tests for the plugin's hooks and tool
 agents/
   plan.md                 primary; replaces opencode's plan agent with the protocol:
@@ -352,6 +371,12 @@ agents/
   hoko-code-reviewer-deep.md subagent; the escalated reviewer for a large or risky
                           diff, on HOKO_REVIEWER_DEEP_MODEL
   hoko-quality-assurance.md subagent; the end-of-run full gate, fixes and commits
+  hoko-go-code-reviewer.md subagent; reviews a Go diff against hoko-senior-go-developer,
+                          findings tagged official/community/contested, read-only
+  hoko-go-test-writer.md  subagent; writes table-driven Go tests, edits only _test.go
+                          files and testdata/ fixtures
+  hoko-go-architect.md    subagent; decides where a Go library, CLI or service belongs,
+                          read-only
 commands/
   grill-me.md
   hoko/{plan,execute-plan,commit,research,pr}.md
@@ -369,6 +394,10 @@ skills/
                           arrays, typed collections, mirrored test tree
   hoko-senior-frontend-developer/ TS/React only: feature-first structure, schemas +
                           endpoints + queries API layer, composition over prop flags
+  hoko-senior-go-developer/ Go only: top-level packages and internal/ with no pkg/,
+                          errors wrapped only where the API exposes the chain, stdlib
+                          net/http, hand-written fakes, log/slog; a reference per topic
+                          plus check/test/scaffold scripts
 instructions/
   hoko.md                 git stops at the commit: never merge, never push, PR instead;
                           and plan-run delegation is pre-approved by the plan approval
@@ -432,11 +461,14 @@ The parts most likely to want changing:
 - **Language conventions** — the `*-php-*` and `*-frontend-*` skills are examples of the
   shape: a narrowly-scoped skill whose description names the stack, so a model only loads
   it on a diff in that stack. Copy one for your own stack, or delete them.
+  `hoko-senior-go-developer` is the fullest example: a reference per topic, the
+  `go_check.py` / `go_test.py` / `go_scaffold.py` scripts, and the `hoko-go-code-reviewer`,
+  `hoko-go-test-writer` and `hoko-go-architect` subagents.
 
 ### Stack-specific skills
 
-Five skills trigger on their own descriptions rather than through a command. Two are
-stack-neutral — the quality gate and the spec writer; the other three carry stack
+Six skills trigger on their own descriptions rather than through a command. Two are
+stack-neutral — the quality gate and the spec writer; the other four carry stack
 conventions and stay out of the way on a diff that is not theirs.
 
 - **`hoko-quality-assurance`** — the gate: lint, then the project's static analyser with
@@ -467,12 +499,17 @@ conventions and stay out of the way on a diff that is not theirs.
   slots instead of boolean prop flags; server state left in the query cache; and a named
   list of hacks — `setTimeout` to wait for a render, `any` to silence a type, `!important`
   — that are never the fix.
+- **`hoko-senior-go-developer`** (Go) — top-level packages and `internal/` with no `pkg/`,
+  errors wrapped only where the API exposes the chain (`%w` exposes it, `%v` hides it) and
+  read with `errors.Is`/`errors.As`, the standard library `net/http` `ServeMux` by
+  default, hand-written fakes over generated mocks, and structured `log/slog`.
 
-The three stack skills are framework-agnostic within their stack: they detect the
+The four stack skills are framework-agnostic within their stack: they detect the
 framework and test tooling from the project and express the rules in its idioms.
 `hoko-commit` invokes the quality gate before drafting a message, and `hoko-code-review`
-points the reviewer at the PHP pair on a PHP diff and at the frontend skill on a
-TypeScript/React one, so a plan run picks them up at both the review and the commit step.
+points the reviewer at the PHP pair on a PHP diff, at the frontend skill on a
+TypeScript/React one and at the Go skill on a Go one, so a plan run picks them up at both
+the review and the commit step.
 Inside a plan run `hoko-commit` holds to the fast gate the reviewer already ran
 instead of starting the full one; every other commit runs all three.
 
@@ -510,6 +547,8 @@ is why the blocker path routes back through the conductor.
 bun plugin/test_hoko.ts         # plugin: capture, the tool, the handoff, journaling
 #   or: node --experimental-strip-types plugin/test_hoko.ts
 python3 scripts/test_journal.py # journal: entries, titles, projects, reports, config
+python3 skills/hoko-senior-go-developer/scripts/test_go_scripts.py
+                                # Go scripts: check order, skips, coverage, scaffold
 ```
 
-Both run against throwaway directories and never touch a real journal.
+All three run against throwaway directories and never touch a real journal.

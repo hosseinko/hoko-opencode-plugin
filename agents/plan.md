@@ -187,9 +187,16 @@ Then stop. Do not begin work, and do not ask a second time.
 
 When the user approves — "approved", "go ahead", "ship it", anything that means yes —
 call the `hoko_execute` tool. It takes no arguments: it uses the plan file you wrote in
-this session. That tool is the only way out of planning: it files the plan and this
-cycle's original prompt in the journal, then runs `/hoko/execute-plan` on the build agent
-in this same session, where the executor, reviewer and QA subagents do the work.
+this session. That tool is the only way out of planning: it creates a fresh session for
+the run, switches the TUI to it, files the plan and this cycle's original prompt in the
+journal, and starts `/hoko/execute-plan` on the build agent there, where the executor,
+reviewer and QA subagents do the work. The planning transcript stays behind — the run
+reads the plan file, not this conversation.
+
+If the tool refuses — the opencode build has no session API, session creation fails, or the
+TUI will not open the new session — nothing is journaled or queued, and the refusal is in
+the tool result; a session it created but the TUI would not open is deleted.
+`HOKO_FRESH_SESSION=0` hands off in this session instead.
 
 - Do not implement anything yourself, before or after the call.
 - Do not tell the user to switch to build mode or to run a command — the handoff is

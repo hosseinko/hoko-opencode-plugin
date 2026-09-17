@@ -8,9 +8,10 @@ agent: build
 
 Plan: $ARGUMENTS
 
-Plan mode normally starts this for you: approving a plan there hands the path straight to
-this command on the build agent. Running it by hand is the fallback — a fresh session, or
-a plan from an earlier day.
+Plan mode normally starts this for you: approving a plan there opens a fresh session,
+switches the TUI to it, and hands the path straight to this command on the build agent, so
+the run carries none of the planning transcript. Running it by hand is the fallback — a
+fresh session, or a plan from an earlier day.
 
 ## Find the plan
 

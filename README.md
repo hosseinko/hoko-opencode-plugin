@@ -162,6 +162,7 @@ The plugin reads, in increasing order of precedence: `hoko.env` in this repo,
 | `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` | the session's model |
 | `HOKO_JOURNAL_PATH` | journal root | **unset — journaling is off** |
 | `HOKO_PLANS_DIR` | where plans are written, relative to the repo root | `.ai/plans` |
+| `HOKO_FRESH_SESSION` | approval starts the run in a fresh session and switches the TUI to it; `0`, `false`, `no` or `off` hand off in the approval session | on |
 | `HOKO_COVERAGE_MIN` | the full gate's coverage floor, in percent | `85` |
 | `HOKO_COMMIT_AUTO` | `1` = `hoko-commit` commits without confirming the message | off |
 | `HOKO_BASE_BRANCH` | branch playing the `develop` role — what features branch from and target | `develop`, else the remote's default branch |
@@ -199,8 +200,8 @@ One cycle, one Tab press:
 
 ```
 Tab → plan                    grill → plan file → "approve?"
-you: approved                 hoko_execute: journals, then runs execute-plan on build
-build (automatic)             delegate → verify → review → commit, one step per cycle
+you: approved                 hoko_execute: opens a fresh session, journals, runs execute-plan on build
+build (fresh session)         delegate → verify → review → commit, one step per cycle
                               → full gate → PR → Status: complete → report journaled
 ```
 
@@ -249,23 +250,39 @@ exception are layered on.
 Say "approved" — or "go ahead", or anything that means yes — and the plan agent calls
 the `hoko_execute` tool. That tool, not the model, does the switching:
 
-1. files the plan and this cycle's original prompt in the journal, if journaling is
-   configured, and remembers the entry it opened;
-2. queues the plan, and when the turn ends runs `/hoko/execute-plan <path>` in the same
-   session **on the `build` agent** (opencode's `session.command` API takes the agent to
-   run as), with a toast so you can see it start.
+1. creates a new opencode session for the run, titled from the plan's `#` heading (or the
+   plan's filename when it has none), and switches the TUI to it — the planning session
+   keeps its transcript and is left untouched;
+2. files the plan and this cycle's original prompt in the journal, if journaling is
+   configured, then moves the entry it opened and the cycle's other state onto the run's
+   session, so the closing report is still filed into the entry opened at approval;
+3. queues the plan on the approval session, and when that turn ends runs
+   `/hoko/execute-plan <path>` in the fresh session **on the `build` agent** (opencode's
+   `session.command` API takes the agent to run as), with a toast so you can see it
+   start.
 
-So there is no Tab-to-build step and no command to remember, and build never starts from
-a blank slate: it starts inside the execute-plan protocol with the plan path in hand. The
-prompt box follows: the TUI keeps its own idea of the active agent and the API has no
-setter for it, so the plugin walks it round with `agent_cycle` (it reads the primary
-agents from `app.agents()` to know how far), leaving the indicator on Build where the run
-is. That step is cosmetic — the run is on the build agent either way.
+The run's context is the plan file and nothing else — none of the planning transcript
+rides along. So there is no Tab-to-build step and no command to remember, and build never
+starts from a blank slate: it starts inside the execute-plan protocol with the plan path
+in hand. The prompt box follows: the TUI keeps its own idea of the active agent and the
+API has no setter for it, so the plugin walks it round with `agent_cycle` (it reads the
+primary agents from `app.agents()` to know how far), leaving the indicator on Build where
+the run is. That step is cosmetic — the run is on the build agent either way.
 
-The conductor runs on whatever model the session was on when you approved, which is not
-always the one you want reading every diff. `HOKO_BUILD_MODEL` pins it. It sets the
-`build` agent's model like the other variables set theirs, so it applies to plain
-build-mode chat too — the conductor and build mode are the same agent.
+`HOKO_FRESH_SESSION=0` — or `false`, `no`, `off` — skips the new session and queues the
+handoff on the approval session, so the plan runs there as before. When the opencode build
+has no `session.create` or no `tui.publish`, or creating the session fails, the tool
+refuses before anything is journaled or queued; when it did create the session but the TUI
+does not open it within the tool's retries, it deletes that session too. Either way the
+failure comes back in the tool result for the plan agent to report, naming
+`HOKO_FRESH_SESSION=0` and the manual `/hoko/execute-plan <path>` as the ways out.
+
+In fresh mode the run starts in a session the plugin created, not the planning session, so
+it no longer inherits the planning session's model. `HOKO_BUILD_MODEL` is what pins the
+conductor, which is worth doing either way — the model a run otherwise lands on is not
+always the one you want reading every diff. It sets the `build` agent's model like the
+other variables set theirs, so it applies to plain build-mode chat too — the conductor and
+build mode are the same agent.
 
 Ask for changes instead of approving and the plan file is edited in place at the same
 path — nothing is journaled until you approve.
@@ -341,7 +358,8 @@ The journal root can also come from `~/.config/opencode/hoko.json`
 ```
 plugin/
   hoko.ts             registers everything; settings from hoko.env; the hoko_execute
-                      tool; prompt capture, the handoff to build, and journaling
+                      tool; prompt capture, the fresh-session handoff to build, and
+                      journaling
   test_hoko.ts        tests for the plugin's hooks and tool
 agents/
   plan.md                 primary; replaces opencode's plan agent with the protocol:

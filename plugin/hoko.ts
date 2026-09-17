@@ -12,8 +12,8 @@
  *     the plan file is the one thing it may write
  *   - applies model overrides from hoko.env / the environment
  *   - captures the first prompt of each plan cycle verbatim, for the journal
- *   - serves `hoko_execute`: approval files the plan in the journal and runs
- *     /hoko/execute-plan on the build agent in this same session
+ *   - serves `hoko_execute`: approval files the plan in the journal, opens a fresh
+ *     session for the run and runs /hoko/execute-plan on the build agent there
  *   - journals the run's closing report once the plan file turns Status: complete
  *   - refuses git commands that break the branching rules: a commit on a protected
  *     branch, a branch name off the convention, a branch cut from an explicitly wrong
@@ -237,7 +237,8 @@ export function gitVerdict(
 }
 
 /** Per-session scratch: `.prompt` and `.project` hold the captured prompt, `.entry` the
- *  journal entry opened for the running cycle, `.handoff` a plan waiting for build. */
+ *  journal entry opened for the running cycle, `.handoff` a plan waiting for build and
+ *  `.target` the session that run was moved to. */
 function state(sessionID: string, suffix: string) {
   return path.join(STATE_DIR, createHash("sha256").update(sessionID).digest("hex").slice(0, 16) + suffix)
 }
@@ -290,6 +291,7 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
   const project = worktree || directory || process.cwd()
   const plansDir = env.HOKO_PLANS_DIR
   const journaling = Boolean(env.HOKO_JOURNAL_PATH)
+  const fresh = !/^(0|false|no|off)$/i.test(env.HOKO_FRESH_SESSION ?? "")
 
   const git = (...args: string[]) => {
     try {
@@ -319,6 +321,31 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
 
   const toast = (message: string, variant: "info" | "error") =>
     client?.tui?.showToast?.({ body: { message, variant } })?.catch?.(() => {})
+
+  /** The run's session title: the plan's own `#` heading, else the filename slug. */
+  const planTitle = (file: string) => {
+    const heading = /^#\s+(.+)$/m.exec(read(file))?.[1]?.trim()
+    if (heading) return heading
+    return path.basename(file).replace(/^\d{14}-/, "").replace(/\.md$/, "")
+  }
+
+  /** Move the TUI to a session. The freshly created one may not have reached the TUI's
+   *  event-fed session list yet and a select for an unknown session is refused, so a few
+   *  retries are the difference between working and refusing at random. */
+  const selectSession = async (id: string) => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt) await new Promise((resolve) => setTimeout(resolve, 200))
+      try {
+        // `tui.session.select` is not in the published SDK's `tui.publish` union; the name
+        // is taken from the server's own event inventory (packages/schema/src/tui-event.ts).
+        const result: any = await client.tui.publish({
+          body: { type: "tui.session.select", properties: { sessionID: id } },
+        })
+        if (!result?.error && (result?.data ?? result) !== false) return true
+      } catch {}
+    }
+    return false
+  }
 
   /** The TUI keeps its own idea of which agent the prompt box is on, and the API has no
    *  setter for it — `agent_cycle` is the only lever, so walk it round to the agent the
@@ -466,9 +493,9 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
         description:
           "Start implementing the plan the user has just approved. Takes no arguments — " +
           "it uses the plan file written in this session. Files that plan and the cycle's " +
-          "original prompt in the journal, then runs /hoko/execute-plan on the build agent " +
-          "in this same session. This is the only way to leave planning: never implement " +
-          "the plan yourself.",
+          "original prompt in the journal, opens a fresh session and runs " +
+          "/hoko/execute-plan on the build agent there. This is the only way to leave " +
+          "planning: never implement the plan yourself.",
         args: {},
         async execute(_args: any, ctx: any) {
           const cwd = ctx.worktree || ctx.directory || project
@@ -476,8 +503,39 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
           if (!plan || !fs.existsSync(plan)) {
             return `No plan file in this session. Write the plan under ${plansDir}/ first — a plan that is not a file cannot be executed.`
           }
+          if (read(state(ctx.sessionID, ".handoff"))) {
+            return `This plan is already on its way to the build agent. Wait for that run instead of approving it again.`
+          }
+          let target = ctx.sessionID
+          if (fresh) {
+            const missing =
+              typeof client?.session?.create !== "function" ? "session.create"
+              : typeof client?.tui?.publish !== "function" ? "tui.publish"
+              : ""
+            if (missing) {
+              return `${missing} is not available in this opencode build. Set HOKO_FRESH_SESSION=0 to hand off in this session, or run /hoko/execute-plan ${plan} by hand. Nothing was handed off.`
+            }
+            try {
+              const created: any = await client.session.create({ body: { title: planTitle(plan) } })
+              target = created?.data?.id ?? created?.id ?? ""
+              if (!target) throw new Error("the server returned no session id")
+            } catch (error: any) {
+              return `Could not create the run's session — ${String(error?.message ?? error)}. Set HOKO_FRESH_SESSION=0 to hand off in this session, or run /hoko/execute-plan ${plan} by hand. Nothing was handed off.`
+            }
+            if (!(await selectSession(target))) {
+              client?.session?.delete?.({ path: { id: target } })?.catch?.(() => {})
+              return `The TUI did not open the run's session ${target}. Set HOKO_FRESH_SESSION=0 to hand off in this session, or run /hoko/execute-plan ${plan} by hand. Nothing was handed off.`
+            }
+          }
           const anchor = state(ctx.sessionID, ".prompt")
           const lines: string[] = []
+          if (fresh) {
+            // journal.py retires the approval session's `.project` when the anchor lives
+            // in its state dir, so the run's copy is written from the value read here
+            // rather than moved after the journal block.
+            const recorded = read(state(ctx.sessionID, ".project"))
+            if (recorded) write(state(target, ".project"), recorded)
+          }
           if (!journaling) {
             // Journaling is opt-in: with no root configured the handoff is all this does.
           } else if (fs.existsSync(anchor)) {
@@ -491,11 +549,20 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
           } else {
             lines.push("Not journaled — no prompt was captured for this cycle. Say so in your reply.")
           }
+          if (fresh) {
+            for (const suffix of [".plan", ".entry"]) {
+              try {
+                fs.renameSync(state(ctx.sessionID, suffix), state(target, suffix))
+              } catch {}
+            }
+          }
           write(state(ctx.sessionID, ".handoff"), plan)
+          if (fresh) write(state(ctx.sessionID, ".target"), target)
           lines.push(
             `Handed off: /hoko/execute-plan ${plan} starts on the ${EXECUTE_AGENT} agent the moment this turn ends.`,
             `Reply with one line — the plan path${journaling ? " and the journal entry" : ""} — then stop. Do not implement anything, do not call any other tool.`,
           )
+          if (fresh) lines.push(`Fresh session: ${target}`)
           return { title: `handed off ${path.basename(plan)}`, output: lines.join("\n") }
         },
       },
@@ -508,9 +575,11 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
       const pending = state(sessionID, ".handoff")
       const plan = read(pending)
       if (plan) {
+        const target = read(state(sessionID, ".target")) || sessionID
         // Cleared before firing: the run's own idle event must not start it again.
         fs.rmSync(pending, { force: true })
-        await handoff(sessionID, plan)
+        fs.rmSync(state(sessionID, ".target"), { force: true })
+        await handoff(target, plan)
         return
       }
 

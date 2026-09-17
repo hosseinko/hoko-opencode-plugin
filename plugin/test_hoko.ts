@@ -21,10 +21,16 @@ const state = (sessionID: string) =>
 
 const journalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "journal-"))
 process.env.HOKO_JOURNAL_PATH = journalRoot
-// The plan model must not leak in from the developer's own hoko.env.
-delete process.env.HOKO_PLAN_MODEL
+// Neither the developer's own hoko.env nor this machine's exported HOKO_* may decide
+// these. An empty value clears what a file set, so `= ""` covers both, where `delete`
+// only covers the exported one.
+process.env.HOKO_PLAN_MODEL = ""
+process.env.HOKO_COVERAGE_MIN = ""
 process.env.HOKO_BUILD_MODEL = "anthropic/claude-test"
 process.env.HOKO_REVIEWER_DEEP_MODEL = "anthropic/claude-deep-test"
+// The main body below predates fresh sessions, so it runs the off path. The fresh
+// blocks at the end turn it back on.
+process.env.HOKO_FRESH_SESSION = "0"
 
 const { HokoPlugin, gitVerdict } = await import("./hoko.ts")
 
@@ -37,6 +43,11 @@ const commands: any[] = []
 const toasts: string[] = []
 const messages: any[] = []
 const cycles: string[] = []
+const created: any[] = []
+const deleted: string[] = []
+const published: any[] = []
+// How many of the next `tui.publish` calls to refuse, to exercise the retry.
+let publishFails = 0
 const agents = [
   { name: "build", mode: "primary" },
   { name: "explore", mode: "subagent" },
@@ -46,10 +57,23 @@ const client = {
   session: {
     command: async (options: any) => void commands.push(options),
     messages: async () => ({ data: messages }),
+    create: async (options: any) => {
+      created.push(options)
+      return { data: { id: "sess-fresh" } }
+    },
+    delete: async (options: any) => void deleted.push(options.path.id),
   },
   tui: {
     showToast: async (options: any) => void toasts.push(options.body.message),
     executeCommand: async (options: any) => void cycles.push(options.body.command),
+    publish: async (options: any) => {
+      published.push(options)
+      if (publishFails > 0) {
+        publishFails--
+        return { error: "no such session" }
+      }
+      return { data: true }
+    },
   },
   app: { log: async () => {}, agents: async () => ({ data: agents }) },
 }
@@ -295,6 +319,183 @@ check("its own rules survive", own.agent.plan.permission.bash["rm*"] === "deny")
   await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "ls -la" } })
   await hooks["tool.execute.before"]({ tool: "write", args: { command: "git commit" } })
   check("the hook lets everything else through", true)
+}
+
+// fresh sessions: approval creates the run's session, navigates to it and moves the
+// cycle's state there
+{
+  const before = { ...process.env }
+  process.env.HOKO_FRESH_SESSION = "1"
+  const freshPlan = path.join(proj, ".ai", "plans", "20260917120000-fresh-run.md")
+  fs.writeFileSync(freshPlan, "# Fresh run title\n## Goal\nRun it elsewhere.\n\n## Steps\n### 1. Go\n")
+  const approval = "sess-approve"
+  const fresh: any = await HokoPlugin({ client, worktree: proj, directory: proj })
+  const freshCtx = { sessionID: approval, worktree: proj, directory: proj, agent: "plan" }
+  await fresh["chat.message"]({ sessionID: approval }, { parts: [{ type: "text", text: "run it" }] })
+  await fresh["tool.execute.after"]({ tool: "write", sessionID: approval, args: { filePath: freshPlan } })
+
+  const base = commands.length
+  const handed: any = await fresh.tool.hoko_execute.execute({}, freshCtx)
+  const text = handed.output ?? handed
+  check("a fresh approval creates a session titled from the plan heading",
+    created.at(-1)?.body?.title === "Fresh run title", JSON.stringify(created.at(-1)))
+  check("a fresh approval publishes tui.session.select for the new session",
+    published.at(-1)?.body?.type === "tui.session.select" &&
+      published.at(-1)?.body?.properties?.sessionID === "sess-fresh",
+    JSON.stringify(published.at(-1)))
+  check("a fresh approval reports the run's session", /Fresh session: sess-fresh/.test(text), text)
+  check("a fresh approval still hands the plan off", /Handed off/.test(text), text)
+  check("nothing runs before the approval session goes idle",
+    commands.length === base, JSON.stringify(commands.slice(base)))
+
+  const createdBefore = created.length
+  const again: any = await fresh.tool.hoko_execute.execute({}, freshCtx)
+  check("a second approval while a handoff is queued is refused",
+    /already on its way/.test(String(again?.output ?? again)) && created.length === createdBefore,
+    String(again?.output ?? again))
+
+  check("the cycle's .plan moved to the run's session",
+    fs.readFileSync(state("sess-fresh").replace(/\.prompt$/, ".plan"), "utf8") === freshPlan)
+  check("the cycle's .project landed on the run's session",
+    fs.readFileSync(state("sess-fresh").replace(/\.prompt$/, ".project"), "utf8") === proj)
+  const freshEntryPath = fs.readFileSync(state("sess-fresh").replace(/\.prompt$/, ".entry"), "utf8")
+
+  await fresh.event({ event: { type: "session.idle", properties: { sessionID: approval } } })
+  check("the queued command runs on the run's session",
+    commands.length === base + 1 &&
+      commands[base].path.id === "sess-fresh" &&
+      commands[base].body.command === "hoko/execute-plan" &&
+      commands[base].body.arguments === freshPlan &&
+      commands[base].body.agent === "build",
+    JSON.stringify(commands.slice(base)))
+  check("the queued handoff and its target are cleared",
+    !fs.existsSync(state(approval).replace(/\.prompt$/, ".handoff")) &&
+      !fs.existsSync(state(approval).replace(/\.prompt$/, ".target")))
+
+  await fresh["chat.message"]({ sessionID: "sess-fresh", agent: "build" }, { parts: [{ type: "text", text: "ship it" }] })
+  check("a message in the run's session never becomes a cycle",
+    !fs.existsSync(state("sess-fresh")), state("sess-fresh"))
+
+  fs.writeFileSync(freshPlan, "Status: complete\n\n" + fs.readFileSync(freshPlan, "utf8"))
+  await fresh["tool.execute.after"]({ tool: "edit", sessionID: "sess-fresh", args: { filePath: freshPlan } })
+  messages.push({ info: { role: "assistant" }, parts: [{ type: "text", text: "Fresh run report." }] })
+  await fresh.event({ event: { type: "session.idle", properties: { sessionID: "sess-fresh" } } })
+  check("the run's closing report lands in the entry opened at approval",
+    fs.readFileSync(freshEntryPath, "utf8").includes("## Final report") &&
+      fs.readFileSync(freshEntryPath, "utf8").includes("Fresh run report."),
+    fs.readFileSync(freshEntryPath, "utf8").slice(-160))
+
+  // a refused navigation leaves no session, no handoff and no journal entry
+  publishFails = 5
+  const navSession = "sess-navfail"
+  const navPlan = path.join(proj, ".ai", "plans", "20260917120500-nav.md")
+  fs.writeFileSync(navPlan, "# Nav fail\n## Goal\nNo nav.\n")
+  await fresh["chat.message"]({ sessionID: navSession }, { parts: [{ type: "text", text: "try" }] })
+  await fresh["tool.execute.after"]({ tool: "write", sessionID: navSession, args: { filePath: navPlan } })
+  const navOut: any = await fresh.tool.hoko_execute.execute({}, { ...freshCtx, sessionID: navSession })
+  const navText = navOut.output ?? navOut
+  check("a refused navigation reports the session and that nothing was handed off",
+    navText.includes("sess-fresh") && /Nothing was handed off/.test(navText), navText)
+  check("a refused navigation deletes the created session", deleted.includes("sess-fresh"), JSON.stringify(deleted))
+  check("a refused navigation queues no handoff",
+    !fs.existsSync(state(navSession).replace(/\.prompt$/, ".handoff")) &&
+      !fs.existsSync(state(navSession).replace(/\.prompt$/, ".target")))
+  check("a refused navigation files no journal entry",
+    !fs.existsSync(state(navSession).replace(/\.prompt$/, ".entry")))
+
+  // navigation is retried until the TUI knows the session
+  const publishedBefore = published.length
+  publishFails = 1
+  const retrySession = "sess-retry"
+  const retryPlan = path.join(proj, ".ai", "plans", "20260917120700-retry.md")
+  fs.writeFileSync(retryPlan, "# Retry run\n## Goal\nSecond time lucky.\n")
+  await fresh["chat.message"]({ sessionID: retrySession }, { parts: [{ type: "text", text: "retry" }] })
+  await fresh["tool.execute.after"]({ tool: "write", sessionID: retrySession, args: { filePath: retryPlan } })
+  const retryOut: any = await fresh.tool.hoko_execute.execute({}, { ...freshCtx, sessionID: retrySession })
+  check("navigation is retried until the TUI accepts it",
+    /Handed off/.test(String(retryOut?.output ?? retryOut)) && published.length === publishedBefore + 2,
+    String(retryOut?.output ?? retryOut))
+  await fresh.event({ event: { type: "session.idle", properties: { sessionID: retrySession } } })
+
+  // no `#` heading: the session is titled from the plan's filename slug
+  const unnamedSession = "sess-unnamed"
+  const unnamedPlan = path.join(proj, ".ai", "plans", "20260917120600-no-heading.md")
+  fs.writeFileSync(unnamedPlan, "## Goal\nNo heading here.\n")
+  await fresh["chat.message"]({ sessionID: unnamedSession }, { parts: [{ type: "text", text: "no heading" }] })
+  await fresh["tool.execute.after"]({ tool: "write", sessionID: unnamedSession, args: { filePath: unnamedPlan } })
+  const unnamedOut: any = await fresh.tool.hoko_execute.execute({}, { ...freshCtx, sessionID: unnamedSession })
+  check("a plan with no heading titles the session from its filename",
+    /Handed off/.test(String(unnamedOut?.output ?? unnamedOut)) && created.at(-1)?.body?.title === "no-heading",
+    JSON.stringify(created.at(-1)))
+  await fresh.event({ event: { type: "session.idle", properties: { sessionID: unnamedSession } } })
+
+  process.env = before
+}
+
+// a build that exposes no session.create refuses with the escape hatch
+{
+  const before = { ...process.env }
+  process.env.HOKO_FRESH_SESSION = "1"
+  const noCreate = { ...client, session: { ...client.session, create: undefined } }
+  const bare: any = await HokoPlugin({ client: noCreate, worktree: proj, directory: proj })
+  const s = "sess-nocreate"
+  const planFile = path.join(proj, ".ai", "plans", "20260917120900-nocreate.md")
+  fs.writeFileSync(planFile, "# No create\n## Goal\nNope.\n")
+  await bare["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: "go" }] })
+  await bare["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: planFile } })
+  const createdBefore = created.length
+  const out: any = await bare.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
+  const text = out.output ?? out
+  check("a missing session.create refuses and names HOKO_FRESH_SESSION=0",
+    /session\.create/.test(text) && /HOKO_FRESH_SESSION=0/.test(text), text)
+  check("a missing session.create creates nothing", created.length === createdBefore, text)
+  check("a missing session.create queues no handoff",
+    !fs.existsSync(state(s).replace(/\.prompt$/, ".handoff")))
+  process.env = before
+}
+
+// a build that exposes no tui.publish refuses with the same escape hatch
+{
+  const before = { ...process.env }
+  process.env.HOKO_FRESH_SESSION = "1"
+  const noPublish = { ...client, tui: { ...client.tui, publish: undefined } }
+  const bare: any = await HokoPlugin({ client: noPublish, worktree: proj, directory: proj })
+  const s = "sess-nopublish"
+  const planFile = path.join(proj, ".ai", "plans", "20260917120930-nopublish.md")
+  fs.writeFileSync(planFile, "# No publish\n## Goal\nNope.\n")
+  await bare["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: "go" }] })
+  await bare["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: planFile } })
+  const createdBefore = created.length
+  const out: any = await bare.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
+  const text = out.output ?? out
+  check("a missing tui.publish refuses and names HOKO_FRESH_SESSION=0",
+    /tui\.publish/.test(text) && /HOKO_FRESH_SESSION=0/.test(text), text)
+  check("a missing tui.publish creates nothing", created.length === createdBefore, text)
+  check("a missing tui.publish queues no handoff",
+    !fs.existsSync(state(s).replace(/\.prompt$/, ".handoff")))
+  process.env = before
+}
+
+// HOKO_FRESH_SESSION=0 hands off in the approval session, as before
+{
+  const before = { ...process.env }
+  process.env.HOKO_FRESH_SESSION = "0"
+  const off: any = await HokoPlugin({ client, worktree: proj, directory: proj })
+  const s = "sess-off"
+  const offPlan = path.join(proj, ".ai", "plans", "20260917121000-off.md")
+  fs.writeFileSync(offPlan, "# Off run\n## Goal\nSame session.\n")
+  await off["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: "off please" }] })
+  await off["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: offPlan } })
+  const createdBefore = created.length
+  const out: any = await off.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
+  const text = out.output ?? out
+  check("with HOKO_FRESH_SESSION=0 no session is created", created.length === createdBefore, text)
+  check("with HOKO_FRESH_SESSION=0 nothing reports a fresh session", !/Fresh session/.test(text), text)
+  const base = commands.length
+  await off.event({ event: { type: "session.idle", properties: { sessionID: s } } })
+  check("with HOKO_FRESH_SESSION=0 the command targets the approval session",
+    commands.length === base + 1 && commands[base].path.id === s, JSON.stringify(commands.slice(base)))
+  process.env = before
 }
 
 console.log()

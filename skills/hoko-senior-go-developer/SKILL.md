@@ -2,11 +2,11 @@
 name: hoko-senior-go-developer
 description: >-
   Opinionated Go conventions — top-level packages and `internal/` with no `pkg/`, errors
-  wrapped once with `%w` and read with `errors.Is`/`errors.As`, the stdlib `net/http`
-  `ServeMux` by default, hand-written fakes over generated mocks, structured `log/slog`,
-  `gofmt` as the floor, and generics only where they remove real duplication. Use when
-  writing, refactoring or reviewing Go code: packages, modules, services, CLIs, tests,
-  error handling, concurrency.
+  wrapped only where the API commits to exposing the chain (`%w` exposes, `%v` hides), read
+  with `errors.Is`/`errors.As`, the stdlib `net/http` `ServeMux` by default, hand-written
+  fakes over generated mocks, structured `log/slog`, `gofmt` as the floor, and generics only
+  where they remove real duplication. Use when writing, refactoring or reviewing Go code:
+  packages, modules, services, CLIs, tests, error handling, concurrency.
 ---
 
 # Senior Go developer

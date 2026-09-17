@@ -82,6 +82,9 @@ not buried under lint output.
    on. `[official]` —
    [pkg.go.dev/golang.org/x/vuln/cmd/govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)
 
+[`../scripts/go_check.py`](../scripts/go_check.py) runs exactly these four commands in this
+order, skipping a tool that is not installed instead of failing the run.
+
 ## `go vet`
 
 - `go vet ./...` runs all vet analyzers by default; it is normally invoked through `go` and
@@ -201,6 +204,7 @@ linters:
     - contextcheck
     - copyloopvar
     - errorlint
+    - modernize
     - noctx
 
 formatters:
@@ -215,6 +219,15 @@ five default linters; the `enable` list adds the correctness linters from above.
 is kept as the explicit floor even though `gofumpt` subsumes it, and `gci` is enabled
 without `goimports` because they overlap. `[community]` —
 [configuration file](https://golangci-lint.run/docs/configuration/file/)
+
+## Scripts
+
+- [`../scripts/go_check.py`](../scripts/go_check.py) — the ordered pipeline above; a
+  missing tool prints `skipped:` and the rest still run.
+- [`../scripts/go_test.py`](../scripts/go_test.py) — `go test ./... -coverprofile` plus
+  `go tool cover -func` for the total, and the packages with Go files but no test file.
+- [`../scripts/go_scaffold.py`](../scripts/go_scaffold.py) — create a library, CLI or
+  service layout with the `.golangci.yml` above; `--dry-run` prints the paths.
 
 ## Sources
 

@@ -24,7 +24,9 @@ points at the topic file that carries the detail.
 - `gofmt` is the floor, not a preference `[official]`; `gofumpt` and `gci` run as
   golangci-lint v2 `formatters`, never as hand edits `[community]`.
 - Top-level packages, `internal/` for anything not exported, `cmd/` only with two or more
-  binaries, and no `pkg/`. `internal` is compiler-enforced; `pkg/` is not. `[contested]`
+  binaries — except a service or mixed repository carrying non-Go assets, which keeps its
+  commands under `cmd/` even with one — and no `pkg/`. `internal` is compiler-enforced;
+  `pkg/` is not. `[contested]`
 - Wrap only what the API commits to exposing: `%w` exposes the chain, `%v` hides it
   `[official]`; "wrap once, at the layer that adds information" is a community heuristic
   `[community]`. Compare sentinels with `errors.Is` and extract types with `errors.As` or
@@ -57,3 +59,14 @@ points at the topic file that carries the detail.
 | Table-driven tests, fakes, fuzzing, benchmarks, coverage, `synctest` | [testing.md](reference/testing.md) |
 | `ServeMux`, middleware, timeouts, graceful shutdown, JSON errors | [http-and-api.md](reference/http-and-api.md) |
 | gofmt/goimports/gofumpt, golangci-lint v2, govulncheck, CI | [tooling-and-ci.md](reference/tooling-and-ci.md) |
+
+## Scripts
+
+- `python3 scripts/go_check.py` — the ordered pipeline: `gofmt -l .`, `go vet ./...`,
+  `golangci-lint run`, `govulncheck ./...`. A missing tool is skipped, not failed.
+- `python3 scripts/go_test.py` — per-package and total coverage, and the packages with Go
+  files but no `_test.go`.
+- `python3 scripts/go_scaffold.py <library|cli|service> <module-path> <target-dir>` —
+  create a layout; `--dry-run` prints the paths without writing.
+
+All three run from the module root.

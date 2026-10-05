@@ -1,5 +1,5 @@
 ---
-description: Reviews a diff against the plan step it was meant to implement, using the hoko-code-review skill, and runs the fast gate — static analysis plus unit tests only. Invoke with the plan file path, the step number, and the diff command to run. Use on every step of a plan run, on the configured review model; the conductor delegates to `hoko-code-reviewer-deep` for a large or risky diff.
+description: Reviews a diff against the plan step it was meant to implement, using the hoko-code-review skill, and runs the fast gate — static analysis plus unit tests only. Invoke with the plan file path, the step number, and the diff command to run. A standalone reviewer available on request, on the configured review model; a plan run uses `hoko-step-gate` per step and `hoko-code-reviewer-deep` once at the end.
 mode: subagent
 color: accent
 permission:
@@ -166,9 +166,8 @@ from the plan rather than the code:
 ## Report format
 
 Report as the skill directs, using its severity labels, findings first and most severe
-first. If the diff is clean, say so in one line — you are called on every step,
-including renames and two-line changes, so an empty findings list is a normal and common
-outcome. Never manufacture a finding to look thorough, and never soften a genuine
+first. If the diff is clean, say so in one line — an empty findings list is a normal and
+common outcome. Never manufacture a finding to look thorough, and never soften a genuine
 problem because the rest of the diff is good.
 
 Then two lines the skill does not ask for:

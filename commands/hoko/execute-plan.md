@@ -187,13 +187,50 @@ here — the subagent runs it in its own context, which is the point of delegati
 If it comes back `not ready`, the run is not finished: the plan file does not get
 `Status: complete`. Bring me the blockers and stop.
 
+## The end-of-run review
+
+With every step committed and the QA gate green, the code review runs once, over the
+whole branch, before anything is integrated. It is unconditional and always deep — there
+is no per-step review left to skip and no escalation criterion to miss.
+
+Compute the branch base and review everything since it:
+
+```bash
+BASE="$(git merge-base HEAD "origin/${HOKO_BASE_BRANCH:-develop}" 2>/dev/null \
+  || git merge-base HEAD "${HOKO_BASE_BRANCH:-develop}")"
+```
+
+Launch the `hoko-code-reviewer-deep` subagent (`subagent_type:
+hoko-code-reviewer-deep`) with the absolute plan path, `whole run`, and
+`git diff <base>..HEAD`. It reads the whole plan in its own context and checks the
+entire branch diff against the plan's Requirements. Its fast gate still runs.
+
+Branch on its verdict:
+
+- **`clean`** — the only verdict that opens the pull request. Go to the PR section
+  below, then set `Status: complete`.
+- **Any finding** — `minor findings` and `do not commit` block exactly like a blocking
+  one. Do not open a pull request. Write a follow-up plan at
+  `${HOKO_PLANS_DIR:-.ai/plans}/$(date +%Y%m%d%H%M%S)-<short-kebab-slug>.md` in the standard plan
+  structure — Goal, Decisions, Requirements, Test conventions, Progress, Steps — with
+  its Requirements restating the behaviours the findings name and one `- [ ]` box per
+  step under `## Progress`. Then set the current plan to `Status: complete` and post the
+  closing report naming the follow-up plan path and stating the pull request is
+  deferred. The follow-up plan is a hand-off, not an automatic next run.
+
 ## The pull request
 
-With the gate green the branch is finished but not integrated. Invoke the
-`hoko-pull-request` skill and follow it: it checks whether `origin` is GitHub and, if it
-is, pushes the branch and opens a PR against the integration branch — `HOKO_BASE_BRANCH`,
-or the remote's own default branch when that is unset. On any other remote, or none at
-all, it leaves the branch where it is and says so, which is a normal ending.
+With the final gate and the deep review both green, the branch is finished but not
+integrated. A run whose deep review found anything never reaches this section: it wrote
+a follow-up plan, set `Status: complete`, and stopped. That follow-up plan's own run
+repeats the whole flow — steps, step-gate, QA, deep review — and only a cycle whose
+review is `clean` opens the pull request.
+
+Invoke the `hoko-pull-request` skill and follow it: it checks whether `origin` is GitHub
+and, if it is, pushes the branch and opens a PR against the integration branch —
+`HOKO_BASE_BRANCH`, or the remote's own default branch when that is unset. On any other
+remote, or none at all, it leaves the branch where it is and says so, which is a normal
+ending.
 
 Do this before you set `Status: complete`, because the PR body is the closing report you
 are about to post: draft the report first, hand it to the skill as the body, then add the

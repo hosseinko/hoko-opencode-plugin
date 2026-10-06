@@ -4,13 +4,14 @@ plan-file.py — files an approved plan into its journal entry, round by round.
 
 Ships with the `hoko` opencode plugin. One mode:
 
-  file   `plan-file.py file --plan <path> [--session <id>] [--project <name>]` —
-         resolves the project (the `--project` override, else the plan's own
-         `Project:` line, else `journal.resolve_project`), records a `Project:` line
-         under the plan's title, hands the plan and the best available prompt anchor
-         to `journal.py write`, records a `Journal:` line naming the `plan-01.md` it
-         created, and registers `--session` against that entry as round 1 role `plan`.
-         A plan whose `Journal:` line already names an existing file is not re-filed.
+  file   `plan-file.py file --plan <path> [--session <id>] [--project <name>]
+         [--since <iso>]` — resolves the project (the `--project` override, else the
+         plan's own `Project:` line, else `journal.resolve_project`), records a
+         `Project:` line under the plan's title, hands the plan and the best available
+         prompt anchor to `journal.py write`, records a `Journal:` line naming the
+         `plan-01.md` it created, and registers `--session` against that entry as round
+         1 role `plan`, stamping the row with `--since` when given. A plan whose
+         `Journal:` line already names an existing file is not re-filed.
          Prints the `plan-01.md` path.
 
 Journaling is opt-in: with no journalPath configured, only the `Project:` line is
@@ -95,11 +96,14 @@ def run_journal(*args):
     return result.stdout.strip()
 
 
-def register(session_id, entry):
+def register(session_id, entry, since=None):
     if not session_id:
         return
-    run_journal("register", "--entry", str(entry), "--session", session_id,
-                "--round", "1", "--role", "plan")
+    args = ["register", "--entry", str(entry), "--session", session_id,
+            "--round", "1", "--role", "plan"]
+    if since:
+        args += ["--since", since]
+    run_journal(*args)
 
 
 def cmd_file(args):
@@ -115,7 +119,7 @@ def cmd_file(args):
     existing = journal.journal_plan(text)
     if existing is not None and existing.is_file():
         if settings.get("journalPath"):
-            register(session_id, existing.parent)
+            register(session_id, existing.parent, args.since)
         print(existing)
         return
 
@@ -140,7 +144,7 @@ def cmd_file(args):
     text = ensure_header_line(plan_path.read_text(encoding="utf-8"), "Journal", str(plan_copy))
     plan_path.write_text(text, encoding="utf-8")
 
-    register(session_id, plan_copy.parent)
+    register(session_id, plan_copy.parent, args.since)
     print(plan_copy)
 
 
@@ -152,6 +156,8 @@ def main():
     file_cmd.add_argument("--plan", required=True, help="absolute path to the plan file")
     file_cmd.add_argument("--session", help="the approving session, registered as round 1 role plan")
     file_cmd.add_argument("--project", help="override the project name")
+    file_cmd.add_argument("--since",
+                          help="the cycle's prompt-capture time recorded on the plan row (default: now, UTC)")
 
     args = parser.parse_args()
     if args.mode == "file":

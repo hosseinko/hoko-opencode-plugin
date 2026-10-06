@@ -337,6 +337,17 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
     } catch {}
   }
 
+  /** A state file's own timestamp as an ISO string, or undefined when it is absent. The
+   *  `.prompt` anchor carries the cycle's capture moment; filing rotates it to
+   *  `.prompt.used`, which keeps that timestamp. */
+  const statStart = (file: string): string | undefined => {
+    try {
+      return fs.statSync(file).mtime.toISOString()
+    } catch {
+      return undefined
+    }
+  }
+
   const toast = (message: string, variant: "info" | "error") =>
     client?.tui?.showToast?.({ body: { message, variant } })?.catch?.(() => {})
 
@@ -384,7 +395,7 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
   }
 
   /** The handoff itself: run /hoko/execute-plan on the build agent, in this session. */
-  const handoff = async (sessionID: string, plan: string) => {
+  const handoff = async (sessionID: string, plan: string, since?: string) => {
     if (!client?.session?.command) {
       toast(`hoko: no server client — run /hoko/execute-plan ${plan}`, "error")
       return
@@ -406,9 +417,9 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
     const entry = read(state(sessionID, ".entry"))
     if (journaling && entry) {
       try {
-        journal(env, read(state(sessionID, ".project")) || project, [
-          "register", "--entry", entry, "--session", sessionID, "--round", "1", "--role", "execute",
-        ])
+        const args = ["register", "--entry", entry, "--session", sessionID, "--round", "1", "--role", "execute"]
+        if (since) args.push("--since", since)
+        journal(env, read(state(sessionID, ".project")) || project, args)
       } catch (error: any) {
         toast(`hoko: could not register the run's session — ${error.message}`, "error")
       }
@@ -675,7 +686,13 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
           }
           if (journaling) {
             try {
-              const planCopy = run(PLAN_FILE_SCRIPT, ["file", "--plan", plan, "--session", ctx.sessionID], cwd, env)
+              const args = ["file", "--plan", plan, "--session", ctx.sessionID]
+              // Prefer the unrotated anchor: it is this cycle's. `.prompt.used` only
+              // carries the capture time when the anchor was already filed.
+              const since = statStart(state(ctx.sessionID, ".prompt"))
+                ?? statStart(state(ctx.sessionID, ".prompt.used"))
+              if (since) args.push("--since", since)
+              const planCopy = run(PLAN_FILE_SCRIPT, args, cwd, env)
               const entry = path.dirname(planCopy)
               write(state(ctx.sessionID, ".entry"), entry)
               lines.push(`Journal entry: ${entry}`)
@@ -713,7 +730,8 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
         // Cleared before firing: the run's own idle event must not start it again.
         fs.rmSync(pending, { force: true })
         fs.rmSync(state(sessionID, ".target"), { force: true })
-        await handoff(target, plan)
+        const since = statStart(state(sessionID, ".prompt.used")) ?? statStart(state(sessionID, ".prompt"))
+        await handoff(target, plan, since)
         return
       }
 

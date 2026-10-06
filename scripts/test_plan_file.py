@@ -56,7 +56,7 @@ class TestPlanFile(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def run_file(self, plan, session=None, project=None, repo=None, journal="default"):
+    def run_file(self, plan, session=None, project=None, repo=None, journal="default", since=None):
         env = dict(os.environ)
         for name in list(env):
             if name.startswith("HOKO_"):
@@ -72,6 +72,8 @@ class TestPlanFile(unittest.TestCase):
             args += ["--session", session]
         if project:
             args += ["--project", project]
+        if since:
+            args += ["--since", since]
         return subprocess.run(args, capture_output=True, text=True, env=env,
                               cwd=str(repo) if repo else str(self.home))
 
@@ -122,6 +124,20 @@ class TestPlanFile(unittest.TestCase):
         self.assertIn("since", rows[0])
         self.assertEqual({k: v for k, v in rows[0].items() if k != "since"},
                          {"session_id": "s1", "round": 1, "role": "plan"})
+
+    def test_the_plan_row_records_the_capture_time_not_the_filing_time(self):
+        repo = self.repo()
+        plan = self.tmp / "plan.md"
+        plan.write_text(plan_text("Capture time"))
+        captured = "2020-01-02T03:04:05.006+00:00"
+
+        result = self.run_file(plan, session="s1", repo=repo, since=captured)
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        entry = Path(result.stdout.strip())
+
+        rows = json.loads((entry.parent / "sessions.json").read_text())
+        self.assertEqual(len(rows), 1, str(rows))
+        self.assertEqual(rows[0]["since"], captured)
 
     def test_a_plan_whose_journal_line_names_an_existing_file_is_not_refiled(self):
         repo = self.repo()

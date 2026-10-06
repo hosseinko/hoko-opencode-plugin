@@ -123,6 +123,7 @@ check("the plugin's state() matches journal.py's state_file under HOKO_STATE_DIR
 await hooks["chat.message"]({ sessionID: session }, { parts: [{ type: "text", text: "make it faster\n\nkeep `--dry-run`" }] })
 await hooks["chat.message"]({ sessionID: session }, { parts: [{ type: "text", text: "a refinement" }] })
 const anchor = shell.env.HOKO_PROMPT_FILE
+const capturedIso = fs.statSync(anchor).mtime.toISOString()
 check("first prompt is captured verbatim", fs.readFileSync(anchor, "utf8") === "make it faster\n\nkeep `--dry-run`")
 check("the project is recorded beside it", fs.readFileSync(anchor.replace(/\.prompt$/, ".project"), "utf8") === proj)
 
@@ -203,6 +204,12 @@ check("sessions.json registers the approving session as round 1 plan",
   JSON.stringify(sessionsRows))
 check("sessions.json registers the run's session as round 1 execute",
   sessionsRows.some((row: any) => row.session_id === session && row.round === 1 && row.role === "execute"),
+  JSON.stringify(sessionsRows))
+check("the plan row's since is the prompt-capture time, not the filing time",
+  sessionsRows.find((row: any) => row.round === 1 && row.role === "plan")?.since === capturedIso,
+  JSON.stringify(sessionsRows))
+check("the execute row carries the same cycle start",
+  sessionsRows.find((row: any) => row.round === 1 && row.role === "execute")?.since === capturedIso,
   JSON.stringify(sessionsRows))
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: session } } })
 check("the run's own idle does not re-fire it", commands.length === 1, JSON.stringify(commands))

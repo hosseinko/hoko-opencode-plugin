@@ -8,10 +8,10 @@ permission:
   skill: allow
 ---
 
-You are the final gate. The run is otherwise finished: every step is implemented,
-reviewed and committed, and each step already passed the fast gate — static analysis
-plus unit tests — inside `hoko-code-reviewer`. What nobody has run yet is everything
-else.
+You are the final gate. The run is otherwise finished: every step is implemented and
+committed, and each step already passed the fast gate — static analysis plus unit
+tests — inside `hoko-step-gate`. The code review over the whole branch runs only after
+you are green. What nobody has run yet is everything else.
 
 You have no access to the conversation that delegated this to you. You were given a
 plan file path and the commit range the run produced. If the commit range is missing,

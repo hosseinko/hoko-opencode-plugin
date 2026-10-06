@@ -1,8 +1,9 @@
 # hoko — a plan-and-execute workflow for opencode
 
 Plan mode grills you, writes the plan to a file, and hands it to a build run that
-implements it one reviewed, committed step at a time. Every step gets a code review and
-a fast gate; the whole run gets a full quality gate and a pull request. Nothing merges.
+implements it one gated, committed step at a time. Every step gets a fast gate; once the
+whole run passes the full quality gate, one deep code review covers the branch, and only
+a clean verdict opens a pull request. Nothing merges.
 
 Everything lives under the **`hoko`** namespace — commands are `/hoko/…`, agents and
 skills are `hoko-…` — except `grill-me`, which keeps its bare name, and `plan`, which
@@ -85,9 +86,10 @@ files, `hoko.env`, `opencode.json` — needs a restart, not a new session.
 ### 5. Check it took
 
 ```sh
-opencode agent list          # plan, hoko-plan-executor, hoko-code-reviewer,
-                             #   hoko-code-reviewer-deep, hoko-quality-assurance,
-                             #   hoko-researcher, hoko-go-code-reviewer, hoko-go-test-writer,
+opencode agent list          # plan, hoko-plan-executor, hoko-step-gate,
+                             #   hoko-code-reviewer, hoko-code-reviewer-deep,
+                             #   hoko-quality-assurance, hoko-researcher,
+                             #   hoko-go-code-reviewer, hoko-go-test-writer,
                              #   hoko-go-architect
 opencode debug skill         # grill-me, hoko-commit, hoko-pull-request, hoko-code-review,
                              #   hoko-api-developer, hoko-quality-assurance,
@@ -143,7 +145,7 @@ the tests after touching it.
 | No journal entry | Expected unless `HOKO_JOURNAL_PATH` is set — journaling is off by default. With it set: `python3` missing, or the root is not writable. `hoko_execute` reports the reason in its output instead of failing silently. |
 | Entry has no `## Final report` | The run never set `Status: complete` — a blocker or a `not ready` gate — or the closing report was not the last thing posted. |
 | Plans land in `.claude/plans/` | Stale Claude Code skills are being picked up — see [Claude Code interference](#claude-code-interference). |
-| The reviewer says it could not run a check | Its bash allowlist does not cover your project's command. Add the pattern to `agents/hoko-code-reviewer.md`. |
+| A gate subagent says it could not run a check | Its bash allowlist does not cover your project's command. Add the pattern to `agents/hoko-step-gate.md`, or `agents/hoko-code-reviewer-deep.md` for the end-of-run review. |
 
 ## Configuration
 
@@ -157,7 +159,7 @@ The plugin reads, in increasing order of precedence: `hoko.env` in this repo,
 | `HOKO_BUILD_MODEL` | model for the `build` agent — the conductor of a plan run | the session's model |
 | `HOKO_EXECUTOR_MODEL` | model for `hoko-plan-executor` | the session's model |
 | `HOKO_REVIEWER_MODEL` | model for `hoko-code-reviewer` | the session's model |
-| `HOKO_REVIEWER_DEEP_MODEL` | model for `hoko-code-reviewer-deep`, the reviewer the conductor escalates to for a large or risky diff | the session's model |
+| `HOKO_REVIEWER_DEEP_MODEL` | model for `hoko-code-reviewer-deep`, the reviewer that runs once at the end of a plan run | the session's model |
 | `HOKO_QA_MODEL` | model for `hoko-quality-assurance` | the session's model |
 | `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` | the session's model |
 | `HOKO_JOURNAL_PATH` | journal root | **unset — journaling is off** |
@@ -201,8 +203,9 @@ One cycle, one Tab press:
 ```
 Tab → plan                    grill → plan file → "approve?"
 you: approved                 hoko_execute: opens a fresh session, journals, runs execute-plan on build
-build (fresh session)         delegate → verify → review → commit, one step per cycle
-                              → full gate → PR → Status: complete → report journaled
+build (fresh session)         delegate → verify → step-gate → commit, one step per cycle
+                              → full gate → deep review → PR or follow-up plan
+                              → Status: complete → report journaled
 ```
 
 Commands, all optional entry points:
@@ -230,9 +233,10 @@ numbered `R<N>` lines in EARS form — *While `<state>`, when `<trigger>`, the
 `<component>` shall `<response>`* — one behaviour per line. The grilling is shaped to
 fill the five EARS buckets, so a failure path nobody asked about shows up as an empty
 one rather than as silence. Each step then claims the ids it delivers on a `Satisfies:`
-line, and that line is what the executor builds to, what the reviewer checks the diff
-against — a requirement claimed but not delivered blocks the commit, behaviour no
-requirement asks for is scope creep — and what the final gate reports coverage against.
+line, and that line is what the executor builds to, what the end-of-run review checks the
+branch against — a requirement claimed but not delivered is a finding that defers the
+PR, as is behaviour no requirement asks for — and what the final gate reports coverage
+against.
 A change with no observable behaviour, a rename or a pure refactor, states no
 requirements and says so.
 
@@ -295,28 +299,35 @@ says so too.
 
 `/hoko/execute-plan` runs on `build` and works the plan one step per cycle: delegate the
 step to `hoko-plan-executor` (cheaper model, its own context), read the diff yourself,
-send it to the `hoko-code-reviewer` subagent — every step, unconditionally — then commit
-via the `hoko-commit` skill. One commit per step. With `HOKO_COMMIT_AUTO=1` each of those
+run the `hoko-step-gate` subagent over it — every step, unconditionally — then commit
+via the `hoko-commit` skill. A red fast gate goes back to the executor and nothing commits
+until it is green. One commit per step. With `HOKO_COMMIT_AUTO=1` each of those
 commits lands without stopping to confirm the message — the protected-branch check and
 the gate still hold. The plan's `## Progress` checklist tracks how far the run got, so it
 survives a compaction or a restart.
 
-The gate is split so the loop stays cheap. Per step, `hoko-code-reviewer` runs the **fast
-gate** — the project's static analyser and its unit tests, nothing else — behind the same
-call as the review; the conductor re-runs nothing. Once every box is ticked, the
+The gate is split so the loop stays cheap. Per step, `hoko-step-gate` runs the **fast
+gate** — the project's static analyser and its unit tests, nothing else — and reports each
+command and result; the conductor re-runs nothing. Once every box is ticked, the
 `hoko-quality-assurance` subagent runs the **full gate** once over the whole run — lint,
 static analysis, the full suite with coverage — fixes what it can, commits those fixes,
 and reports each gate and each fix. A `not ready` verdict means the plan file does not
-turn `Status: complete`.
+turn `Status: complete`. With the full gate green, `hoko-code-reviewer-deep` reviews the
+whole branch once, against the plan's Requirements; only a `clean` verdict opens the pull
+request.
 
-Neither agent assumes a toolchain. Both read the project's manifest scripts, analyser and
-test config, and CI workflow to find the commands it actually enforces, and say which
-command they settled on so a wrong one is visible. The reviewer runs under a bash
+The gate subagents assume no toolchain. Each reads the project's manifest scripts,
+analyser and test config, and CI workflow to find the commands it actually enforces, and
+says which command it settled on so a wrong one is visible. Each runs under its own bash
 allowlist covering the common runners across PHP, JS/TS, Python, Go, Rust, JVM, Ruby and
-.NET; if yours is missing it says so rather than substituting something else, and the
+.NET; if yours is missing it says so rather than substituting something else, and each
 list is one file to edit.
 
-A green gate is not an integration. Before the plan file turns complete, the run invokes
+A green gate is not an integration. Only a `clean` deep review reaches the PR: on any
+finding the run writes a follow-up plan instead — the findings restated as Requirements,
+with a `## Progress` box per step — sets the plan complete, and stops, so the PR is
+deferred to that plan's own run, which repeats the whole flow. When the review is clean,
+before the plan file turns complete, the run invokes
 `hoko-pull-request`: if `origin` is GitHub it pushes the branch and opens a pull request
 against the base the branch prefix calls for — `develop` for `feature/` and `bugfix/`,
 the release branch plus a back-merge PR for `hotfix/` and `release/` — with the run's
@@ -366,10 +377,10 @@ agents/
                           grill → plan file → approve → hoko_execute
   hoko-plan-executor.md   subagent; implements one step, never commits
   hoko-researcher.md      subagent; external research, writes .ai/research/<stamp>-<slug>.md
-  hoko-code-reviewer.md   subagent; reviews a step's diff via hoko-code-review,
-                          plus the fast gate: static analysis + unit tests
-  hoko-code-reviewer-deep.md subagent; the escalated reviewer for a large or risky
-                          diff, on HOKO_REVIEWER_DEEP_MODEL
+  hoko-step-gate.md       subagent; a step's fast gate — static analysis + unit tests
+  hoko-code-reviewer.md   subagent; reviews a diff via hoko-code-review on request
+  hoko-code-reviewer-deep.md subagent; the single end-of-run review over the whole
+                          branch, on HOKO_REVIEWER_DEEP_MODEL
   hoko-quality-assurance.md subagent; the end-of-run full gate, fixes and commits
   hoko-go-code-reviewer.md subagent; reviews a Go diff against hoko-senior-go-developer,
                           findings tagged official/community/contested, read-only
@@ -455,7 +466,8 @@ The parts most likely to want changing:
 - **The gates** — `skills/hoko-quality-assurance/SKILL.md` is the whole gate in one
   file, tool-agnostic. Its hard rules (no suppression entries, no inline ignore
   comments, coverage only goes up) are the opinionated part.
-- **The reviewer's allowlist** — `agents/hoko-code-reviewer.md`, if it cannot run your
+- **The gate's allowlist** — `agents/hoko-step-gate.md`, or
+  `agents/hoko-code-reviewer-deep.md` for the end-of-run review, if one cannot run your
   project's check command.
 - **Standing rules** — anything in `instructions/`, in context on every agent, every
   turn. `hoko.md` is the git and delegation policy; `communication.md` is response style
@@ -480,8 +492,8 @@ conventions and stay out of the way on a diff that is not theirs.
   `strict` when the project meets it or has met it before, `legacy` when it never has
   (held to its own gitignored `.ai/coverage-baseline` instead), or `absent` when there
   is no suite or no coverage tooling. It comes in two shapes — the fast gate (analyser + unit tests)
-  that the reviewer runs per step, and the full gate that runs once at the end of a run
-  or before a standalone commit.
+  that `hoko-step-gate` runs per step, and the full gate that runs once at the end of a
+  run or before a standalone commit.
 - **`hoko-feature-specs`** — writes `specs/<capability>.md`: numbered EARS requirements,
   selective Gherkin acceptance criteria and short design notes, from intent before the
   code exists or derived from code that already runs.
@@ -511,9 +523,9 @@ The four stack skills are framework-agnostic within their stack: they detect the
 framework and test tooling from the project and express the rules in its idioms.
 `hoko-commit` invokes the quality gate before drafting a message, and `hoko-code-review`
 points the reviewer at the PHP pair on a PHP diff, at the frontend skill on a
-TypeScript/React one and at the Go skill on a Go one, so a plan run picks them up at both
-the review and the commit step.
-Inside a plan run `hoko-commit` holds to the fast gate the reviewer already ran
+TypeScript/React one and at the Go skill on a Go one, so a plan run picks them up at the
+commit step and at the end-of-run review.
+Inside a plan run `hoko-commit` holds to the fast gate `hoko-step-gate` already ran
 instead of starting the full one; every other commit runs all three.
 
 ## Research

@@ -1,5 +1,5 @@
 ---
-description: Execute an approved plan one reviewed, committed step at a time
+description: Execute an approved plan one gated, committed step at a time
 agent: build
 ---
 
@@ -81,7 +81,7 @@ finished step.
 
 ## Division of labour
 
-You are the conductor and the reviewer. You do **not** write implementation code here —
+You are the conductor and the gate-caller. You do **not** write implementation code here —
 the `hoko-plan-executor` subagent does, on a cheaper model, in its own context window.
 
 Concretely: **you must not call `edit`, `write` or `patch` on source files for a step.**
@@ -117,9 +117,9 @@ Work the unticked steps in checklist order, **one step per cycle**.
 
 3. **Verify.** When it returns, run `git status --short` and `git diff` yourself.
    Trust the diff, not the subagent's summary of it. Do **not** re-run tests, lint,
-   static analysis or coverage here — the reviewer in the next step runs the fast gate,
-   and the full gate runs once at the end of the run. Re-running them per step is exactly the
-   drag this loop is shaped to avoid.
+   static analysis or coverage here — the `hoko-step-gate` subagent in the next step runs
+   the fast gate, and the full gate runs once at the end of the run. Re-running them per
+   step is exactly the drag this loop is shaped to avoid.
 
    Stop and ask me if the subagent reported a blocker, the diff is empty, or the diff
    touches files the step never mentions. Both mean the plan was wrong. Do not
@@ -131,58 +131,34 @@ Work the unticked steps in checklist order, **one step per cycle**.
    executor cannot do this itself: subagents cannot launch subagents at opencode's
    default nesting depth.
 
-4. **Review — every step, no exceptions.** This is not a judgement call and you do not
-   get to skip it because the diff looks small.
+4. **Gate.** Every step's fast gate runs before its commit — this is not a judgement
+   call and you do not get to skip it because the diff looks small.
 
-   Read the diff yourself first, so you can weigh what comes back. Then launch the
-   `hoko-code-reviewer` subagent (`subagent_type: hoko-code-reviewer`) with the absolute
-   plan path, the step number, and the exact diff command to run, for example
-   `git diff` or `git diff HEAD~1`. It reads the diff in its own context, reviews it
-   with the `hoko-code-review` skill, runs the fast gate — static analysis and the unit
-   tests, nothing else — and reports back with both.
+   Launch the `hoko-step-gate` subagent (`subagent_type: hoko-step-gate`) with the
+   absolute plan path, the step number, and the exact diff command to run, for example
+   `git diff` or `git diff HEAD~1`. It reads the diff in its own context, runs the fast
+   gate — the project's static analysis and its unit tests, nothing else — and reports
+   the exact command and result of each.
 
-   Pick the reviewer deliberately per step — the agent's own default is the cheap one,
-   and a review is the run's most expensive repeated call. When any of these holds,
-   launch `hoko-code-reviewer-deep` (`subagent_type: hoko-code-reviewer-deep`) instead,
-   and say in one clause which criterion did:
+   A red fast gate is a finding. Send it back to the same `hoko-plan-executor` task as a
+   follow-up, quoting the finding verbatim — it still has the full context, so the
+   correction happens there instead of being rebuilt here. No finding is small enough
+   for you to fix yourself.
 
-   - the diff is large — roughly 400 changed lines or more, or more than ten files
-   - it touches authentication, authorization, secrets, money, personal data, a database
-     migration, concurrency, or a public contract other code depends on
-   - the step carries a `Risks:` line
-   - the previous step's review came back `do not commit`
+   A correction changes the diff, so re-run the step-gate on the delta — the finding's
+   subject area and the lines that changed since the last gate — before the commit. The
+   latest step-gate of the current diff is the gate of record; the earlier result no
+   longer stands.
 
-   When in doubt, escalate: a missed defect costs more than the review did.
+   Do not invoke `hoko-code-review` yourself, and run no reviewer until the loop ends:
+   neither `hoko-code-reviewer` nor `hoko-code-reviewer-deep` runs before every step is
+   committed.
 
-   Its fast gate is the step's only verification. A red analyser or a failing unit test
-   comes back as a finding and is handled like any other finding; you do not re-run
-   either yourself to confirm it.
-
-   Address every finding, or note in the plan why it does not apply. A trivial diff
-   comes back as one clean line — that is a normal, common result, and one cheap
-   subagent call is the price of never quietly skipping a review.
-
-   Do not invoke `hoko-code-review` yourself in this loop. The `hoko-code-reviewer`
-   subagent runs it for you, in its own context — which is the whole point of
-   delegating the review rather than doing it here.
-
-   If the step listed a *Risks* mitigation, confirm it is actually present.
-
-   No finding is small enough for you to fix yourself. Send every one back to the same
-   `hoko-plan-executor` task as a follow-up, quoting the finding verbatim — it still has
-   the full context, so the correction happens there instead of being rebuilt here.
-
-   A correction changes the diff, so the step you reviewed is no longer the one on disk:
-   re-launch the same reviewer for it before the commit, bounded to the delta — the
-   finding's subject area and the lines that changed since the last review. The
-   re-review's fast gate is the gate of record; the earlier review's result no longer
-   stands.
-
-5. **Commit.** The commit requires the latest review of the current diff to be clean: a
-   red fast gate, or a re-review that has not come back, blocks it. Correct and re-review
-   until one returns with no red gate. Then invoke the `hoko-commit` skill and follow it,
-   telling it this is a plan-run step commit so it holds to the fast gate the reviewer
-   already ran rather than starting the full one. One commit per step — never batch steps
+5. **Commit.** The commit requires the latest step-gate of the current diff to be green:
+   a red gate, or a re-gate that has not come back, blocks it. Correct and re-gate until
+   one returns green. Then invoke the `hoko-commit` skill and follow it, telling it this
+   is a plan-run step commit so it holds to the fast gate `hoko-step-gate` already ran
+   rather than starting the full one. One commit per step — never batch steps
    into one commit. Then tick that step's box in the plan's
    `## Progress` section (`- [ ] 3.` → `- [x] 3.`) and mark its todo `completed`. Tick
    nothing before the commit lands, and never tick a step you had to stop on. If the
@@ -190,9 +166,9 @@ Work the unticked steps in checklist order, **one step per cycle**.
    be force-added. If the repo tracks it, the plan file is reviewed source and is
    committed along with the step.
 
-6. **Report** one line: step done, commit subject, tests run — and name the subagents you
-   launched for it, so a skipped delegation is visible rather than silent. Then move to
-   the next step.
+6. **Report** one line: step done, commit subject, gate result — and name the
+   `hoko-step-gate` subagent (and any other you launched) for it, so a skipped delegation
+   is visible rather than silent. Then move to the next step.
 
 ## The final gate
 
@@ -211,13 +187,50 @@ here — the subagent runs it in its own context, which is the point of delegati
 If it comes back `not ready`, the run is not finished: the plan file does not get
 `Status: complete`. Bring me the blockers and stop.
 
+## The end-of-run review
+
+With every step committed and the QA gate green, the code review runs once, over the
+whole branch, before anything is integrated. It is unconditional and always deep — there
+is no per-step review left to skip and no escalation criterion to miss.
+
+Compute the branch base and review everything since it:
+
+```bash
+BASE="$(git merge-base HEAD "origin/${HOKO_BASE_BRANCH:-develop}" 2>/dev/null \
+  || git merge-base HEAD "${HOKO_BASE_BRANCH:-develop}")"
+```
+
+Launch the `hoko-code-reviewer-deep` subagent (`subagent_type:
+hoko-code-reviewer-deep`) with the absolute plan path, `whole run`, and
+`git diff <base>..HEAD`. It reads the whole plan in its own context and checks the
+entire branch diff against the plan's Requirements. Its fast gate still runs.
+
+Branch on its verdict:
+
+- **`clean`** — the only verdict that opens the pull request. Go to the PR section
+  below, then set `Status: complete`.
+- **Any finding** — `minor findings` and `do not commit` block exactly like a blocking
+  one. Do not open a pull request. Write a follow-up plan at
+  `${HOKO_PLANS_DIR:-.ai/plans}/$(date +%Y%m%d%H%M%S)-<short-kebab-slug>.md` in the standard plan
+  structure — Goal, Decisions, Requirements, Test conventions, Progress, Steps — with
+  its Requirements restating the behaviours the findings name and one `- [ ]` box per
+  step under `## Progress`. Then set the current plan to `Status: complete` and post the
+  closing report naming the follow-up plan path and stating the pull request is
+  deferred. The follow-up plan is a hand-off, not an automatic next run.
+
 ## The pull request
 
-With the gate green the branch is finished but not integrated. Invoke the
-`hoko-pull-request` skill and follow it: it checks whether `origin` is GitHub and, if it
-is, pushes the branch and opens a PR against the integration branch — `HOKO_BASE_BRANCH`,
-or the remote's own default branch when that is unset. On any other remote, or none at
-all, it leaves the branch where it is and says so, which is a normal ending.
+With the final gate and the deep review both green, the branch is finished but not
+integrated. A run whose deep review found anything never reaches this section: it wrote
+a follow-up plan, set `Status: complete`, and stopped. That follow-up plan's own run
+repeats the whole flow — steps, step-gate, QA, deep review — and only a cycle whose
+review is `clean` opens the pull request.
+
+Invoke the `hoko-pull-request` skill and follow it: it checks whether `origin` is GitHub
+and, if it is, pushes the branch and opens a PR against the integration branch —
+`HOKO_BASE_BRANCH`, or the remote's own default branch when that is unset. On any other
+remote, or none at all, it leaves the branch where it is and says so, which is a normal
+ending.
 
 Do this before you set `Status: complete`, because the PR body is the closing report you
 are about to post: draft the report first, hand it to the skill as the body, then add the

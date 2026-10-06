@@ -22,8 +22,8 @@ The three gates do not all have to run at the same moment, and running them all 
 every commit of a long run is what makes the run drag. Two shapes:
 
 - **Fast gate** — static analysis plus the unit tests alone, no coverage flag. This is
-  what runs per step inside a plan run, in `hoko-code-reviewer`, alongside the review of
-  that step's diff. It is cheap enough to run on a two-line diff and catches the errors
+  what runs per step inside a plan run, in `hoko-step-gate`. It is cheap enough to run
+  on a two-line diff and catches the errors
   worth catching early. The analyser rules below apply in full: a diff that buys a green
   run with a suppression entry, a baseline, a lowered level or an inline ignore comment
   is red, not green.

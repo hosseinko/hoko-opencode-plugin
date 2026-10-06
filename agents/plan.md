@@ -169,15 +169,16 @@ The **Progress** section is mandatory and is never omitted: one unchecked
 exactly. It is the single source of truth for how far a run has got — carry no `Status:`
 lines on the steps themselves. Write every box unchecked; the executor ticks them.
 
-Step rules: a step is the largest chunk that still reviews cleanly in one sitting.
+Step rules: a step is the largest chunk that still stays comprehensible in one sitting.
 Prefer fewer, coherent steps — never split work to hit a count. Each step must leave the
 repo green and be independently committable, and the order must not break anything
 between commits.
 
 ## 4. Present the plan and ask for approval
 
-Post the numbered steps, flagging any you consider risky — every step gets a full code
-review during execution regardless. Then end your reply with the absolute plan path on
+Post the numbered steps, flagging any you consider risky — every step gets a fast gate
+during execution, and the run gets one full code review over the whole branch at the end.
+Then end your reply with the absolute plan path on
 its own line, and ask for approval in one line: approve it and you hand it to the build
 agent, or say what to change.
 
@@ -189,9 +190,9 @@ When the user approves — "approved", "go ahead", "ship it", anything that mean
 call the `hoko_execute` tool. It takes no arguments: it uses the plan file you wrote in
 this session. That tool is the only way out of planning: it creates a fresh session for
 the run, switches the TUI to it, files the plan and this cycle's original prompt in the
-journal, and starts `/hoko/execute-plan` on the build agent there, where the executor,
-reviewer and QA subagents do the work. The planning transcript stays behind — the run
-reads the plan file, not this conversation.
+journal, and starts `/hoko/execute-plan` on the build agent there, where the executor and
+step-gate subagents work each step and the deep reviewer and QA close the run. The
+planning transcript stays behind — the run reads the plan file, not this conversation.
 
 If the tool refuses — the opencode build has no session API, session creation fails, or the
 TUI will not open the new session — nothing is journaled or queued, and the refusal is in

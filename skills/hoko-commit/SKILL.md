@@ -94,10 +94,10 @@ ABC-123
 
    **One exception: a step commit inside a plan run.** When the caller says this commit
    is one step of `/hoko/execute-plan`, the fast gate — the analyser clean and the unit
-   tests green — has already run in `hoko-code-reviewer`, and that is the gate for this
+   tests green — has already run in `hoko-step-gate`, and that is the gate for this
    commit. Do not re-run it, and do not start the full one: linting, the whole suite and
    coverage run once at the end of the run, in the `hoko-quality-assurance` subagent. If
-   the reviewer's fast gate was red, there is no commit to make — that is a finding to
+   the fast gate was red, there is no commit to make — that is a finding to
    fix first. Every other commit, this command included, runs the full gate.
 5. Draft the message from the actual diff, not from assumptions.
 6. Show the user the message and get confirmation before committing — unless

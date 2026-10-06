@@ -5,6 +5,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
 const fails: string[] = []
@@ -13,8 +14,8 @@ const check = (name: string, ok: boolean, detail = "") => {
   if (!ok) fails.push(name)
 }
 
-const STATE = path.join(os.tmpdir(), "hoko-journal")
-fs.rmSync(STATE, { recursive: true, force: true })
+const STATE = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-state-"))
+process.env.HOKO_STATE_DIR = STATE
 const { createHash } = await import("node:crypto")
 const state = (sessionID: string) =>
   path.join(STATE, createHash("sha256").update(sessionID).digest("hex").slice(0, 16) + ".prompt")
@@ -106,6 +107,17 @@ await hooks["shell.env"]({ sessionID: session, cwd: proj }, shell)
 check("shell.env exposes HOKO_ROOT", shell.env.HOKO_ROOT === path.dirname(path.dirname(fileURLToPath(import.meta.url))), shell.env.HOKO_ROOT)
 check("shell.env exposes the journal path", shell.env.HOKO_JOURNAL_PATH === journalRoot, shell.env.HOKO_JOURNAL_PATH)
 check("shell.env exposes the session's prompt file", shell.env.HOKO_PROMPT_FILE?.startsWith(STATE), shell.env.HOKO_PROMPT_FILE)
+
+// The anchor path has one owner: with HOKO_STATE_DIR set, the plugin's state() and
+// journal.py's state_file() must build the same path, or plan-file.py reads an anchor
+// nobody wrote.
+const scriptsDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), "scripts")
+const scriptAnchor = execFileSync("python3", ["-c",
+  `import sys; sys.path.insert(0, ${JSON.stringify(scriptsDir)}); import journal; print(journal.state_file(${JSON.stringify(session)}))`,
+], { env: { ...process.env, HOKO_STATE_DIR: STATE }, encoding: "utf8" }).trim()
+check("the plugin's state() matches journal.py's state_file under HOKO_STATE_DIR",
+  path.resolve(shell.env.HOKO_PROMPT_FILE) === path.resolve(scriptAnchor),
+  `${shell.env.HOKO_PROMPT_FILE} vs ${scriptAnchor}`)
 
 // chat.message captures the first prompt verbatim, and only the first
 await hooks["chat.message"]({ sessionID: session }, { parts: [{ type: "text", text: "make it faster\n\nkeep `--dry-run`" }] })

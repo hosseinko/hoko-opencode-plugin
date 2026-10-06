@@ -37,7 +37,6 @@ import { fileURLToPath } from "node:url"
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const CONFIG_DIR = path.join(os.homedir(), ".config", "opencode")
-const STATE_DIR = path.join(os.tmpdir(), "hoko-journal")
 const JOURNAL_SCRIPT = path.join(ROOT, "scripts", "journal.py")
 const PLAN_FILE_SCRIPT = path.join(ROOT, "scripts", "plan-file.py")
 const INVOICE_SCRIPT = path.join(ROOT, "scripts", "invoice.py")
@@ -239,13 +238,6 @@ export function gitVerdict(
   }
 }
 
-/** Per-session scratch: `.prompt` and `.project` hold the captured prompt, `.entry` the
- *  journal entry opened for the running cycle, `.handoff` a plan waiting for build and
- *  `.target` the session that run was moved to. */
-function state(sessionID: string, suffix: string) {
-  return path.join(STATE_DIR, createHash("sha256").update(sessionID).digest("hex").slice(0, 16) + suffix)
-}
-
 function read(file: string) {
   try {
     return fs.readFileSync(file, "utf8").trim()
@@ -255,7 +247,7 @@ function read(file: string) {
 }
 
 function write(file: string, text: string) {
-  fs.mkdirSync(STATE_DIR, { recursive: true })
+  fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, text, "utf8")
 }
 
@@ -309,6 +301,17 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
       return ""
     }
   }
+
+  // The state dir is the same value the plugin hands to journal.py, so the anchor it
+  // writes and the anchor the script reads can never diverge — including a
+  // HOKO_STATE_DIR that came from hoko.env rather than the environment.
+  const stateDir = env.HOKO_STATE_DIR || path.join(os.tmpdir(), "hoko-journal")
+
+  /** Per-session scratch: `.prompt` and `.project` hold the captured prompt, `.entry` the
+   *  journal entry opened for the running cycle, `.handoff` a plan waiting for build and
+   *  `.target` the session that run was moved to. */
+  const state = (sessionID: string, suffix: string) =>
+    path.join(stateDir, createHash("sha256").update(sessionID).digest("hex").slice(0, 16) + suffix)
 
   /** Which real branches play the `develop` and `main` roles in this repository. */
   const baseBranches = () => {

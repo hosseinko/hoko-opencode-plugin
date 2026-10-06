@@ -21,7 +21,7 @@ trigger only on a diff in that stack.
 | | |
 | --- | --- |
 | opencode | 1.18 or newer — `opencode --version` |
-| python3 | only for the journal, and only if you enable it — `python3 --version` |
+| python3 | only for the journal and its token invoice, and only if you enable it — `python3 --version` |
 | git | plan runs commit each step |
 | node modules | **none.** `plugin/hoko.ts` uses node's standard library only |
 
@@ -143,7 +143,7 @@ the tests after touching it.
 | Toast says the handoff failed | Run `/hoko/execute-plan <path>` yourself — the path is in the toast — and check `opencode debug config` for the command. |
 | The prompt box stays on Plan | Cosmetic only; the run is on build. The plugin walks the TUI round with `agent_cycle` and gives up quietly if it cannot work out the distance. |
 | No journal entry | Expected unless `HOKO_JOURNAL_PATH` is set — journaling is off by default. With it set: `python3` missing, or the root is not writable. `hoko_execute` reports the reason in its output instead of failing silently. |
-| Entry has no `## Final report` | The run never set `Status: complete` — a blocker or a `not ready` gate — or the closing report was not the last thing posted. |
+| Entry has no `report-NN.md` | The run never set `Status: complete` — a blocker or a `not ready` gate — or the closing report was not the last thing posted. |
 | Plans land in `.claude/plans/` | Stale Claude Code skills are being picked up — see [Claude Code interference](#claude-code-interference). |
 | A gate subagent says it could not run a check | Its bash allowlist does not cover your project's command. Add the pattern to `agents/hoko-step-gate.md`, or `agents/hoko-code-reviewer-deep.md` for the end-of-run review. |
 
@@ -205,7 +205,7 @@ Tab → plan                    grill → plan file → "approve?"
 you: approved                 hoko_execute: opens a fresh session, journals, runs execute-plan on build
 build (fresh session)         delegate → verify → step-gate → commit, one step per cycle
                               → full gate → deep review → PR or follow-up plan
-                              → Status: complete → report journaled
+                              → Status: complete → report + token invoice journaled
 ```
 
 Commands, all optional entry points:
@@ -343,18 +343,34 @@ go looking.
 
 ### 4. The journal is written by the tools, not by a reminder
 
-**Off unless you set `HOKO_JOURNAL_PATH`.** With a root configured, each cycle is one
-file under `<journal>/<project>/<timestamp>-<slug>.md`: the initial prompt byte for byte,
-a full copy of the plan, and the run's final report.
+**Off unless you set `HOKO_JOURNAL_PATH`.** With a root configured, each cycle is a folder
+`<journal>/<project>/<stamp>-<slug>/` holding `prompt.md`, `plan-01.md`, `report-NN.md`,
+`sessions.json`, `usage.json`, `rates.json`, `invoice.json` and `invoice.md`.
 
 - The plugin captures the first prompt of each cycle verbatim, before any model sees it,
   and retires it once filed so the next cycle captures its own.
 - `hoko_execute` files the entry at approval. No model composes it — the tool runs
-  `scripts/journal.py write` itself.
+  `scripts/plan-file.py file`, which writes the prompt and the plan, records `Project:`
+  and `Journal:` in the plan's header, and registers the approving session in
+  `sessions.json` as round 1, role `plan`. When the run starts in a fresh session, the
+  run's session is registered as round 1, role `execute`. Each `(session, round, role)`
+  appears once, stamped with its registration time, so a restart loses nothing.
 - The plan turning `Status: complete` closes it: the plugin takes the last message the
-  run posted — by protocol the closing report — and appends it to the entry it opened for
-  that plan, announcing it with a toast. A run that stopped short never sets
-  `Status: complete`, so nothing is filed and the entry stays open.
+  run posted — by protocol the closing report — and writes it to `report-NN.md` beside
+  the entry's `plan-NN.md`, announcing it with a toast. A run that stopped short never
+  sets `Status: complete`, so nothing is filed and the entry stays open. It then
+  collects every registered session's assistant responses and those of its descendant
+  sessions into `usage.json`, snapshots the model catalog's rates into `rates.json`, and
+  renders the token invoice.
+- `invoice.json` and `invoice.md` list, per model, the input, output, reasoning,
+  cache-read and cache-write tokens and their cost; per round, role and agent type (a
+  registered session's own loop is `main`), billing each response to the row registered
+  latest at or before its timestamp; and the catalog rates behind them. A registered
+  session whose usage cannot be fetched is named in the notes, and the invoice is still
+  written.
+
+The invoice's cost is opencode's own reported per-message cost — the catalog rate applied
+to the tokens — a notional cost for the work done, not your subscription bill.
 
 Entry titles and filenames come from the plan's own `#` heading, or failing that the
 first line of its `## Goal` — never from the plan's auto-generated filename. The project
@@ -362,7 +378,9 @@ is the git root, or the nearest ancestor with a `.git`, `.opencode` or `.claude`
 home directory never counts, and an unresolvable project lands in `<journal>/unsorted/`.
 
 The journal root can also come from `~/.config/opencode/hoko.json`
-(`{ "journalPath": "…" }`). Precedence: `HOKO_JOURNAL_PATH` → `hoko.json` → off.
+(`{ "journalPath": "…" }`). Precedence: `HOKO_JOURNAL_PATH` → `hoko.json` → off. The
+Python scripts read a `hoko.json` in this repo too, layered under the machine-local one,
+and share it for `plansDir`, `coverageMin`, `commitAuto` and the rest.
 
 ## Layout
 
@@ -418,8 +436,14 @@ instructions/
                           host — use docker and docker compose, newest version, and stop
                           when docker does not work
 scripts/
-  journal.py              write | report
+  settings.py             the hoko.json/env config the scripts share
+  journal.py              write | report | register — the journal entry
+  plan-file.py            file an approved plan, record Project:/Journal:, register the session
+  invoice.py              render invoice.json + invoice.md from a finished entry's usage
+  test_settings.py
   test_journal.py         tests, against a throwaway journal root
+  test_plan_file.py
+  test_invoice.py
 hoko.env.example          every setting, commented, with its default
 opencode.json.example     the one line that registers the plugin
 ```
@@ -559,11 +583,15 @@ is why the blocker path routes back through the conductor.
 ## Tests
 
 ```sh
-bun plugin/test_hoko.ts         # plugin: capture, the tool, the handoff, journaling
+bun run test                    # the whole suite, in the order below
+bun plugin/test_hoko.ts         # plugin: capture, the tool, the handoff, journaling, invoice
 #   or: node --experimental-strip-types plugin/test_hoko.ts
+python3 scripts/test_settings.py  # config: precedence, coercion, dict parsing
 python3 scripts/test_journal.py # journal: entries, titles, projects, reports, config
+python3 scripts/test_plan_file.py # filing: header lines, sessions.json, idempotence
+python3 scripts/test_invoice.py # invoice: per-model sums, round/role attribution, rates
 python3 skills/hoko-senior-go-developer/scripts/test_go_scripts.py
                                 # Go scripts: check order, skips, coverage, scaffold
 ```
 
-All three run against throwaway directories and never touch a real journal.
+Every one runs against throwaway directories and never touches a real journal.

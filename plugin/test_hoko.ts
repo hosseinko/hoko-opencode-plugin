@@ -305,17 +305,24 @@ check("a failed invoice is announced and does not throw",
     ent ? fs.readFileSync(path.join(ent, "rates.json"), "utf8") : "missing")
 }
 
-// a session reused across two cycles is billed per cycle: the second entry records only
-// the responses that arrived after its own cycle started
+// a session reused across two cycles is billed per cycle: the second entry bills the
+// plan phase that ran in it and excludes the responses of the cycle before
 {
   const before = { ...process.env }
   process.env.HOKO_FRESH_SESSION = "0"
   const reused: any = await HokoPlugin({ client, worktree: proj, directory: proj })
   const s = "sess-reused"
-  const runCycle = async (slug: string, cost: number, input: number) => {
+  const runCycle = async (slug: string, cost: number, input: number, planCost: number, planInput: number) => {
     const file = path.join(proj, ".ai", "plans", `20260919100000-${slug}.md`)
     fs.writeFileSync(file, `# ${slug}\n## Goal\n${slug}.\n\n## Steps\n### 1. Go\n`)
     await reused["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: `prompt for ${slug}` }] })
+    // One millisecond past the prompt anchor: this is a plan-phase response, before the
+    // approval that files the plan and registers the row, so a filing-time `since` drops it.
+    sessionMessages(s).push({
+      info: { role: "assistant", time: { created: fs.statSync(state(s)).mtime.getTime() + 1 }, modelID: "claude-test", providerID: "anthropic",
+        cost: planCost, tokens: { input: planInput, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+      parts: [{ type: "text", text: `${slug} planning` }],
+    })
     await reused["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: file } })
     const out: any = await reused.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
     const entry = /Journal entry: (.+)/.exec(out.output ?? out)?.[1] ?? ""
@@ -331,16 +338,20 @@ check("a failed invoice is announced and does not throw",
     return entry
   }
 
-  await runCycle("reuse-one", 0.11, 11)
-  const second = await runCycle("reuse-two", 0.22, 22)
+  await runCycle("reuse-one", 0.11, 11, 0.31, 31)
+  const second = await runCycle("reuse-two", 0.22, 22, 0.32, 32)
   const secondUsage = JSON.parse(fs.readFileSync(path.join(second, "usage.json"), "utf8"))
+  check("the plan phase's assistant response is billed to its cycle's entry",
+    secondUsage.some((row: any) => row.cost === 0.32 && row.input === 32),
+    JSON.stringify(secondUsage))
   check("a reused session's second entry holds only the second cycle's responses",
     secondUsage.some((row: any) => row.cost === 0.22 && row.input === 22)
-      && !secondUsage.some((row: any) => row.cost === 0.11 || row.input === 11),
+      && !secondUsage.some((row: any) => row.cost === 0.11 || row.input === 11
+        || row.cost === 0.31 || row.input === 31),
     JSON.stringify(secondUsage))
   const secondInvoice = JSON.parse(fs.readFileSync(path.join(second, "invoice.json"), "utf8"))
-  check("the invoice does not bill the previous cycle's response to the new entry",
-    secondInvoice.totals.cost === 0.22, JSON.stringify(secondInvoice.totals))
+  check("the invoice does not bill the previous cycle's responses to the new entry",
+    secondInvoice.totals.cost === 0.54, JSON.stringify(secondInvoice.totals))
   process.env = before
 }
 

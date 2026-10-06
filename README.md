@@ -64,6 +64,11 @@ file.
 cp opencode.json.example ~/.config/opencode/opencode.json   # only if you have none
 ```
 
+The `plugin` entry names the checkout opencode loads everything from — not just
+`plugin/hoko.ts`, but the agents, commands and skills it injects. An edit made in a
+different clone, or a copy installed elsewhere, has no effect until this path points at
+that checkout and opencode restarts.
+
 ### 3. Configure it (optional)
 
 ```sh

@@ -388,6 +388,57 @@ check("a hand-written plan agent keeps its prompt", own.agent.plan.prompt === "m
 check("it still gains the plan-file exception", own.agent.plan.permission.edit[".ai/plans/*.md"] === "allow")
 check("its own rules survive", own.agent.plan.permission.bash["rm*"] === "deny")
 
+// R4: rtk rewrites a command before permission checks run, so every command an agent
+// already allows needs its `rtk`-prefixed mirror or the rewrite falls to the catch-all.
+{
+  const agentsDir = path.join(shell.env.HOKO_ROOT, "agents")
+  const bashPermission = (name: string) => {
+    const lines = fs.readFileSync(path.join(agentsDir, `${name}.md`), "utf8").split("\n")
+    const start = lines.findIndex((line) => /^  bash:/.test(line))
+    const scalar = /^  bash:\s*(\S+)\s*$/.exec(lines[start])?.[1] ?? null
+    const map: Record<string, string> = {}
+    for (let i = start + 1; i < lines.length; i++) {
+      const line = lines[i]
+      if (line.trim() === "" || /^\s*#/.test(line)) continue
+      if (!/^\s{4,}/.test(line)) break
+      const match = /^\s+"([^"]+)":\s*(\S+)\s*$/.exec(line)
+      if (match) map[match[1]] = match[2]
+    }
+    return { scalar, map }
+  }
+  const matches = (pattern: string, command: string) =>
+    new RegExp("^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$").test(command)
+  // opencode takes the last matching rule, so walk the map in file order.
+  const decisionFor = (name: string, command: string) => {
+    let decision = "deny"
+    for (const [pattern, value] of Object.entries(bashPermission(name).map))
+      if (matches(pattern, command)) decision = value
+    return decision
+  }
+  // The commands `rtk rewrite` prefixes with `rtk `. Git reads are mirrored separately;
+  // composer is covered by the single family entry the step enumerates.
+  const rewritten = /^(make|just|task|php artisan test|npm (run|test)|pnpm|yarn|bun (run|test)|tsc|vitest|jest|pytest|mypy|ruff|go (test|vet|build)|golangci-lint|cargo (test|clippy|check|fmt)|mvn|rake|rspec|rubocop|dotnet build|docker|ls|rg)/
+  const testRunning = ["hoko-step-gate", "hoko-code-reviewer", "hoko-code-reviewer-deep",
+    "hoko-go-code-reviewer", "hoko-go-test-writer", "hoko-go-architect", "hoko-researcher"]
+  for (const agent of testRunning) {
+    const { map } = bashPermission(agent)
+    const missing = Object.keys(map)
+      .filter((pattern) => rewritten.test(pattern))
+      .filter((pattern) => map[`rtk ${pattern}`] !== map[pattern])
+    check(`${agent} mirrors every rtk-rewritten command it allows`, missing.length === 0, missing.join(", "))
+    if (Object.keys(map).some((pattern) => pattern.startsWith("composer ")))
+      check(`${agent} allows the rtk-prefixed composer command`, map["rtk composer *"] === "allow")
+  }
+  check("the gate permits rtk's rewrite of a containerised test command",
+    decisionFor("hoko-step-gate", "rtk docker exec app bun test") === "allow",
+    decisionFor("hoko-step-gate", "rtk docker exec app bun test"))
+  check("the gate permits rtk's rewrite of a compose test command",
+    decisionFor("hoko-step-gate", "rtk docker compose exec -T app make gate") === "allow",
+    decisionFor("hoko-step-gate", "rtk docker compose exec -T app make gate"))
+  check("hoko-quality-assurance already allows every command, rewritten included",
+    bashPermission("hoko-quality-assurance").scalar === "allow")
+}
+
 // journaling is opt-in: with no root configured the handoff still happens and nothing
 // is written anywhere
 {

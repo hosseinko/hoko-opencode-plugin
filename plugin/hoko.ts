@@ -246,6 +246,12 @@ function read(file: string) {
   }
 }
 
+/** Epoch milliseconds for an opencode message time (a number) or an ISO `since`. */
+function moment(value: any): number | undefined {
+  const at = typeof value === "number" ? value : Date.parse(String(value ?? ""))
+  return Number.isNaN(at) ? undefined : at
+}
+
 function write(file: string, text: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, text, "utf8")
@@ -411,8 +417,8 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
   }
 
   /** Every assistant response in the registered sessions and their descendants,
-   *  flattened for invoice.py. A session whose messages cannot be read is named and
-   *  skipped rather than failing the invoice. */
+   *  flattened for invoice.py, from the entry's cycle start onward. A session whose
+   *  messages cannot be read is named and skipped rather than failing the invoice. */
   const collectUsage = async (entry: string) => {
     let rows: any[] = []
     try {
@@ -421,6 +427,10 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
       rows = []
     }
     const roots = [...new Set(rows.map((row: any) => row?.session_id).filter(Boolean))] as string[]
+    // A session reused across cycles keeps every earlier turn, so only responses at or
+    // after the cycle's first registration count for this entry.
+    const starts = rows.map((row: any) => moment(row?.since)).filter((at): at is number => at !== undefined)
+    const start = starts.length ? Math.min(...starts) : undefined
     const records: any[] = []
     // Descendant responses are billed to the registered session that spawned them, so
     // they carry its id; their own loop's agent name is what tells them apart.
@@ -430,10 +440,13 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
         for (const message of result?.data ?? result ?? []) {
           const info = message?.info
           if (info?.role !== "assistant") continue
+          const time = info.time?.created ?? info.time?.completed
+          const at = moment(time)
+          if (start !== undefined && (at === undefined || at < start)) continue
           const tokens = info.tokens ?? {}
           records.push({
             session_id: root,
-            time: info.time?.created ?? info.time?.completed,
+            time,
             model: info.modelID ?? "",
             provider: info.providerID ?? "",
             agent,

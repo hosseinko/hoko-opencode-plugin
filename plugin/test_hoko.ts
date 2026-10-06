@@ -298,6 +298,45 @@ check("a failed invoice is announced and does not throw",
     ent ? fs.readFileSync(path.join(ent, "rates.json"), "utf8") : "missing")
 }
 
+// a session reused across two cycles is billed per cycle: the second entry records only
+// the responses that arrived after its own cycle started
+{
+  const before = { ...process.env }
+  process.env.HOKO_FRESH_SESSION = "0"
+  const reused: any = await HokoPlugin({ client, worktree: proj, directory: proj })
+  const s = "sess-reused"
+  const runCycle = async (slug: string, cost: number, input: number) => {
+    const file = path.join(proj, ".ai", "plans", `20260919100000-${slug}.md`)
+    fs.writeFileSync(file, `# ${slug}\n## Goal\n${slug}.\n\n## Steps\n### 1. Go\n`)
+    await reused["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: `prompt for ${slug}` }] })
+    await reused["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: file } })
+    const out: any = await reused.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
+    const entry = /Journal entry: (.+)/.exec(out.output ?? out)?.[1] ?? ""
+    await reused.event({ event: { type: "session.idle", properties: { sessionID: s } } })
+    sessionMessages(s).push({
+      info: { role: "assistant", time: { created: Date.now() }, modelID: "claude-test", providerID: "anthropic",
+        cost, tokens: { input, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+      parts: [{ type: "text", text: `${slug} report` }],
+    })
+    fs.writeFileSync(file, "Status: complete\n\n" + fs.readFileSync(file, "utf8"))
+    await reused["tool.execute.after"]({ tool: "edit", sessionID: s, args: { filePath: file } })
+    await reused.event({ event: { type: "session.idle", properties: { sessionID: s } } })
+    return entry
+  }
+
+  await runCycle("reuse-one", 0.11, 11)
+  const second = await runCycle("reuse-two", 0.22, 22)
+  const secondUsage = JSON.parse(fs.readFileSync(path.join(second, "usage.json"), "utf8"))
+  check("a reused session's second entry holds only the second cycle's responses",
+    secondUsage.some((row: any) => row.cost === 0.22 && row.input === 22)
+      && !secondUsage.some((row: any) => row.cost === 0.11 || row.input === 11),
+    JSON.stringify(secondUsage))
+  const secondInvoice = JSON.parse(fs.readFileSync(path.join(second, "invoice.json"), "utf8"))
+  check("the invoice does not bill the previous cycle's response to the new entry",
+    secondInvoice.totals.cost === 0.22, JSON.stringify(secondInvoice.totals))
+  process.env = before
+}
+
 // config: the plan agent gets its prompt, its deny catch-all and the plan-file exception
 const cfg: any = { agent: { "hoko-plan-executor": { permission: { bash: { "rm*": "deny" } } } } }
 await hooks.config(cfg)

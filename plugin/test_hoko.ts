@@ -41,11 +41,16 @@ fs.writeFileSync(plan, "## Goal\nShip it.\n\n## Progress\n- [ ] 1. Do the thing\
 
 const commands: any[] = []
 const toasts: string[] = []
-const messages: any[] = []
+const messages: Record<string, any[]> = {}
+const sessionMessages = (id: string) => (messages[id] ??= [])
+const children: any[] = []
 const cycles: string[] = []
 const created: any[] = []
 const deleted: string[] = []
 const published: any[] = []
+// Sessions whose `session.messages` should fail, to exercise a usage read that cannot
+// be fetched.
+const failMessages = new Set<string>()
 // How many of the next `tui.publish` calls to refuse, to exercise the retry.
 let publishFails = 0
 const agents = [
@@ -53,16 +58,29 @@ const agents = [
   { name: "explore", mode: "subagent" },
   { name: "plan", mode: "primary" },
 ]
+const providers = [
+  {
+    id: "anthropic",
+    models: {
+      "claude-test": { id: "claude-test", cost: { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } } },
+    },
+  },
+]
 const client = {
   session: {
     command: async (options: any) => void commands.push(options),
-    messages: async () => ({ data: messages }),
+    messages: async (options: any) => {
+      if (failMessages.has(options.path.id)) throw new Error(`no messages for ${options.path.id}`)
+      return { data: sessionMessages(options.path.id) }
+    },
+    children: async (options: any) => ({ data: children.filter((child) => child.parentID === options.path.id) }),
     create: async (options: any) => {
       created.push(options)
       return { data: { id: "sess-fresh" } }
     },
     delete: async (options: any) => void deleted.push(options.path.id),
   },
+  config: { providers: async () => ({ data: { providers } }) },
   tui: {
     showToast: async (options: any) => void toasts.push(options.body.message),
     executeCommand: async (options: any) => void cycles.push(options.body.command),
@@ -137,9 +155,17 @@ const output = handed.output ?? handed
 const entryLine = /Journal entry: (.+)/.exec(output)
 check("hoko_execute reports a journal entry", !!entryLine, output)
 const entry = entryLine?.[1] ?? ""
+const planCopy = path.join(entry, "plan-01.md")
 check("the entry holds the prompt and the plan verbatim",
-  !!entry && fs.readFileSync(entry, "utf8").includes("keep `--dry-run`") && fs.readFileSync(entry, "utf8").includes("Ship it."),
+  !!entry && fs.readFileSync(path.join(entry, "prompt.md"), "utf8").includes("keep `--dry-run`")
+    && fs.readFileSync(planCopy, "utf8").includes("Ship it."),
   entry)
+check("the plan's copy sits in the entry as plan-01.md",
+  path.basename(planCopy) === "plan-01.md" && path.dirname(planCopy) === entry, planCopy)
+check("the plan records its project and its journal copy",
+  /^Project: /m.test(fs.readFileSync(plan, "utf8"))
+    && new RegExp(`^Journal: ${planCopy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m").test(fs.readFileSync(plan, "utf8")),
+  fs.readFileSync(plan, "utf8").split("\n").slice(0, 3).join(" | "))
 check("hoko_execute tells the agent not to implement", /Do not implement anything/.test(output), output)
 check("the handoff is queued", fs.readFileSync(anchor.replace(/\.prompt$/, ".handoff"), "utf8") === plan)
 check("nothing is executed before the turn ends", commands.length === 0, JSON.stringify(commands))
@@ -159,29 +185,106 @@ check("the handoff runs execute-plan on build",
   JSON.stringify(commands))
 check("the handoff is announced", toasts.some((message) => message.includes("ship-it")), toasts.join(" | "))
 check("the prompt box is cycled from plan to build", cycles.join(",") === "agent_cycle", cycles.join(","))
+const sessionsRows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
+check("sessions.json registers the approving session as round 1 plan",
+  sessionsRows.some((row: any) => row.session_id === session && row.round === 1 && row.role === "plan"),
+  JSON.stringify(sessionsRows))
+check("sessions.json registers the run's session as round 1 execute",
+  sessionsRows.some((row: any) => row.session_id === session && row.round === 1 && row.role === "execute"),
+  JSON.stringify(sessionsRows))
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: session } } })
 check("the run's own idle does not re-fire it", commands.length === 1, JSON.stringify(commands))
 await hooks.event({ event: { type: "session.updated", properties: { sessionID: session } } })
 check("other events are ignored", commands.length === 1)
 
-// a completed plan journals the run's closing report, once
+// a completed plan journals the run's closing report beside plan-01.md, then the invoice
+const reportPath = path.join(entry, "report-01.md")
+check("no report before the plan completes", !fs.existsSync(reportPath))
 fs.writeFileSync(plan, "Status: complete\n\n" + fs.readFileSync(plan, "utf8"))
 await hooks["tool.execute.after"]({ tool: "edit", sessionID: session, args: { filePath: plan } })
-messages.push(
+const stamp = Date.now()
+sessionMessages(session).push(
   { info: { role: "user" }, parts: [{ type: "text", text: "approved" }] },
-  { info: { role: "assistant" }, parts: [{ type: "text", text: "not the last word" }] },
-  { info: { role: "assistant" }, parts: [{ type: "text", text: "Step 1 done — commit abc1234. Tests: bun test." }] },
+  { info: { role: "assistant", time: { created: stamp + 1000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.5, tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 10, write: 2 } } }, parts: [{ type: "text", text: "not the last word" }] },
+  { info: { role: "assistant", time: { created: stamp + 2000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.25, tokens: { input: 50, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [{ type: "text", text: "Step 1 done — commit abc1234. Tests: bun test." }] },
 )
+children.push(
+  { id: "child-1", parentID: session, agent: "hoko-plan-executor" },
+  { id: "grandchild-1", parentID: "child-1", agent: "hoko-quality-assurance" },
+)
+sessionMessages("child-1").push({ info: { role: "assistant", time: { created: stamp + 3000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.1, tokens: { input: 10, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] })
+sessionMessages("grandchild-1").push({ info: { role: "assistant", time: { created: stamp + 4000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.05, tokens: { input: 5, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] })
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: session } } })
-const closed = fs.readFileSync(entry, "utf8")
-check("the closing report lands in that same entry",
-  closed.includes("## Final report") && closed.includes("commit abc1234"), closed.slice(-160))
-check("only the last message is taken as the report", !closed.includes("not the last word"))
-check("the entry is marked completed", /^completed: /m.test(closed))
+check("the closing report lands beside plan-01.md",
+  fs.existsSync(reportPath) && fs.readFileSync(reportPath, "utf8").includes("commit abc1234"),
+  fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8").slice(-160) : "missing")
+check("only the last message is taken as the report", !fs.readFileSync(reportPath, "utf8").includes("not the last word"))
+check("filing the report is announced", toasts.some((message) => message.includes("report-01.md")), toasts.join(" | "))
+
+const usage = JSON.parse(fs.readFileSync(path.join(entry, "usage.json"), "utf8"))
+check("usage.json records each assistant response's session, model, cost and tokens",
+  usage.some((row: any) => row.session_id === session && row.model === "claude-test" && row.provider === "anthropic"
+    && row.agent === "main" && row.cost === 0.5 && row.input === 100 && row.output === 20 && row.reasoning === 5
+    && row.cache_read === 10 && row.cache_write === 2), JSON.stringify(usage))
+check("usage.json bills descendant sessions to the registered session with their own agent",
+  usage.some((row: any) => row.session_id === session && row.agent === "hoko-plan-executor")
+    && usage.some((row: any) => row.session_id === session && row.agent === "hoko-quality-assurance"),
+  JSON.stringify(usage))
+const rates = JSON.parse(fs.readFileSync(path.join(entry, "rates.json"), "utf8"))
+check("rates.json records the catalog rates by provider/model",
+  rates["anthropic/claude-test"]?.input === 3 && rates["anthropic/claude-test"]?.output === 15
+    && rates["anthropic/claude-test"]?.cache_read === 0.3 && rates["anthropic/claude-test"]?.cache_write === 3.75,
+  JSON.stringify(rates))
+check("the invoice is written", fs.existsSync(path.join(entry, "invoice.md")) && fs.existsSync(path.join(entry, "invoice.json")))
+const invoice = JSON.parse(fs.readFileSync(path.join(entry, "invoice.json"), "utf8"))
+check("the invoice sums the run's reported cost", invoice.totals.cost === 0.9, JSON.stringify(invoice.totals))
+check("the invoice lists the per-model rates used", Object.keys(invoice.rates).includes("anthropic/claude-test"), JSON.stringify(invoice.rates))
+check("invoicing is announced", toasts.some((message) => message.includes("invoiced")), toasts.join(" | "))
+
+// an existing report is left alone, a session whose usage cannot be read is named, and
+// an invoice that cannot be generated is a toast — never a failed run
+fs.writeFileSync(reportPath, "sentinel report\n")
+const usageBefore = fs.readFileSync(path.join(entry, "usage.json"), "utf8")
+sessionMessages(session).push({ info: { role: "assistant", time: { created: stamp + 5000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.15, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] })
+failMessages.add("sess-ghost")
+const ghostRows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
+ghostRows.push({ session_id: "sess-ghost", round: 1, role: "execute", since: new Date().toISOString() })
+fs.writeFileSync(path.join(entry, "sessions.json"), JSON.stringify(ghostRows, null, 2) + "\n")
+await hooks["tool.execute.after"]({ tool: "edit", sessionID: session, args: { filePath: plan } })
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: session } } })
-check("the report is filed once",
-  (fs.readFileSync(entry, "utf8").match(/## Final report/g) ?? []).length === 1)
-check("filing the report is announced", toasts.some((message) => message.includes("journaled")), toasts.join(" | "))
+check("an existing report is left alone", fs.readFileSync(reportPath, "utf8") === "sentinel report\n", fs.readFileSync(reportPath, "utf8"))
+check("a session whose usage cannot be read is named", toasts.some((message) => message.includes("sess-ghost")), toasts.join(" | "))
+check("the invoice is still regenerated when the report is skipped",
+  fs.readFileSync(path.join(entry, "usage.json"), "utf8") !== usageBefore
+    && fs.existsSync(path.join(entry, "invoice.json")), usageBefore)
+fs.rmSync(path.join(entry, "sessions.json"), { force: true })
+await hooks["tool.execute.after"]({ tool: "edit", sessionID: session, args: { filePath: plan } })
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: session } } })
+check("a failed invoice is announced and does not throw",
+  toasts.some((message) => message.includes("could not invoice")), toasts.join(" | "))
+
+// a build without config.providers or session.children still invoices
+{
+  const s = "sess-degrade"
+  const p = path.join(proj, ".ai", "plans", "20260918100000-degrade.md")
+  fs.writeFileSync(p, "# Degrade\n## Goal\nInvoice without rates.\n")
+  const bare = { ...client, config: undefined, session: { ...client.session, children: undefined } }
+  const inst: any = await HokoPlugin({ client: bare, worktree: proj, directory: proj })
+  await inst["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: "degrade" }] })
+  await inst["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: p } })
+  const out: any = await inst.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
+  const ent = /Journal entry: (.+)/.exec(out.output ?? out)?.[1] ?? ""
+  await inst.event({ event: { type: "session.idle", properties: { sessionID: s } } })
+  fs.writeFileSync(p, "Status: complete\n\n" + fs.readFileSync(p, "utf8"))
+  sessionMessages(s).push({ info: { role: "assistant", time: { created: Date.now() + 1000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.01, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [{ type: "text", text: "Degrade report." }] })
+  await inst["tool.execute.after"]({ tool: "edit", sessionID: s, args: { filePath: p } })
+  await inst.event({ event: { type: "session.idle", properties: { sessionID: s } } })
+  check("a build without config.providers still writes the invoice",
+    !!ent && fs.existsSync(path.join(ent, "invoice.md")), ent)
+  check("a build without config.providers writes an empty rates table",
+    !!ent && fs.readFileSync(path.join(ent, "rates.json"), "utf8").trim() === "{}",
+    ent ? fs.readFileSync(path.join(ent, "rates.json"), "utf8") : "missing")
+}
 
 // config: the plan agent gets its prompt, its deny catch-all and the plan-file exception
 const cfg: any = { agent: { "hoko-plan-executor": { permission: { bash: { "rm*": "deny" } } } } }
@@ -378,12 +481,12 @@ check("its own rules survive", own.agent.plan.permission.bash["rm*"] === "deny")
 
   fs.writeFileSync(freshPlan, "Status: complete\n\n" + fs.readFileSync(freshPlan, "utf8"))
   await fresh["tool.execute.after"]({ tool: "edit", sessionID: "sess-fresh", args: { filePath: freshPlan } })
-  messages.push({ info: { role: "assistant" }, parts: [{ type: "text", text: "Fresh run report." }] })
+  sessionMessages("sess-fresh").push({ info: { role: "assistant", time: { created: Date.now() + 1000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.02, tokens: { input: 2, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [{ type: "text", text: "Fresh run report." }] })
   await fresh.event({ event: { type: "session.idle", properties: { sessionID: "sess-fresh" } } })
+  const freshReport = path.join(freshEntryPath, "report-01.md")
   check("the run's closing report lands in the entry opened at approval",
-    fs.readFileSync(freshEntryPath, "utf8").includes("## Final report") &&
-      fs.readFileSync(freshEntryPath, "utf8").includes("Fresh run report."),
-    fs.readFileSync(freshEntryPath, "utf8").slice(-160))
+    fs.existsSync(freshReport) && fs.readFileSync(freshReport, "utf8").includes("Fresh run report."),
+    fs.existsSync(freshReport) ? fs.readFileSync(freshReport, "utf8").slice(-160) : "missing")
 
   // a refused navigation leaves no session, no handoff and no journal entry
   publishFails = 5

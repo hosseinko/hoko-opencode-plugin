@@ -687,10 +687,10 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
           if (journaling) {
             try {
               const args = ["file", "--plan", plan, "--session", ctx.sessionID]
-              // Prefer the unrotated anchor: it is this cycle's. `.prompt.used` only
-              // carries the capture time when the anchor was already filed.
+              // Only this cycle's own anchor counts. `.prompt.used` is a previous
+              // cycle's, so seeding this row from it would bill that cycle's
+              // responses here; absent an anchor, journal.py's now fallback applies.
               const since = statStart(state(ctx.sessionID, ".prompt"))
-                ?? statStart(state(ctx.sessionID, ".prompt.used"))
               if (since) args.push("--since", since)
               const planCopy = run(PLAN_FILE_SCRIPT, args, cwd, env)
               const entry = path.dirname(planCopy)

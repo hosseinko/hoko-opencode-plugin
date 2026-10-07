@@ -355,6 +355,31 @@ check("a failed invoice is announced and does not throw",
   process.env = before
 }
 
+// a reused session whose earlier cycle left `.prompt.used` behind must not seed the new
+// plan row from that earlier anchor: with no `.prompt` of its own, the filing path passes
+// no `--since`, so the row is stamped at filing time
+{
+  const before = { ...process.env }
+  process.env.HOKO_FRESH_SESSION = "0"
+  const stale: any = await HokoPlugin({ client, worktree: proj, directory: proj })
+  const s = "sess-stale-anchor"
+  const used = `${state(s)}.used`
+  fs.writeFileSync(used, "an earlier cycle's prompt")
+  const earlier = new Date(Date.now() - 60_000)
+  fs.utimesSync(used, earlier, earlier)
+  const file = path.join(proj, ".ai", "plans", "20260919110000-stale.md")
+  fs.writeFileSync(file, "# Stale anchor\n## Goal\nNo anchor of its own.\n\n## Steps\n### 1. Go\n")
+  await stale["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: file } })
+  const out: any = await stale.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
+  const entry = /Journal entry: (.+)/.exec(out.output ?? out)?.[1] ?? ""
+  const rows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
+  const since = new Date(rows.find((row: any) => row.role === "plan")?.since).getTime()
+  check("a plan filed with no `.prompt` is stamped at filing time, not from the stale `.prompt.used`",
+    Number.isFinite(since) && Math.abs(since - Date.now()) < 5_000 && since - earlier.getTime() > 30_000,
+    JSON.stringify(rows))
+  process.env = before
+}
+
 // config: the plan agent gets its prompt, its deny catch-all and the plan-file exception
 const cfg: any = { agent: { "hoko-plan-executor": { permission: { bash: { "rm*": "deny" } } } } }
 await hooks.config(cfg)

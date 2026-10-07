@@ -16,6 +16,43 @@ permission:
     "rtk git log*": allow
     "rtk git show*": allow
     "rtk git status*": allow
+    "rtk make *": allow
+    "rtk just *": allow
+    "rtk task *": allow
+    "rtk composer *": allow
+    "rtk php artisan test*": allow
+    "rtk npm run *": allow
+    "rtk npm test*": allow
+    "rtk pnpm *": allow
+    "rtk yarn *": allow
+    "rtk bun run *": allow
+    "rtk bun test*": allow
+    "rtk tsc*": allow
+    "rtk vitest*": allow
+    "rtk jest*": allow
+    "rtk pytest*": allow
+    "rtk mypy*": allow
+    "rtk ruff*": allow
+    "rtk go test*": allow
+    "rtk go vet*": allow
+    "rtk go build*": allow
+    "rtk golangci-lint*": allow
+    "rtk cargo test*": allow
+    "rtk cargo clippy*": allow
+    "rtk cargo check*": allow
+    "rtk cargo fmt*": allow
+    "rtk mvn *": allow
+    "rtk rake *": allow
+    "rtk rspec*": allow
+    "rtk rubocop*": allow
+    "rtk dotnet build*": allow
+    "rtk docker *": ask
+    "rtk docker-compose *": ask
+    "rtk docker exec *": allow
+    "rtk docker compose exec *": allow
+    "rtk docker compose run *": allow
+    "rtk docker-compose exec *": allow
+    "rtk docker-compose run *": allow
     "make *": allow
     "just *": allow
     "task *": allow

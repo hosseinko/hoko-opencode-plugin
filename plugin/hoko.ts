@@ -37,8 +37,10 @@ import { fileURLToPath } from "node:url"
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const CONFIG_DIR = path.join(os.homedir(), ".config", "opencode")
-const STATE_DIR = path.join(os.tmpdir(), "hoko-journal")
 const JOURNAL_SCRIPT = path.join(ROOT, "scripts", "journal.py")
+const PLAN_FILE_SCRIPT = path.join(ROOT, "scripts", "plan-file.py")
+const INVOICE_SCRIPT = path.join(ROOT, "scripts", "invoice.py")
+const MAIN_AGENT = "main"
 // Skills only bind when a model invokes one, so rules that must hold even in plain
 // build-mode chat — never merge, never push — go in an instructions file instead. Every
 // .md in the directory is registered, so dropping one in is all it takes to add a set.
@@ -236,13 +238,6 @@ export function gitVerdict(
   }
 }
 
-/** Per-session scratch: `.prompt` and `.project` hold the captured prompt, `.entry` the
- *  journal entry opened for the running cycle, `.handoff` a plan waiting for build and
- *  `.target` the session that run was moved to. */
-function state(sessionID: string, suffix: string) {
-  return path.join(STATE_DIR, createHash("sha256").update(sessionID).digest("hex").slice(0, 16) + suffix)
-}
-
 function read(file: string) {
   try {
     return fs.readFileSync(file, "utf8").trim()
@@ -251,8 +246,14 @@ function read(file: string) {
   }
 }
 
+/** Epoch milliseconds for an opencode message time (a number) or an ISO `since`. */
+function moment(value: any): number | undefined {
+  const at = typeof value === "number" ? value : Date.parse(String(value ?? ""))
+  return Number.isNaN(at) ? undefined : at
+}
+
 function write(file: string, text: string) {
-  fs.mkdirSync(STATE_DIR, { recursive: true })
+  fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, text, "utf8")
 }
 
@@ -272,18 +273,24 @@ function newestPlan(cwd: string, plansDir: string) {
   }
 }
 
-/** journal.py, run where the project is. Throws with the script's own message. */
-function journal(env: Record<string, string>, cwd: string, args: string[]) {
+/** One of the plugin's Python scripts, run where the project is. Throws with the
+ *  script's own message. */
+function run(script: string, args: string[], cwd: string, env: Record<string, string> = {}) {
   try {
-    return execFileSync("python3", [JOURNAL_SCRIPT, ...args], {
+    return execFileSync("python3", [script, ...args], {
       cwd,
       env: { ...process.env, ...env },
       encoding: "utf8",
     }).trim()
   } catch (error: any) {
     const said = String(error?.stderr || error?.message || error).trim()
-    throw new Error(said.replace(/^journal:\s*/, "") || "journal.py failed")
+    throw new Error(said.replace(/^(?:journal|plan-file|invoice):\s*/, "") || `${path.basename(script)} failed`)
   }
+}
+
+/** journal.py, run where the project is. */
+function journal(env: Record<string, string>, cwd: string, args: string[]) {
+  return run(JOURNAL_SCRIPT, args, cwd, env)
 }
 
 export const HokoPlugin = async ({ client, worktree, directory }: any) => {
@@ -301,6 +308,17 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
     }
   }
 
+  // The state dir is the same value the plugin hands to journal.py, so the anchor it
+  // writes and the anchor the script reads can never diverge — including a
+  // HOKO_STATE_DIR that came from hoko.env rather than the environment.
+  const stateDir = env.HOKO_STATE_DIR || path.join(os.tmpdir(), "hoko-journal")
+
+  /** Per-session scratch: `.prompt` and `.project` hold the captured prompt, `.entry` the
+   *  journal entry opened for the running cycle, `.handoff` a plan waiting for build and
+   *  `.target` the session that run was moved to. */
+  const state = (sessionID: string, suffix: string) =>
+    path.join(stateDir, createHash("sha256").update(sessionID).digest("hex").slice(0, 16) + suffix)
+
   /** Which real branches play the `develop` and `main` roles in this repository. */
   const baseBranches = () => {
     const has = (name: string) =>
@@ -317,6 +335,17 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
       write(anchor, text)
       write(state(sessionID, ".project"), project)
     } catch {}
+  }
+
+  /** A state file's own timestamp as an ISO string, or undefined when it is absent. The
+   *  `.prompt` anchor carries the cycle's capture moment; filing rotates it to
+   *  `.prompt.used`, which keeps that timestamp. */
+  const statStart = (file: string): string | undefined => {
+    try {
+      return fs.statSync(file).mtime.toISOString()
+    } catch {
+      return undefined
+    }
   }
 
   const toast = (message: string, variant: "info" | "error") =>
@@ -366,7 +395,7 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
   }
 
   /** The handoff itself: run /hoko/execute-plan on the build agent, in this session. */
-  const handoff = async (sessionID: string, plan: string) => {
+  const handoff = async (sessionID: string, plan: string, since?: string) => {
     if (!client?.session?.command) {
       toast(`hoko: no server client — run /hoko/execute-plan ${plan}`, "error")
       return
@@ -385,47 +414,167 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
         })?.catch?.(() => {})
         toast(`hoko: handoff failed — run /hoko/execute-plan ${plan}`, "error")
       })
+    const entry = read(state(sessionID, ".entry"))
+    if (journaling && entry) {
+      try {
+        const args = ["register", "--entry", entry, "--session", sessionID, "--round", "1", "--role", "execute"]
+        if (since) args.push("--since", since)
+        journal(env, read(state(sessionID, ".project")) || project, args)
+      } catch (error: any) {
+        toast(`hoko: could not register the run's session — ${error.message}`, "error")
+      }
+    }
     await showAgent(PLAN_AGENT, EXECUTE_AGENT)
   }
 
+  /** Every assistant response in the registered sessions and their descendants,
+   *  flattened for invoice.py, from the entry's cycle start onward. A session whose
+   *  messages cannot be read is named and skipped rather than failing the invoice. */
+  const collectUsage = async (entry: string) => {
+    let rows: any[] = []
+    try {
+      rows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
+    } catch {
+      rows = []
+    }
+    const roots = [...new Set(rows.map((row: any) => row?.session_id).filter(Boolean))] as string[]
+    // A session reused across cycles keeps every earlier turn, so only responses at or
+    // after the cycle's first registration count for this entry.
+    const starts = rows.map((row: any) => moment(row?.since)).filter((at): at is number => at !== undefined)
+    const start = starts.length ? Math.min(...starts) : undefined
+    const records: any[] = []
+    // Descendant responses are billed to the registered session that spawned them, so
+    // they carry its id; their own loop's agent name is what tells them apart.
+    const visit = async (root: string, sessionID: string, agent: string) => {
+      try {
+        const result: any = await client?.session?.messages?.({ path: { id: sessionID } })
+        for (const message of result?.data ?? result ?? []) {
+          const info = message?.info
+          if (info?.role !== "assistant") continue
+          const time = info.time?.created ?? info.time?.completed
+          const at = moment(time)
+          if (start !== undefined && (at === undefined || at < start)) continue
+          const tokens = info.tokens ?? {}
+          records.push({
+            session_id: root,
+            time,
+            model: info.modelID ?? "",
+            provider: info.providerID ?? "",
+            agent,
+            cost: info.cost ?? 0,
+            input: tokens.input ?? 0,
+            output: tokens.output ?? 0,
+            reasoning: tokens.reasoning ?? 0,
+            cache_read: tokens.cache?.read ?? 0,
+            cache_write: tokens.cache?.write ?? 0,
+          })
+        }
+      } catch (error: any) {
+        toast(`hoko: could not read usage for ${sessionID} — ${String(error)}`, "error")
+      }
+      if (typeof client?.session?.children !== "function") return
+      let kids: any[] = []
+      try {
+        const result: any = await client.session.children({ path: { id: sessionID } })
+        kids = result?.data ?? result ?? []
+      } catch (error: any) {
+        toast(`hoko: could not read the children of ${sessionID} — ${String(error)}`, "error")
+        return
+      }
+      for (const child of kids) await visit(root, child.id, child.agent || MAIN_AGENT)
+    }
+    for (const root of roots) await visit(root, root, MAIN_AGENT)
+    return records
+  }
+
+  /** The model catalog's rates at completion, `providerID/modelID` → USD per million
+   *  tokens. A build without `config.providers` yields an empty table, not a failure. */
+  const collectRates = async () => {
+    if (typeof client?.config?.providers !== "function") {
+      toast("hoko: model rates are unavailable in this opencode build", "info")
+      return {}
+    }
+    let providers: any[] = []
+    try {
+      const result: any = await client.config.providers()
+      providers = (result?.data ?? result)?.providers ?? []
+    } catch (error: any) {
+      toast(`hoko: could not read model rates — ${String(error)}`, "error")
+      return {}
+    }
+    const rates: Record<string, any> = {}
+    for (const provider of providers) {
+      for (const model of Object.values<any>(provider?.models ?? {})) {
+        rates[`${provider.id}/${model.id}`] = {
+          input: model?.cost?.input ?? 0,
+          output: model?.cost?.output ?? 0,
+          cache_read: model?.cost?.cache?.read ?? 0,
+          cache_write: model?.cost?.cache?.write ?? 0,
+        }
+      }
+    }
+    return rates
+  }
+
   /** The closing report is the last thing the conductor posts once the plan is complete,
-   *  so that message is the report — no model has to hand it over. */
+   *  so that message is the report — no model has to hand it over. The run's usage is
+   *  then collected and the token invoice rendered beside it. */
   const fileReport = async (sessionID: string) => {
     if (!journaling) return
-    let report = ""
-    try {
-      const result: any = await client?.session?.messages?.({ path: { id: sessionID } })
-      for (const message of result?.data ?? result ?? []) {
-        if (message?.info?.role !== "assistant") continue
-        const text = (message.parts ?? [])
-          .filter((part: any) => part.type === "text" && !part.synthetic && typeof part.text === "string")
-          .map((part: any) => part.text)
-          .join("\n")
-          .trim()
-        if (text) report = text
-      }
-    } catch (error: any) {
-      toast(`hoko: could not read the run's report — ${String(error)}`, "error")
-      return
-    }
-    if (!report) {
-      toast("hoko: the run posted no closing report to journal", "error")
-      return
-    }
-    const file = state(sessionID, `.report-${Date.now()}.md`)
-    write(file, `${report}\n`)
     const entry = read(state(sessionID, ".entry"))
+    const plan = read(state(sessionID, ".plan"))
+    if (!entry || !plan) return
+    const cwd = read(state(sessionID, ".project")) || project
+
+    const journalFile = /^Journal:\s*(.+)$/m.exec(read(plan))?.[1]?.trim() ?? ""
+    const round = /^plan-(\d+)\.md$/.exec(path.basename(journalFile))?.[1]
+    if (!round) {
+      toast("hoko: the plan is not filed in the journal", "error")
+      return
+    }
+    const reportPath = path.join(path.dirname(journalFile), `report-${round}.md`)
+
+    if (!fs.existsSync(reportPath)) {
+      let report = ""
+      try {
+        const result: any = await client?.session?.messages?.({ path: { id: sessionID } })
+        for (const message of result?.data ?? result ?? []) {
+          if (message?.info?.role !== "assistant") continue
+          const text = (message.parts ?? [])
+            .filter((part: any) => part.type === "text" && !part.synthetic && typeof part.text === "string")
+            .map((part: any) => part.text)
+            .join("\n")
+            .trim()
+          if (text) report = text
+        }
+      } catch (error: any) {
+        toast(`hoko: could not read the run's report — ${String(error)}`, "error")
+        return
+      }
+      if (!report) {
+        toast("hoko: the run posted no closing report to journal", "error")
+        return
+      }
+      const file = state(sessionID, `.report-${Date.now()}.md`)
+      write(file, `${report}\n`)
+      try {
+        const filed = journal(env, cwd, ["report", "--plan", plan, "--report-file", file])
+        toast(`hoko: journaled ${path.basename(filed)}`, "info")
+      } catch (error: any) {
+        toast(`hoko: could not journal the report — ${error.message}`, "error")
+        return
+      }
+    }
+
     try {
-      const filed = journal(env, read(state(sessionID, ".project")) || project, [
-        "report",
-        "--report-file",
-        file,
-        ...(entry ? ["--entry", entry] : []),
-      ])
-      fs.rmSync(state(sessionID, ".entry"), { force: true })
-      toast(`hoko: journaled ${path.basename(filed)}`, "info")
+      const usage = await collectUsage(entry)
+      write(path.join(entry, "usage.json"), JSON.stringify(usage, null, 2) + "\n")
+      const rates = await collectRates()
+      write(path.join(entry, "rates.json"), JSON.stringify(rates, null, 2) + "\n")
+      run(INVOICE_SCRIPT, ["write", "--entry", entry], cwd, env)
+      toast(`hoko: invoiced ${path.basename(entry)}`, "info")
     } catch (error: any) {
-      toast(`hoko: could not journal the report — ${error.message}`, "error")
+      toast(`hoko: could not invoice the run — ${error.message}`, "error")
     }
   }
 
@@ -527,27 +676,29 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
               return `The TUI did not open the run's session ${target}. Set HOKO_FRESH_SESSION=0 to hand off in this session, or run /hoko/execute-plan ${plan} by hand. Nothing was handed off.`
             }
           }
-          const anchor = state(ctx.sessionID, ".prompt")
           const lines: string[] = []
           if (fresh) {
-            // journal.py retires the approval session's `.project` when the anchor lives
-            // in its state dir, so the run's copy is written from the value read here
-            // rather than moved after the journal block.
+            // plan-file.py retires the approval session's `.project` when the prompt anchor
+            // lives in its state dir, so the run's copy is written from the value read
+            // here rather than moved after the journal block.
             const recorded = read(state(ctx.sessionID, ".project"))
             if (recorded) write(state(target, ".project"), recorded)
           }
-          if (!journaling) {
-            // Journaling is opt-in: with no root configured the handoff is all this does.
-          } else if (fs.existsSync(anchor)) {
+          if (journaling) {
             try {
-              const entry = journal(env, cwd, ["write", "--plan", plan, "--prompt-file", anchor])
+              const args = ["file", "--plan", plan, "--session", ctx.sessionID]
+              // Prefer the unrotated anchor: it is this cycle's. `.prompt.used` only
+              // carries the capture time when the anchor was already filed.
+              const since = statStart(state(ctx.sessionID, ".prompt"))
+                ?? statStart(state(ctx.sessionID, ".prompt.used"))
+              if (since) args.push("--since", since)
+              const planCopy = run(PLAN_FILE_SCRIPT, args, cwd, env)
+              const entry = path.dirname(planCopy)
               write(state(ctx.sessionID, ".entry"), entry)
               lines.push(`Journal entry: ${entry}`)
             } catch (error: any) {
               lines.push(`Not journaled — ${error.message}. Say so in your reply; the run continues.`)
             }
-          } else {
-            lines.push("Not journaled — no prompt was captured for this cycle. Say so in your reply.")
           }
           if (fresh) {
             for (const suffix of [".plan", ".entry"]) {
@@ -579,7 +730,8 @@ export const HokoPlugin = async ({ client, worktree, directory }: any) => {
         // Cleared before firing: the run's own idle event must not start it again.
         fs.rmSync(pending, { force: true })
         fs.rmSync(state(sessionID, ".target"), { force: true })
-        await handoff(target, plan)
+        const since = statStart(state(sessionID, ".prompt.used")) ?? statStart(state(sessionID, ".prompt"))
+        await handoff(target, plan, since)
         return
       }
 

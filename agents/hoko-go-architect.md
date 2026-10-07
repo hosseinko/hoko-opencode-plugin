@@ -15,6 +15,9 @@ permission:
     "go mod graph*": allow
     "ls*": allow
     "rg*": allow
+    # rtk (opencode-rtk plugin) rewrites these before permission checks run.
+    "rtk ls*": allow
+    "rtk rg*": allow
   skill: allow
   task: deny
 ---

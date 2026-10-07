@@ -14,6 +14,10 @@ permission:
     "go test*": allow
     "go build*": allow
     "go vet*": allow
+    # rtk (opencode-rtk plugin) rewrites these before permission checks run.
+    "rtk go test*": allow
+    "rtk go build*": allow
+    "rtk go vet*": allow
     "git diff*": allow
     "git status*": allow
     "python3 skills/hoko-senior-go-developer/scripts/go_test.py*": allow

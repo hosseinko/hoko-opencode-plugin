@@ -20,14 +20,19 @@ trigger only on a diff in that stack.
 
 | | |
 | --- | --- |
-| opencode | 1.18 or newer — `opencode --version` |
+| opencode | 2.0 or newer — `opencode --version`. On V1 see [Migration from V1](#migration-from-v1) |
 | python3 | only for the journal and its token invoice, and only if you enable it — `python3 --version` |
 | git | plan runs commit each step |
 | node modules | **none.** `plugin/hoko.ts` uses node's standard library only |
 
-There is nothing to build and nothing to install. The plugin has no dependencies on
+There is nothing to build and no dependency to install. The plugin has no dependencies on
 purpose — that is why its tool takes no arguments, since declaring arguments would mean
 importing zod, and importing zod would mean an install step.
+
+One thing V2 changed: a plugin can no longer register agents, and there is no TUI API. So
+this repo's `agents/*.md` are installed as files (step 3) and the toast and the jump to
+the run's session are gone. Everything else — commands, skills, the standing instructions
+— is registered by the plugin as before.
 
 ### 1. Put the repo somewhere stable
 
@@ -45,31 +50,47 @@ Keep that path — step 2 needs it.
 
 opencode has no plugin marketplace, and agents and commands are only discovered inside
 `~/.config/opencode/` or a project's `.opencode/`. So the repo registers itself: one
-line in `~/.config/opencode/opencode.json` and the plugin injects its agents, commands
-and skills into the live config at startup. `opencode.json.example` is that file:
+line in `~/.config/opencode/opencode.json` and the plugin injects its commands, skills
+and standing instructions into the live config at startup. `opencode.json.example` is
+that file:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///ABSOLUTE/PATH/TO/hoko-opencode-plugin/plugin/hoko.ts"]
+  "plugins": ["file:///ABSOLUTE/PATH/TO/hoko-opencode-plugin/plugin"]
 }
 ```
 
 Replace the placeholder with the path from step 1. It must be a `file://` URL with an
-absolute path, pointing at `plugin/hoko.ts` itself. If `~/.config/opencode/opencode.json`
-already exists, add the entry to the `plugin` array you have rather than replacing the
-file.
+absolute path, and it must point at the **`plugin` directory**, not at `plugin/hoko.ts`:
+V2 loads a path entry as a directory and imports its `index.ts`, and a path to a file is
+rejected with `configured plugin path must be a directory`. If
+`~/.config/opencode/opencode.json` already exists, add the entry to the `plugins` array
+you have rather than replacing the file.
 
 ```sh
 cp opencode.json.example ~/.config/opencode/opencode.json   # only if you have none
 ```
 
 The `plugin` entry names the checkout opencode loads everything from — not just
-`plugin/hoko.ts`, but the agents, commands and skills it injects. An edit made in a
+`plugin/hoko.ts`, but the commands, skills and instructions it injects. An edit made in a
 different clone, or a copy installed elsewhere, has no effect until this path points at
-that checkout and opencode restarts.
+that checkout and opencode reloads.
 
-### 3. Configure it (optional)
+### 3. Install the agents
+
+V2 fixed the plugin API against adding agents, so the plugin cannot register the ones
+this repo ships. They are discovered from `~/.config/opencode/agents/` instead:
+
+```sh
+scripts/install-agents.sh
+```
+
+That symlinks every `agents/*.md` into `~/.config/opencode/agents/`, so editing one here
+stays live. Re-running is safe, and a real file already sitting at a target path is left
+alone and reported rather than overwritten. To undo, delete the symlinks.
+
+### 4. Configure it (optional)
 
 ```sh
 cp hoko.env.example ~/.config/opencode/hoko.env
@@ -83,37 +104,32 @@ PR targets `develop` where the repository has one, and nothing is journaled.
 Keeping the file at `~/.config/opencode/hoko.env` rather than in the repo means a
 `git pull` never touches your settings.
 
-### 4. Restart opencode
+### 5. Reload opencode
 
-Config is read once at startup and never hot-reloaded. Every change here — this repo's
-files, `hoko.env`, `opencode.json` — needs a restart, not a new session.
+V2 watches its config directories and reloads them, so a change to `opencode.json`, to
+`hoko.env`, or to a file that was already mounted usually lands on its own; `opencode
+reload` forces it. A change to the *set* of plugins, or to the plugin's own source, may
+need `opencode service restart`.
 
-### 5. Check it took
+### 6. Check it took
 
 ```sh
-opencode agent list          # plan, hoko-plan-executor, hoko-step-gate,
-                             #   hoko-code-reviewer, hoko-code-reviewer-deep,
-                             #   hoko-quality-assurance, hoko-researcher,
-                             #   hoko-go-code-reviewer, hoko-go-test-writer,
-                             #   hoko-go-architect
-opencode debug skill         # grill-me, hoko-commit, hoko-pull-request, hoko-code-review,
-                             #   hoko-api-developer, hoko-quality-assurance,
-                             #   hoko-senior-php-developer, hoko-senior-frontend-developer,
-                             #   hoko-senior-go-developer, hoko-feature-specs
-opencode debug config        # the /hoko commands, and the model each agent resolved to
-opencode debug agent plan    # the important one — see below
+opencode debug agents        # the hoko- agents and the patched plan agent
+opencode debug config        # every configuration source, and the plugin entry
 ```
 
-`opencode debug agent plan` is where the workflow lives or dies. Three things to find in
-it:
+`opencode debug agents` is where the workflow lives or dies. Find `plan` in the list and
+check three things:
 
-- the **prompt** is the planning protocol (it mentions `grill-me` and `hoko_execute`),
-  not opencode's stock plan prompt;
-- **edit** is `"*": "deny"` with `.ai/plans/*.md` allowed — that one exception is how a
-  plan becomes a file;
-- the **tool map** has `write`, `edit`, `bash` and `hoko_execute` enabled.
+- its **system** prompt is the planning protocol (it mentions `grill-me` and
+  `hoko_execute`), not opencode's stock plan prompt;
+- the **permission** list denies `edit` on `*` and allows it on `.ai/plans/*.md` — that
+  one exception is how a plan becomes a file;
+- it may call `hoko_execute`.
 
-### 6. Smoke-test it
+The `hoko-` subagents should be listed too. If they are not, step 3 did not run.
+
+### 7. Smoke-test it
 
 In any git repo:
 
@@ -123,34 +139,69 @@ Tab → Plan
 ```
 
 You should get grilled one question at a time, then a plan path under `.ai/plans/`, then
-a request to approve. Say **approved** and watch for three things: a toast naming the
-plan, the prompt box flipping from Plan to Build, and the run starting at step 1 with a
-`hoko-plan-executor` subagent.
+a request to approve. Say **approved** and watch for the run starting at step 1 with a
+`hoko-plan-executor` subagent. Two things V2 took away: no toast names the plan, and the
+TUI does not follow the run into its fresh session — the run still starts there, the
+screen just stays on the planning session.
 
-To undo all of this, delete the plugin line from `opencode.json` and restart.
+To undo all of this, delete the plugin entry from `opencode.json`, delete the symlinks
+step 3 made, and reload.
 
 ### Updating
 
-Pull (or edit) and restart opencode. That is the whole procedure: nothing is copied,
-symlinked, compiled or installed, so the files in this repo *are* the live workflow.
-Editing an agent, a command or a skill here changes it everywhere on the next start —
-which also means a syntax error in `plugin/hoko.ts` takes the whole thing down, so run
-the tests after touching it.
+Pull (or edit) and reload opencode. That is the whole procedure: nothing is copied,
+compiled or installed, so the files in this repo *are* the live workflow — the plugin is
+loaded from `plugin/`, and the agents are symlinks into `agents/`. Editing any of them
+changes it everywhere on the next reload. A syntax error in `plugin/hoko.ts` takes the
+whole thing down, so run the tests after touching it.
 
 ### When something is off
 
 | Symptom | What it means |
 | --- | --- |
-| No `/hoko` commands, no `hoko-` agents | The plugin never loaded: check the path in `opencode.json` is absolute, `file://`, and ends in `plugin/hoko.ts`. Then restart. |
-| Plan mode answers like stock opencode | You have a `plan` block in `opencode.json`; the plugin leaves a hand-written agent's prompt alone. Remove the `prompt` from it. |
-| The plan arrives in the chat, not as a file | The edit exception is not reaching the plans directory — check the permission map in `opencode debug agent plan`. The agent says so itself rather than losing the plan. |
-| "approved" produces a reply but no run | The plan agent did not call `hoko_execute`. Check it is in the tool map; if there is no plan *file* in the session, the tool refuses by design. |
-| Toast says the handoff failed | Run `/hoko/execute-plan <path>` yourself — the path is in the toast — and check `opencode debug config` for the command. |
-| The prompt box stays on Plan | Cosmetic only; the run is on build. The plugin walks the TUI round with `agent_cycle` and gives up quietly if it cannot work out the distance. |
+| Log says `configured plugin path must be a directory` | The `plugins` entry points at `plugin/hoko.ts`. V2 a path entry loads as a directory — point it at `.../hoko-opencode-plugin/plugin`. |
+| No `/hoko` commands, no `hoko-` agents | The plugin never loaded. Check the entry in `opencode.json` is an absolute `file://` URL to the `plugin` directory, then `opencode service restart`. |
+| Plan mode answers like stock opencode | The `plan` agent is not installed — run `scripts/install-agents.sh` and reload. |
+| The plan arrives in the chat, not as a file | The edit exception is not reaching the plans directory — check the permission list in `opencode debug agents`. The agent says so itself rather than losing the plan. |
+| "approved" produces a reply but no run | The plan agent did not call `hoko_execute`, or the tool is not permitted. Check the permission list in `opencode debug agents`; if there is no plan *file* in the session, the tool refuses by design. |
+| The handoff produces a session with no run | Run `/hoko/execute-plan <path>` yourself and check the opencode log — V2 has no toast, so a failed handoff is written there. |
+| The screen stays on Plan after approval | Expected. V2 exposes no TUI API, so the plugin cannot move the TUI to the run's session. The run is on build either way. |
 | No journal entry | Expected unless `HOKO_JOURNAL_PATH` is set — journaling is off by default. With it set: `python3` missing, or the root is not writable. `hoko_execute` reports the reason in its output instead of failing silently. |
 | Entry has no `report-NN.md` | The run never set `Status: complete` — a blocker or a `not ready` gate — or the closing report was not the last thing posted. |
 | Plans land in `.claude/plans/` | Stale Claude Code skills are being picked up — see [Claude Code interference](#claude-code-interference). |
 | A gate subagent says it could not run a check | Its bash allowlist does not cover your project's command. Add the pattern to `agents/hoko-step-gate.md`, or `agents/hoko-code-reviewer-deep.md` for the end-of-run review. |
+
+## Migration from V1
+
+V2 has three intentional breaking changes, and one of them is the plugin API: **a V1
+plugin does not run in V2.** The plugin here has been ported; the file paths, the agent
+and command frontmatter and the skills are unchanged. What you have to do by hand:
+
+1. **Re-point the plugin.** The `plugin` key becomes `plugins`, and the value becomes the
+   `plugin` *directory* rather than `plugin/hoko.ts`. See [step 2](#2-point-opencode-at-the-plugin).
+2. **Install the agents.** A V2 plugin cannot add agents, so `agents/*.md` are discovered
+   from `~/.config/opencode/agents/`. Run `scripts/install-agents.sh`. This is the step
+   V1 did not have.
+3. **Reload**, then check `opencode debug agents`.
+
+Behavior that changed, all of it forced by the V2 API:
+
+| V1 | V2 |
+| --- | --- |
+| The plugin registered the agents | Agents are files under `~/.config/opencode/agents/`, installed by `scripts/install-agents.sh` |
+| The plugin appended `instructions/*.md` to the config | The plugin adds them to every model request from the `context` hook — same effect, they are in context on every turn of every agent |
+| `tui.showToast` announced the handoff, the journaled report and the invoice | No TUI API. The handoff and journaling lines go to the opencode server log; the git guard's warning arrives as a synthetic notice in the session |
+| Approving switched the TUI to the run's fresh session | No TUI API. The run's session is still created and the run still starts there; the screen does not follow it |
+| `HOKO_PROMPT_FILE` was exported into every shell | The V2 shell hook carries no session id, so it is gone. Nothing read it |
+| The plugin detected a hand-written `plan` block and left its prompt alone | V2 exposes no way to tell a hand-written agent from a generated one, so the exception is always layered on, and a model override only applies to an agent with no model of its own |
+| `/hoko/research` ran as a subtask because a command could name a subagent | A command cannot name an agent, and a session cannot run on a subagent-only agent, so the command asks the current agent to delegate to `hoko-researcher` |
+| The plan agent's `tools` map was switched on | V2 agents have no `tools` map; tool availability follows permissions |
+
+`plugin/hoko.ts` was rewritten for the V2 API: `setup(ctx)` with `ctx.tool.transform`,
+`ctx.tool.hook`, `ctx.shell.hook`, `ctx.session.hook`, `ctx.event.subscribe`,
+`ctx.agent.transform`, `ctx.command.transform` and `ctx.skill.transform`. The journaling
+scripts, the git guard, the settings loader and the frontmatter parser are unchanged. It
+still imports nothing beyond node's standard library.
 
 ## Configuration
 
@@ -169,7 +220,7 @@ The plugin reads, in increasing order of precedence: `hoko.env` in this repo,
 | `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` | the session's model |
 | `HOKO_JOURNAL_PATH` | journal root | **unset — journaling is off** |
 | `HOKO_PLANS_DIR` | where plans are written, relative to the repo root | `.ai/plans` |
-| `HOKO_FRESH_SESSION` | approval starts the run in a fresh session and switches the TUI to it; `0`, `false`, `no` or `off` hand off in the approval session | on |
+| `HOKO_FRESH_SESSION` | approval starts the run in a fresh session; V2 has no TUI API, so nothing follows it there. `0`, `false`, `no` or `off` hand off in the approval session | on |
 | `HOKO_COVERAGE_MIN` | the full gate's coverage floor, in percent | `85` |
 | `HOKO_COMMIT_AUTO` | `1` = `hoko-commit` commits without confirming the message | off |
 | `HOKO_BASE_BRANCH` | branch playing the `develop` role — what features branch from and target | `develop`, else the remote's default branch |
@@ -177,29 +228,21 @@ The plugin reads, in increasing order of precedence: `hoko.env` in this repo,
 
 Models are `provider/model-id`; `opencode models` lists them.
 
-The plugin exports all of these, plus `HOKO_ROOT` and `HOKO_PROMPT_FILE` (this session's
-captured prompt), into every shell the agent runs — which is how the skills read the
-settings that apply to them.
+The plugin exports all of these, plus `HOKO_ROOT`, into every shell the agent runs —
+which is how the skills read the settings that apply to them. V1 also exported
+`HOKO_PROMPT_FILE` (this session's captured prompt); V2's shell hook carries no session
+id, so it is gone. Nothing else read it.
+
+A model variable only takes effect on an agent that has no model of its own: a `model`
+you set yourself in `opencode.json` wins. In V1 the plugin could tell a hand-written agent
+block apart from a generated one; in V2 it cannot, so an unset model is the only signal.
 
 ### Claude Code interference
 
-Two of opencode's own environment variables, read from your shell at startup, so the
-plugin cannot set them for you. opencode loads `~/.claude/CLAUDE.md` as instructions and
-`~/.claude/skills/*/SKILL.md` as skills; a leftover Claude Code copy of a workflow like
-this one will tell the model plans live in `.claude/plans/`, which fights whatever
-`HOKO_PLANS_DIR` says. Put these in your shell profile:
-
-```sh
-export OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1
-export OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1
-```
-
-Both are stock opencode behaviour rather than this plugin's, as is the other surprise
-worth knowing: **a project `.opencode/` directory gets npm scaffolding.** For every
-config directory it finds, opencode writes a `.gitignore` and background-installs
-`@opencode-ai/plugin` into it — roughly 60 MB of `node_modules`. There is no setting to
-switch it off, which is why plans default to `.ai/plans/` rather than
-`.opencode/plans/`: a project that never needs a `.opencode/` directory never gets one.
+V1 shipped around two opencode behaviours that V2 dropped: V2 does not read
+`~/.claude/CLAUDE.md`, and it does not read `~/.claude/skills/`. So a leftover Claude Code
+copy of a workflow like this one can no longer fight `HOKO_PLANS_DIR` over where plans
+live, and the `OPENCODE_DISABLE_CLAUDE_CODE_*` workaround V1 documented is unnecessary.
 
 ## The workflow
 
@@ -245,14 +288,12 @@ against.
 A change with no observable behaviour, a rename or a pure refactor, states no
 requirements and says so.
 
-The plan agent writes that file through one permission exception the plugin adds, applied
-even if you keep a `plan` block of your own in `opencode.json`: `edit` is denied except
-the plans directory (spelled relative, `*/`-prefixed and `**/`-prefixed, since opencode
-does not document which form the matcher sees), the writing tools are switched back on so
-the exception has something to act on, and `date`, `mkdir -p`, `git rev-parse`, `ls` and
-`test -f` are pre-allowed so resolving the path never stalls on a prompt. Configure a
-`plan` agent yourself and your prompt is kept — only the permissions and the plan-file
-exception are layered on.
+The plan agent writes that file through one permission exception the plugin adds: `edit`
+is denied except the plans directory (spelled relative, `*/`-prefixed and `**/`-prefixed,
+since opencode does not document which form the matcher sees), and `date`, `mkdir -p`,
+`git rev-parse`, `ls` and `test -f` are pre-allowed so resolving the path never stalls on
+a prompt. The prompt comes from `agents/plan.md`, installed into
+`~/.config/opencode/agents/`; the plugin only layers the permissions on.
 
 ### 2. Approval hands off by itself
 
@@ -260,30 +301,24 @@ Say "approved" — or "go ahead", or anything that means yes — and the plan ag
 the `hoko_execute` tool. That tool, not the model, does the switching:
 
 1. creates a new opencode session for the run, titled from the plan's `#` heading (or the
-   plan's filename when it has none), and switches the TUI to it — the planning session
-   keeps its transcript and is left untouched;
+   plan's filename when it has none), on the `build` agent — the planning session keeps
+   its transcript and is left untouched;
 2. files the plan and this cycle's original prompt in the journal, if journaling is
    configured, then moves the entry it opened and the cycle's other state onto the run's
    session, so the closing report is still filed into the entry opened at approval;
 3. queues the plan on the approval session, and when that turn ends runs
-   `/hoko/execute-plan <path>` in the fresh session **on the `build` agent** (opencode's
-   `session.command` API takes the agent to run as), with a toast so you can see it
-   start.
+   `/hoko/execute-plan <path>` in the fresh session on the `build` agent.
 
 The run's context is the plan file and nothing else — none of the planning transcript
 rides along. So there is no Tab-to-build step and no command to remember, and build never
 starts from a blank slate: it starts inside the execute-plan protocol with the plan path
-in hand. The prompt box follows: the TUI keeps its own idea of the active agent and the
-API has no setter for it, so the plugin walks it round with `agent_cycle` (it reads the
-primary agents from `app.agents()` to know how far), leaving the indicator on Build where
-the run is. That step is cosmetic — the run is on the build agent either way.
+in hand. In V1 the prompt box followed the run; V2 exposes no TUI API, so the screen
+stays where it was. The run is on the build agent either way — that V1 step was cosmetic.
 
 `HOKO_FRESH_SESSION=0` — or `false`, `no`, `off` — skips the new session and queues the
-handoff on the approval session, so the plan runs there as before. When the opencode build
-has no `session.create` or no `tui.publish`, or creating the session fails, the tool
-refuses before anything is journaled or queued; when it did create the session but the TUI
-does not open it within the tool's retries, it deletes that session too. Either way the
-failure comes back in the tool result for the plan agent to report, naming
+handoff on the approval session, so the plan runs there as before. When creating the
+session fails, the tool refuses before anything is journaled or queued, and the failure
+comes back in the tool result for the plan agent to report, naming
 `HOKO_FRESH_SESSION=0` and the manual `/hoko/execute-plan <path>` as the ways out.
 
 In fresh mode the run starts in a session the plugin created, not the planning session, so
@@ -362,11 +397,12 @@ go looking.
   appears once, stamped with its registration time, so a restart loses nothing.
 - The plan turning `Status: complete` closes it: the plugin takes the last message the
   run posted — by protocol the closing report — and writes it to `report-NN.md` beside
-  the entry's `plan-NN.md`, announcing it with a toast. A run that stopped short never
+  the entry's `plan-NN.md`, and logs that it did. A run that stopped short never
   sets `Status: complete`, so nothing is filed and the entry stays open. It then
   collects every registered session's assistant responses and those of its descendant
   sessions into `usage.json`, snapshots the model catalog's rates into `rates.json`, and
-  renders the token invoice.
+  renders the token invoice. V2 exposes no way to list sessions, so descendants are
+  tracked from the `session.created` events the plugin observes while it is loaded.
 - `invoice.json` and `invoice.md` list, per model, the input, output, reasoning,
   cache-read and cache-write tokens and their cost; per round, role and agent type (a
   registered session's own loop is `main`), billing each response to the row registered
@@ -391,13 +427,17 @@ and share it for `plansDir`, `coverageMin`, `commitAuto` and the rest.
 
 ```
 plugin/
+  index.ts            the entry point V2 imports: re-exports hoko.ts's default
   hoko.ts             registers everything; settings from hoko.env; the hoko_execute
                       tool; prompt capture, the fresh-session handoff to build, and
                       journaling
   test_hoko.ts        tests for the plugin's hooks and tool
+Dockerfile            bun + python3, for the test suite only
+docker-compose.yml    the `test` service: `docker compose run --rm test`
 agents/
   plan.md                 primary; replaces opencode's plan agent with the protocol:
-                          grill → plan file → approve → hoko_execute
+                          grill → plan file → approve → hoko_execute. Installed to
+                          ~/.config/opencode/agents/, since a plugin cannot register agents
   hoko-plan-executor.md   subagent; implements one step, never commits
   hoko-researcher.md      subagent; external research, writes .ai/research/<stamp>-<slug>.md
   hoko-step-gate.md       subagent; a step's fast gate — static analysis + unit tests
@@ -441,6 +481,7 @@ instructions/
                           host — use docker and docker compose, newest version, and stop
                           when docker does not work
 scripts/
+  install-agents.sh       symlink agents/*.md into ~/.config/opencode/agents/
   settings.py             the hoko.json/env config the scripts share
   journal.py              write | report | register — the journal entry
   plan-file.py            file an approved plan, record Project:/Journal:, register the session
@@ -454,26 +495,28 @@ opencode.json.example     the one line that registers the plugin
 ```
 
 Agents, commands and skills are plain opencode files — the plugin only reads their
-frontmatter and body. `instructions/` is different: **every** `.md` in it is appended to
-`config.instructions`, so it is in context on every agent whether or not a skill is
-invoked. That is where rules live that must hold in plain build-mode chat too — a skill
-only binds once a model decides to load it, which is exactly when "just commit this"
-turned into a local merge into the integration branch.
+frontmatter and body. The commands and the skills are registered into the live registry;
+the agents are installed as files, because V2 gives a plugin no way to add one.
+`instructions/` is different again: the plugin adds **every** `.md` in it to every model
+request, so it is in context on every agent whether or not a skill is invoked. That is
+where rules live that must hold in plain build-mode chat too — a skill only binds once a
+model decides to load it, which is exactly when "just commit this" turned into a local
+merge into the integration branch.
 
 Dropping a file into `instructions/` is all it takes to add a set, and deleting one is
-all it takes to remove it — which is how `communication.md` gets there. If you already
-list a file in `opencode.json`'s own `instructions` array, the plugin leaves it alone
-rather than adding it twice; move it into `instructions/` to have the plugin carry it
-instead. Two caveats: instructions cost context on every turn of every agent, cheap
-subagents included, so a long file is not free; and a general rule can collide with the
-workflow. `communication.md` says not to spawn subagents without asking, which a plan
-run does constantly — `hoko.md` carves that out explicitly, and any other collision
-belongs there too, not in an edit to the file it collides with.
+all it takes to remove it — which is how `communication.md` gets there. Unlike V1, the
+plugin does not know what is in `opencode.json`: if you also list an instructions file
+there you will get it twice, so let the plugin carry it. Two caveats: instructions cost
+context on every turn of every agent, cheap subagents included, so a long file is not
+free; and a general rule can collide with the workflow. `communication.md` says not to
+spawn subagents without asking, which a plan run does constantly — `hoko.md` carves that
+out explicitly, and any other collision belongs there too, not in an edit to the file it
+collides with.
 
-The frontmatter parser covers scalars and nested maps (`permission:`, `tools:`), which is
-all these files use; it is not a full YAML parser.
+The frontmatter parser covers scalars, nested maps (`permission:`, `tools:`) and the
+`>`/`|` block scalars the skill descriptions use. It is not a full YAML parser.
 
-Two details worth knowing if you edit the agents: within a `permission` map opencode
+Two details worth knowing if you edit the agents: within a permission list opencode
 evaluates the **last** matching rule, so broad patterns go first and narrow ones last;
 and skill names are flat, which is why they are prefixed `hoko-` rather than namespaced
 like the commands.
@@ -567,8 +610,10 @@ findings cost the caller almost no context and outlive the session.
 
 Three ways it runs:
 
-- `/hoko/research <question>` — the command names the subagent as its agent, so opencode
-  turns the whole invocation into a subtask. Nothing runs in your main context.
+- `/hoko/research <question>` — in V1 the command named the subagent as its agent, so
+  opencode ran the whole invocation as a subtask. V2 commands cannot name an agent, so the
+  command asks the current agent to delegate to `hoko-researcher`; the research still runs
+  in a subagent, on its own context.
 - plan mode launches it during grilling instead of guessing at external behaviour, and
   cites the findings file in the plan's *Decisions*.
 - `/hoko/execute-plan` launches it when a step's blocker is an external unknown.
@@ -587,10 +632,16 @@ is why the blocker path routes back through the conductor.
 
 ## Tests
 
+The suite needs bun and python3 together, so it runs in the container this repo ships:
+
 ```sh
-bun run test                    # the whole suite, in the order below
+docker compose run --rm test    # the whole suite, in the order below
+```
+
+The `test` service is `bun run test`, which is:
+
+```sh
 bun plugin/test_hoko.ts         # plugin: capture, the tool, the handoff, journaling, invoice
-#   or: node --experimental-strip-types plugin/test_hoko.ts
 python3 scripts/test_settings.py  # config: precedence, coercion, dict parsing
 python3 scripts/test_journal.py # journal: entries, titles, projects, reports, config
 python3 scripts/test_plan_file.py # filing: header lines, sessions.json, idempotence
@@ -598,5 +649,7 @@ python3 scripts/test_invoice.py # invoice: per-model sums, round/role attributio
 python3 skills/hoko-senior-go-developer/scripts/test_go_scripts.py
                                 # Go scripts: check order, skips, coverage, scaffold
 ```
+
+Run a single one with `docker compose run --rm test bun plugin/test_hoko.ts`.
 
 Every one runs against throwaway directories and never touches a real journal.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-/** Tests for hoko.ts. Run: bun plugin/test_hoko.ts
+/** Tests for hoko.ts on the V2 plugin API. Run: bun plugin/test_hoko.ts
  *  (or: node --experimental-strip-types plugin/test_hoko.ts) */
 
 import fs from "node:fs"
@@ -14,11 +14,13 @@ const check = (name: string, ok: boolean, detail = "") => {
   if (!ok) fails.push(name)
 }
 
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+
 const STATE = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-state-"))
 process.env.HOKO_STATE_DIR = STATE
 const { createHash } = await import("node:crypto")
-const state = (sessionID: string) =>
-  path.join(STATE, createHash("sha256").update(sessionID).digest("hex").slice(0, 16) + ".prompt")
+const state = (sessionID: string, suffix = ".prompt") =>
+  path.join(STATE, createHash("sha256").update(sessionID).digest("hex").slice(0, 16) + suffix)
 
 const journalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "journal-"))
 process.env.HOKO_JOURNAL_PATH = journalRoot
@@ -33,506 +35,431 @@ process.env.HOKO_REVIEWER_DEEP_MODEL = "anthropic/claude-deep-test"
 // blocks at the end turn it back on.
 process.env.HOKO_FRESH_SESSION = "0"
 
-const { HokoPlugin, gitVerdict } = await import("./hoko.ts")
+const hoko: any = (await import("./hoko.ts")).default
+const { gitVerdict } = await import("./hoko.ts")
 
 const proj = fs.mkdtempSync(path.join(os.tmpdir(), "proj-"))
 fs.mkdirSync(path.join(proj, ".ai", "plans"), { recursive: true })
 const plan = path.join(proj, ".ai", "plans", "20260908120000-ship-it.md")
 fs.writeFileSync(plan, "## Goal\nShip it.\n\n## Progress\n- [ ] 1. Do the thing\n\n## Steps\n### 1. Do the thing\n")
 
+// ------------------------------------------------------------------ fake server --
+
 const commands: any[] = []
-const toasts: string[] = []
+const notices: string[] = []
+const prompts: any[] = []
+const switched: any[] = []
+const created: any[] = []
 const messages: Record<string, any[]> = {}
 const sessionMessages = (id: string) => (messages[id] ??= [])
-const children: any[] = []
-const cycles: string[] = []
-const created: any[] = []
-const deleted: string[] = []
-const published: any[] = []
-// Sessions whose `session.messages` should fail, to exercise a usage read that cannot
-// be fetched.
+/** Session → agent, so the prompt hook can tell plan mode apart. */
+const sessionAgent: Record<string, string> = {}
+/** Session → directory, so a session in another worktree resolves its own cwd. */
+const sessionDirs: Record<string, string> = {}
+// Sessions whose `session.context` should fail, to exercise a usage read that cannot be
+// fetched.
 const failMessages = new Set<string>()
-// How many of the next `tui.publish` calls to refuse, to exercise the retry.
-let publishFails = 0
-const agents = [
-  { name: "build", mode: "primary" },
-  { name: "explore", mode: "subagent" },
-  { name: "plan", mode: "primary" },
+let createdSeq = 0
+
+const listedAgents = [
+  { id: "build", mode: "primary" },
+  { id: "plan", mode: "primary" },
+  { id: "explore", mode: "subagent" },
+  { id: "hoko-researcher", mode: "subagent" },
+  { id: "hoko-plan-executor", mode: "subagent" },
+  { id: "hoko-code-reviewer", mode: "subagent" },
+  { id: "hoko-code-reviewer-deep", mode: "subagent" },
+  { id: "hoko-quality-assurance", mode: "subagent" },
 ]
-const providers = [
-  {
-    id: "anthropic",
-    models: {
-      "claude-test": { id: "claude-test", cost: { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } } },
-    },
-  },
+const models = [
+  { id: "claude-test", modelID: "claude-test", providerID: "anthropic", cost: [{ input: 3, output: 15, cache: { read: 0.3, write: 3.75 } }] },
 ]
-const client = {
-  session: {
-    command: async (options: any) => void commands.push(options),
-    messages: async (options: any) => {
-      if (failMessages.has(options.path.id)) throw new Error(`no messages for ${options.path.id}`)
-      return { data: sessionMessages(options.path.id) }
+
+function makeServer() {
+  const eventQueue: any[] = []
+  let wake: (() => void) | undefined
+  return {
+    push(event: any) {
+      eventQueue.push(event)
+      wake?.()
     },
-    children: async (options: any) => ({ data: children.filter((child) => child.parentID === options.path.id) }),
-    create: async (options: any) => {
-      created.push(options)
-      return { data: { id: "sess-fresh" } }
+    drain: () => new Promise((resolve) => setTimeout(resolve, 25)),
+    session: {
+      command: async (input: any) => void commands.push(input),
+      context: async (input: any) => {
+        if (failMessages.has(input.sessionID)) throw new Error(`no messages for ${input.sessionID}`)
+        return sessionMessages(input.sessionID)
+      },
+      // No `list`: V2's plugin session domain has no session enumeration (verified
+      // against opencode 2.0.30), so the plugin tracks descendants from events.
+      get: async (input: any) => ({
+        id: input.sessionID,
+        agent: sessionAgent[input.sessionID],
+        location: { directory: sessionDirs[input.sessionID] ?? proj },
+      }),
+      create: async (input: any) => {
+        created.push(input)
+        return { id: `sess-fresh-${++createdSeq}` }
+      },
+      switchAgent: async (input: any) => void switched.push(input),
+      prompt: async (input: any) => void prompts.push(input),
+      synthetic: async (input: any) => void notices.push(input.text),
+      wait: async () => {},
     },
-    delete: async (options: any) => void deleted.push(options.path.id),
-  },
-  config: { providers: async () => ({ data: { providers } }) },
-  tui: {
-    showToast: async (options: any) => void toasts.push(options.body.message),
-    executeCommand: async (options: any) => void cycles.push(options.body.command),
-    publish: async (options: any) => {
-      published.push(options)
-      if (publishFails > 0) {
-        publishFails--
-        return { error: "no such session" }
-      }
-      return { data: true }
+    model: { list: async () => ({ data: models }) },
+    event: {
+      async *subscribe(options: any) {
+        while (!options?.signal?.aborted) {
+          while (eventQueue.length) yield eventQueue.shift()
+          await new Promise<void>((resolve) => {
+            wake = resolve
+          })
+        }
+      },
     },
-  },
-  app: { log: async () => {}, agents: async () => ({ data: agents }) },
+  }
 }
 
-const hooks: any = await HokoPlugin({ client, worktree: proj, directory: proj })
-const session = "sess-1"
-const ctx = { sessionID: session, worktree: proj, directory: proj, agent: "plan" }
+/** Loads the plugin against a fresh fake context and returns the surfaces it registered. */
+async function boot(overrides: any = {}) {
+  const server = makeServer()
+  const session = { ...server.session, ...(overrides.session ?? {}) }
+  const tools: Record<string, any> = {}
+  const hooks: Record<string, any> = {}
+  let agentEditor: any
+  const commandsRegistered: any[] = []
+  const skillsRegistered: any[] = []
+  const agentsSource = overrides.agents ?? listedAgents
+  const ctx: any = {
+    location: { directory: proj, project: { id: "p1", directory: proj, canonical: proj } },
+    options: {},
+    agent: {
+      list: async () => ({ data: agentsSource }),
+      transform: async (cb: any) => {
+        const agents = agentsSource.map((agent: any) => ({ ...agent, permissions: [...((agent as any).permissions ?? [])] }))
+        agentEditor = {
+          list: () => agents,
+          get: (id: string) => agents.find((agent) => agent.id === id),
+          update: (id: string, update: any) => {
+            const agent = agents.find((entry) => entry.id === id)
+            if (agent) update(agent)
+          },
+          remove: () => {},
+          default: () => {},
+        }
+        cb(agentEditor)
+      },
+    },
+    command: {
+      transform: async (cb: any) => cb({ add: (definition: any) => commandsRegistered.push(definition) }),
+    },
+    skill: {
+      transform: async (cb: any) => cb({ add: (skill: any) => skillsRegistered.push(skill) }),
+    },
+    tool: {
+      transform: async (cb: any) => cb({ add: (tool: any) => (tools[tool.name] = tool) }),
+      hook: async (name: string, cb: any) => void (hooks[`tool.${name}`] = cb),
+    },
+    shell: { hook: async (name: string, cb: any) => void (hooks[`shell.${name}`] = cb) },
+    session: {
+      ...session,
+      hook: async (name: string, cb: any) => void (hooks[`session.${name}`] = cb),
+    },
+    model: server.model,
+    event: server.event,
+  }
+  const cleanup = await hoko.setup(ctx)
+  return { server, ctx, tools, hooks, commands: commandsRegistered, skills: skillsRegistered, agentEditor, cleanup }
+}
 
-// shell.env
-const shell = { env: {} as Record<string, string> }
-await hooks["shell.env"]({ sessionID: session, cwd: proj }, shell)
-check("shell.env exposes HOKO_ROOT", shell.env.HOKO_ROOT === path.dirname(path.dirname(fileURLToPath(import.meta.url))), shell.env.HOKO_ROOT)
-check("shell.env exposes the journal path", shell.env.HOKO_JOURNAL_PATH === journalRoot, shell.env.HOKO_JOURNAL_PATH)
-check("shell.env exposes the session's prompt file", shell.env.HOKO_PROMPT_FILE?.startsWith(STATE), shell.env.HOKO_PROMPT_FILE)
+// ------------------------------------------------------------------- shell env --
+
+{
+  const { hooks } = await boot()
+  const shell = { env: {} as Record<string, string> }
+  await hooks["shell.create.before"]({ command: "ls", cwd: proj, timeout: 0, shell: "/bin/zsh", env: shell.env })
+  check("the shell hook exposes HOKO_ROOT", shell.env.HOKO_ROOT === ROOT, shell.env.HOKO_ROOT)
+  check("the shell hook exposes the journal path", shell.env.HOKO_JOURNAL_PATH === journalRoot, shell.env.HOKO_JOURNAL_PATH)
+  check("the shell hook exposes the plans directory", shell.env.HOKO_PLANS_DIR === ".ai/plans", shell.env.HOKO_PLANS_DIR)
+}
 
 // The anchor path has one owner: with HOKO_STATE_DIR set, the plugin's state() and
 // journal.py's state_file() must build the same path, or plan-file.py reads an anchor
 // nobody wrote.
-const scriptsDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), "scripts")
-const scriptAnchor = execFileSync("python3", ["-c",
-  `import sys; sys.path.insert(0, ${JSON.stringify(scriptsDir)}); import journal; print(journal.state_file(${JSON.stringify(session)}))`,
-], { env: { ...process.env, HOKO_STATE_DIR: STATE }, encoding: "utf8" }).trim()
-check("the plugin's state() matches journal.py's state_file under HOKO_STATE_DIR",
-  path.resolve(shell.env.HOKO_PROMPT_FILE) === path.resolve(scriptAnchor),
-  `${shell.env.HOKO_PROMPT_FILE} vs ${scriptAnchor}`)
-
-// chat.message captures the first prompt verbatim, and only the first
-await hooks["chat.message"]({ sessionID: session }, { parts: [{ type: "text", text: "make it faster\n\nkeep `--dry-run`" }] })
-await hooks["chat.message"]({ sessionID: session }, { parts: [{ type: "text", text: "a refinement" }] })
-const anchor = shell.env.HOKO_PROMPT_FILE
-const capturedIso = fs.statSync(anchor).mtime.toISOString()
-check("first prompt is captured verbatim", fs.readFileSync(anchor, "utf8") === "make it faster\n\nkeep `--dry-run`")
-check("the project is recorded beside it", fs.readFileSync(anchor.replace(/\.prompt$/, ".project"), "utf8") === proj)
-
-// only plan mode opens a cycle
-const build = "sess-build"
-await hooks["chat.message"]({ sessionID: build, agent: "build" }, { parts: [{ type: "text", text: "thanks, looks good" }] })
-check("a message to build never becomes a cycle's prompt", !fs.existsSync(state(build)), state(build))
-
-// command templates must never become the captured prompt
-const other = "sess-2"
-await hooks["chat.message"]({ sessionID: other }, { parts: [{ type: "text", text: "<!-- hoko:command -->\nPlan this" }] })
-const prompts = fs.readdirSync(STATE).filter((f) => f.endsWith(".prompt"))
-check("a command template is not captured as a prompt", prompts.length === 1, prompts.join(","))
-
-// command.execute.before wins for /hoko/plan
-const third = "sess-3"
-await hooks["command.execute.before"]({ command: "hoko/plan", sessionID: third, arguments: "add a cache layer" }, { parts: [] })
-const thirdShell = { env: {} as Record<string, string> }
-await hooks["shell.env"]({ sessionID: third }, thirdShell)
-check("/hoko/plan arguments are captured as the prompt",
-  fs.readFileSync(thirdShell.env.HOKO_PROMPT_FILE, "utf8") === "add a cache layer")
-
-// hoko_execute refuses a cycle that produced no plan file
-const bare = fs.mkdtempSync(path.join(os.tmpdir(), "bare-"))
-const missing: any = await hooks.tool.hoko_execute.execute({}, { ...ctx, sessionID: "sess-bare", worktree: bare, directory: bare })
-check("hoko_execute refuses a cycle with no plan", String(missing).startsWith("No plan file in this session"), String(missing))
-check("a refused handoff queues nothing", !fs.existsSync(state("sess-bare").replace(/\.prompt$/, ".handoff")))
-
-// the plan the agent wrote is the plan that gets executed — the tool takes no arguments
-await hooks["tool.execute.after"]({ tool: "write", sessionID: session, args: { filePath: plan } })
-check("the session's plan file is remembered",
-  fs.readFileSync(anchor.replace(/\.prompt$/, ".plan"), "utf8") === plan)
-check("an unfinished plan asks for no journaling", !fs.existsSync(anchor.replace(/\.prompt$/, ".report")))
-const source = path.join(proj, "src.md")
-fs.writeFileSync(source, "Status: complete\n")
-await hooks["tool.execute.after"]({ tool: "write", sessionID: session, args: { filePath: source } })
-check("a file outside plans/ is not a plan", fs.readFileSync(anchor.replace(/\.prompt$/, ".plan"), "utf8") === plan)
-
-// hoko_execute journals the cycle and queues the handoff
-const handed: any = await hooks.tool.hoko_execute.execute({}, ctx)
-const output = handed.output ?? handed
-const entryLine = /Journal entry: (.+)/.exec(output)
-check("hoko_execute reports a journal entry", !!entryLine, output)
-const entry = entryLine?.[1] ?? ""
-const planCopy = path.join(entry, "plan-01.md")
-check("the entry holds the prompt and the plan verbatim",
-  !!entry && fs.readFileSync(path.join(entry, "prompt.md"), "utf8").includes("keep `--dry-run`")
-    && fs.readFileSync(planCopy, "utf8").includes("Ship it."),
-  entry)
-check("the plan's copy sits in the entry as plan-01.md",
-  path.basename(planCopy) === "plan-01.md" && path.dirname(planCopy) === entry, planCopy)
-check("the plan records its project and its journal copy",
-  /^Project: /m.test(fs.readFileSync(plan, "utf8"))
-    && new RegExp(`^Journal: ${planCopy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m").test(fs.readFileSync(plan, "utf8")),
-  fs.readFileSync(plan, "utf8").split("\n").slice(0, 3).join(" | "))
-check("hoko_execute tells the agent not to implement", /Do not implement anything/.test(output), output)
-check("the handoff is queued", fs.readFileSync(anchor.replace(/\.prompt$/, ".handoff"), "utf8") === plan)
-check("nothing is executed before the turn ends", commands.length === 0, JSON.stringify(commands))
-
-// the used prompt is retired, so the next cycle captures its own
-await hooks["chat.message"]({ sessionID: session }, { parts: [{ type: "text", text: "now the second thing" }] })
-check("a new cycle captures a new prompt", fs.readFileSync(anchor, "utf8") === "now the second thing")
-
-// session.idle fires the handoff, once, on the build agent
-await hooks.event({ event: { type: "session.idle", properties: { sessionID: session } } })
-check("the handoff runs execute-plan on build",
-  commands.length === 1 &&
-    commands[0].path.id === session &&
-    commands[0].body.command === "hoko/execute-plan" &&
-    commands[0].body.arguments === plan &&
-    commands[0].body.agent === "build",
-  JSON.stringify(commands))
-check("the handoff is announced", toasts.some((message) => message.includes("ship-it")), toasts.join(" | "))
-check("the prompt box is cycled from plan to build", cycles.join(",") === "agent_cycle", cycles.join(","))
-const sessionsRows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
-check("sessions.json registers the approving session as round 1 plan",
-  sessionsRows.some((row: any) => row.session_id === session && row.round === 1 && row.role === "plan"),
-  JSON.stringify(sessionsRows))
-check("sessions.json registers the run's session as round 1 execute",
-  sessionsRows.some((row: any) => row.session_id === session && row.round === 1 && row.role === "execute"),
-  JSON.stringify(sessionsRows))
-check("the plan row's since is the prompt-capture time, not the filing time",
-  sessionsRows.find((row: any) => row.round === 1 && row.role === "plan")?.since === capturedIso,
-  JSON.stringify(sessionsRows))
-check("the execute row carries the same cycle start",
-  sessionsRows.find((row: any) => row.round === 1 && row.role === "execute")?.since === capturedIso,
-  JSON.stringify(sessionsRows))
-await hooks.event({ event: { type: "session.idle", properties: { sessionID: session } } })
-check("the run's own idle does not re-fire it", commands.length === 1, JSON.stringify(commands))
-await hooks.event({ event: { type: "session.updated", properties: { sessionID: session } } })
-check("other events are ignored", commands.length === 1)
-
-// a completed plan journals the run's closing report beside plan-01.md, then the invoice
-const reportPath = path.join(entry, "report-01.md")
-check("no report before the plan completes", !fs.existsSync(reportPath))
-fs.writeFileSync(plan, "Status: complete\n\n" + fs.readFileSync(plan, "utf8"))
-await hooks["tool.execute.after"]({ tool: "edit", sessionID: session, args: { filePath: plan } })
-const stamp = Date.now()
-sessionMessages(session).push(
-  { info: { role: "user" }, parts: [{ type: "text", text: "approved" }] },
-  { info: { role: "assistant", time: { created: stamp + 1000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.5, tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 10, write: 2 } } }, parts: [{ type: "text", text: "not the last word" }] },
-  { info: { role: "assistant", time: { created: stamp + 2000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.25, tokens: { input: 50, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [{ type: "text", text: "Step 1 done — commit abc1234. Tests: bun test." }] },
-)
-children.push(
-  { id: "child-1", parentID: session, agent: "hoko-plan-executor" },
-  { id: "grandchild-1", parentID: "child-1", agent: "hoko-quality-assurance" },
-)
-sessionMessages("child-1").push({ info: { role: "assistant", time: { created: stamp + 3000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.1, tokens: { input: 10, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] })
-sessionMessages("grandchild-1").push({ info: { role: "assistant", time: { created: stamp + 4000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.05, tokens: { input: 5, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] })
-await hooks.event({ event: { type: "session.idle", properties: { sessionID: session } } })
-check("the closing report lands beside plan-01.md",
-  fs.existsSync(reportPath) && fs.readFileSync(reportPath, "utf8").includes("commit abc1234"),
-  fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8").slice(-160) : "missing")
-check("only the last message is taken as the report", !fs.readFileSync(reportPath, "utf8").includes("not the last word"))
-check("filing the report is announced", toasts.some((message) => message.includes("report-01.md")), toasts.join(" | "))
-
-const usage = JSON.parse(fs.readFileSync(path.join(entry, "usage.json"), "utf8"))
-check("usage.json records each assistant response's session, model, cost and tokens",
-  usage.some((row: any) => row.session_id === session && row.model === "claude-test" && row.provider === "anthropic"
-    && row.agent === "main" && row.cost === 0.5 && row.input === 100 && row.output === 20 && row.reasoning === 5
-    && row.cache_read === 10 && row.cache_write === 2), JSON.stringify(usage))
-check("usage.json bills descendant sessions to the registered session with their own agent",
-  usage.some((row: any) => row.session_id === session && row.agent === "hoko-plan-executor")
-    && usage.some((row: any) => row.session_id === session && row.agent === "hoko-quality-assurance"),
-  JSON.stringify(usage))
-const rates = JSON.parse(fs.readFileSync(path.join(entry, "rates.json"), "utf8"))
-check("rates.json records the catalog rates by provider/model",
-  rates["anthropic/claude-test"]?.input === 3 && rates["anthropic/claude-test"]?.output === 15
-    && rates["anthropic/claude-test"]?.cache_read === 0.3 && rates["anthropic/claude-test"]?.cache_write === 3.75,
-  JSON.stringify(rates))
-check("the invoice is written", fs.existsSync(path.join(entry, "invoice.md")) && fs.existsSync(path.join(entry, "invoice.json")))
-const invoice = JSON.parse(fs.readFileSync(path.join(entry, "invoice.json"), "utf8"))
-check("the invoice sums the run's reported cost", invoice.totals.cost === 0.9, JSON.stringify(invoice.totals))
-check("the invoice lists the per-model rates used", Object.keys(invoice.rates).includes("anthropic/claude-test"), JSON.stringify(invoice.rates))
-check("invoicing is announced", toasts.some((message) => message.includes("invoiced")), toasts.join(" | "))
-
-// an existing report is left alone, a session whose usage cannot be read is named, and
-// an invoice that cannot be generated is a toast — never a failed run
-fs.writeFileSync(reportPath, "sentinel report\n")
-const usageBefore = fs.readFileSync(path.join(entry, "usage.json"), "utf8")
-sessionMessages(session).push({ info: { role: "assistant", time: { created: stamp + 5000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.15, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [] })
-failMessages.add("sess-ghost")
-const ghostRows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
-ghostRows.push({ session_id: "sess-ghost", round: 1, role: "execute", since: new Date().toISOString() })
-fs.writeFileSync(path.join(entry, "sessions.json"), JSON.stringify(ghostRows, null, 2) + "\n")
-await hooks["tool.execute.after"]({ tool: "edit", sessionID: session, args: { filePath: plan } })
-await hooks.event({ event: { type: "session.idle", properties: { sessionID: session } } })
-check("an existing report is left alone", fs.readFileSync(reportPath, "utf8") === "sentinel report\n", fs.readFileSync(reportPath, "utf8"))
-check("a session whose usage cannot be read is named", toasts.some((message) => message.includes("sess-ghost")), toasts.join(" | "))
-check("the invoice is still regenerated when the report is skipped",
-  fs.readFileSync(path.join(entry, "usage.json"), "utf8") !== usageBefore
-    && fs.existsSync(path.join(entry, "invoice.json")), usageBefore)
-fs.rmSync(path.join(entry, "sessions.json"), { force: true })
-await hooks["tool.execute.after"]({ tool: "edit", sessionID: session, args: { filePath: plan } })
-await hooks.event({ event: { type: "session.idle", properties: { sessionID: session } } })
-check("a failed invoice is announced and does not throw",
-  toasts.some((message) => message.includes("could not invoice")), toasts.join(" | "))
-
-// a build without config.providers or session.children still invoices
 {
-  const s = "sess-degrade"
-  const p = path.join(proj, ".ai", "plans", "20260918100000-degrade.md")
-  fs.writeFileSync(p, "# Degrade\n## Goal\nInvoice without rates.\n")
-  const bare = { ...client, config: undefined, session: { ...client.session, children: undefined } }
-  const inst: any = await HokoPlugin({ client: bare, worktree: proj, directory: proj })
-  await inst["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: "degrade" }] })
-  await inst["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: p } })
-  const out: any = await inst.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
-  const ent = /Journal entry: (.+)/.exec(out.output ?? out)?.[1] ?? ""
-  await inst.event({ event: { type: "session.idle", properties: { sessionID: s } } })
-  fs.writeFileSync(p, "Status: complete\n\n" + fs.readFileSync(p, "utf8"))
-  sessionMessages(s).push({ info: { role: "assistant", time: { created: Date.now() + 1000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.01, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [{ type: "text", text: "Degrade report." }] })
-  await inst["tool.execute.after"]({ tool: "edit", sessionID: s, args: { filePath: p } })
-  await inst.event({ event: { type: "session.idle", properties: { sessionID: s } } })
-  check("a build without config.providers still writes the invoice",
-    !!ent && fs.existsSync(path.join(ent, "invoice.md")), ent)
-  check("a build without config.providers writes an empty rates table",
-    !!ent && fs.readFileSync(path.join(ent, "rates.json"), "utf8").trim() === "{}",
-    ent ? fs.readFileSync(path.join(ent, "rates.json"), "utf8") : "missing")
+  const scriptsDir = path.join(ROOT, "scripts")
+  const scriptAnchor = execFileSync("python3", ["-c",
+    `import sys; sys.path.insert(0, ${JSON.stringify(scriptsDir)}); import journal; print(journal.state_file("sess-1"))`,
+  ], { env: { ...process.env, HOKO_STATE_DIR: STATE }, encoding: "utf8" }).trim()
+  check("the plugin's state() matches journal.py's state_file under HOKO_STATE_DIR",
+    path.resolve(state("sess-1")) === path.resolve(scriptAnchor),
+    `${state("sess-1")} vs ${scriptAnchor}`)
 }
 
-// a session reused across two cycles is billed per cycle: the second entry bills the
-// plan phase that ran in it and excludes the responses of the cycle before
-{
-  const before = { ...process.env }
-  process.env.HOKO_FRESH_SESSION = "0"
-  const reused: any = await HokoPlugin({ client, worktree: proj, directory: proj })
-  const s = "sess-reused"
-  const runCycle = async (slug: string, cost: number, input: number, planCost: number, planInput: number) => {
-    const file = path.join(proj, ".ai", "plans", `20260919100000-${slug}.md`)
-    fs.writeFileSync(file, `# ${slug}\n## Goal\n${slug}.\n\n## Steps\n### 1. Go\n`)
-    await reused["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: `prompt for ${slug}` }] })
-    // One millisecond past the prompt anchor: this is a plan-phase response, before the
-    // approval that files the plan and registers the row, so a filing-time `since` drops it.
-    sessionMessages(s).push({
-      info: { role: "assistant", time: { created: fs.statSync(state(s)).mtime.getTime() + 1 }, modelID: "claude-test", providerID: "anthropic",
-        cost: planCost, tokens: { input: planInput, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
-      parts: [{ type: "text", text: `${slug} planning` }],
-    })
-    await reused["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: file } })
-    const out: any = await reused.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
-    const entry = /Journal entry: (.+)/.exec(out.output ?? out)?.[1] ?? ""
-    await reused.event({ event: { type: "session.idle", properties: { sessionID: s } } })
-    sessionMessages(s).push({
-      info: { role: "assistant", time: { created: Date.now() }, modelID: "claude-test", providerID: "anthropic",
-        cost, tokens: { input, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
-      parts: [{ type: "text", text: `${slug} report` }],
-    })
-    fs.writeFileSync(file, "Status: complete\n\n" + fs.readFileSync(file, "utf8"))
-    await reused["tool.execute.after"]({ tool: "edit", sessionID: s, args: { filePath: file } })
-    await reused.event({ event: { type: "session.idle", properties: { sessionID: s } } })
-    return entry
-  }
+// -------------------------------------------------------------- prompt capture --
 
-  await runCycle("reuse-one", 0.11, 11, 0.31, 31)
-  const second = await runCycle("reuse-two", 0.22, 22, 0.32, 32)
-  const secondUsage = JSON.parse(fs.readFileSync(path.join(second, "usage.json"), "utf8"))
-  check("the plan phase's assistant response is billed to its cycle's entry",
-    secondUsage.some((row: any) => row.cost === 0.32 && row.input === 32),
-    JSON.stringify(secondUsage))
-  check("a reused session's second entry holds only the second cycle's responses",
-    secondUsage.some((row: any) => row.cost === 0.22 && row.input === 22)
-      && !secondUsage.some((row: any) => row.cost === 0.11 || row.input === 11
-        || row.cost === 0.31 || row.input === 31),
-    JSON.stringify(secondUsage))
-  const secondInvoice = JSON.parse(fs.readFileSync(path.join(second, "invoice.json"), "utf8"))
-  check("the invoice does not bill the previous cycle's responses to the new entry",
-    secondInvoice.totals.cost === 0.54, JSON.stringify(secondInvoice.totals))
-  process.env = before
+{
+  const { hooks } = await boot()
+  sessionAgent["sess-1"] = "plan"
+  await hooks["session.prompt"]({ sessionID: "sess-1", prompt: { text: "make it faster\n\nkeep `--dry-run`" } })
+  await hooks["session.prompt"]({ sessionID: "sess-1", prompt: { text: "a refinement" } })
+  const anchor = state("sess-1")
+  const capturedIso = fs.statSync(anchor).mtime.toISOString()
+  check("first prompt is captured verbatim", fs.readFileSync(anchor, "utf8") === "make it faster\n\nkeep `--dry-run`")
+  check("the project is recorded beside it", fs.readFileSync(state("sess-1", ".project"), "utf8") === proj)
+
+  // A build-run session never opens a cycle.
+  sessionAgent["sess-build"] = "build"
+  await hooks["session.prompt"]({ sessionID: "sess-build", prompt: { text: "thanks, looks good" } })
+  check("a prompt on build never becomes a cycle's prompt", !fs.existsSync(state("sess-build")))
+
+  // A command template is skipped by its marker.
+  sessionAgent["sess-2"] = "plan"
+  await hooks["session.prompt"]({ sessionID: "sess-2", prompt: { text: "<!-- hoko:command -->\nPlan this" } })
+  const promptsBefore = fs.readdirSync(STATE).filter((f) => f.endsWith(".prompt"))
+  check("a command template is not captured as a prompt", promptsBefore.length === 1, promptsBefore.join(","))
 }
 
-// a reused session whose earlier cycle left `.prompt.used` behind must not seed the new
-// plan row from that earlier anchor: with no `.prompt` of its own, the filing path passes
-// no `--since`, so the row is stamped at filing time
+// ----------------------------------------------------------------- commands ----
+
 {
-  const before = { ...process.env }
-  process.env.HOKO_FRESH_SESSION = "0"
-  const stale: any = await HokoPlugin({ client, worktree: proj, directory: proj })
-  const s = "sess-stale-anchor"
-  const used = `${state(s)}.used`
-  fs.writeFileSync(used, "an earlier cycle's prompt")
-  const earlier = new Date(Date.now() - 60_000)
-  fs.utimesSync(used, earlier, earlier)
-  const file = path.join(proj, ".ai", "plans", "20260919110000-stale.md")
-  fs.writeFileSync(file, "# Stale anchor\n## Goal\nNo anchor of its own.\n\n## Steps\n### 1. Go\n")
-  await stale["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: file } })
-  const out: any = await stale.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
-  const entry = /Journal entry: (.+)/.exec(out.output ?? out)?.[1] ?? ""
-  const rows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
-  const since = new Date(rows.find((row: any) => row.role === "plan")?.since).getTime()
-  check("a plan filed with no `.prompt` is stamped at filing time, not from the stale `.prompt.used`",
-    Number.isFinite(since) && Math.abs(since - Date.now()) < 5_000 && since - earlier.getTime() > 30_000,
-    JSON.stringify(rows))
-  process.env = before
+  const capturedIso = fs.statSync(state("sess-1")).mtime.toISOString()
+  const { commands: commandDefs, tools, hooks, server } = await boot()
+  const byName = Object.fromEntries(commandDefs.map((command) => [command.name, command]))
+  check("every command file is registered",
+    ["grill-me", "hoko/plan", "hoko/execute-plan", "hoko/commit", "hoko/pr", "hoko/research"].every((name) => byName[name]),
+    Object.keys(byName).join(","))
+
+  // /hoko/plan captures its arguments and runs the template on the plan agent.
+  await byName["hoko/plan"].execute({ sessionID: "sess-3", prompt: { text: "add a cache layer" }, delivery: "steer" })
+  check("/hoko/plan arguments are captured as the prompt",
+    fs.readFileSync(state("sess-3"), "utf8") === "add a cache layer")
+  check("/hoko/plan switches the session to the plan agent",
+    switched.at(-1)?.agent === "plan" && switched.at(-1)?.sessionID === "sess-3", JSON.stringify(switched.at(-1)))
+  check("/hoko/plan sends the template with $ARGUMENTS replaced",
+    prompts.at(-1)?.text.includes("Plan this: add a cache layer") && !prompts.at(-1)?.text.includes("$ARGUMENTS"),
+    prompts.at(-1)?.text)
+
+  // A subagent-only agent cannot host a session, so the command delegates.
+  await byName["hoko/research"].execute({ sessionID: "sess-4", prompt: { text: "what does pinia do" }, delivery: "steer" })
+  check("/hoko/research delegates to its subagent instead of switching",
+    prompts.at(-1)?.text.includes("Launch the `hoko-researcher` subagent"), prompts.at(-1)?.text)
+
+  // ------------------------------------------------ hoko_execute: the handoff --
+  const execCtx = { sessionID: "sess-1", agent: "plan" }
+  await server.drain()
+
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), "bare-"))
+  sessionDirs["sess-bare"] = bare
+  const missing = await tools.hoko_execute.execute({}, { ...execCtx, sessionID: "sess-bare" })
+  check("hoko_execute refuses a cycle with no plan", String(missing.content).startsWith("No plan file in this session"), missing.content)
+  check("a refused handoff queues nothing", !fs.existsSync(state("sess-bare", ".handoff")))
+
+  // The plan the agent wrote is the plan that gets executed — the tool takes no arguments.
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: "sess-1", input: { filePath: plan } })
+  check("the session's plan file is remembered", fs.readFileSync(state("sess-1", ".plan"), "utf8") === plan)
+  check("an unfinished plan asks for no journaling", !fs.existsSync(state("sess-1", ".report")))
+  const source = path.join(proj, "src.md")
+  fs.writeFileSync(source, "Status: complete\n")
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: "sess-1", input: { filePath: source } })
+  check("a file outside plans/ is not a plan", fs.readFileSync(state("sess-1", ".plan"), "utf8") === plan)
+
+  const handed = await tools.hoko_execute.execute({}, execCtx)
+  const output = String(handed.content ?? handed)
+  const entry = (/Journal entry: (.+)/.exec(output)?.[1] ?? "").trim()
+  const planCopy = path.join(entry, "plan-01.md")
+  check("hoko_execute reports a journal entry", !!entry, output)
+  check("the entry holds the prompt and the plan verbatim",
+    !!entry && fs.readFileSync(path.join(entry, "prompt.md"), "utf8").includes("keep `--dry-run`")
+      && fs.readFileSync(planCopy, "utf8").includes("Ship it."),
+    entry)
+  check("the plan records its project and its journal copy",
+    /^Project: /m.test(fs.readFileSync(plan, "utf8"))
+      && new RegExp(`^Journal: ${planCopy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m").test(fs.readFileSync(plan, "utf8")),
+    fs.readFileSync(plan, "utf8").split("\n").slice(0, 3).join(" | "))
+  check("hoko_execute tells the agent not to implement", /Do not implement anything/.test(output), output)
+  check("the handoff is queued", fs.readFileSync(state("sess-1", ".handoff"), "utf8") === plan)
+  check("nothing is executed before the turn ends", commands.length === 0, JSON.stringify(commands))
+
+  await hooks["session.prompt"]({ sessionID: "sess-1", prompt: { text: "now the second thing" } })
+  check("a new cycle captures a new prompt", fs.readFileSync(state("sess-1"), "utf8") === "now the second thing")
+
+  // session.idle fires the handoff, once.
+  server.push({ type: "session.idle", data: { sessionID: "sess-1" } })
+  await server.drain()
+  check("the handoff runs execute-plan on the approval session",
+    commands.length === 1 && commands[0].sessionID === "sess-1" && commands[0].name === "hoko/execute-plan" && commands[0].text === plan,
+    JSON.stringify(commands))
+  const sessionsRows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
+  check("sessions.json registers the approving session as round 1 plan",
+    sessionsRows.some((row: any) => row.session_id === "sess-1" && row.round === 1 && row.role === "plan"),
+    JSON.stringify(sessionsRows))
+  check("sessions.json registers the run's session as round 1 execute",
+    sessionsRows.some((row: any) => row.session_id === "sess-1" && row.round === 1 && row.role === "execute"),
+    JSON.stringify(sessionsRows))
+  check("the plan row's since is the prompt-capture time, not the filing time",
+    sessionsRows.find((row: any) => row.round === 1 && row.role === "plan")?.since === capturedIso,
+    JSON.stringify(sessionsRows))
+  server.push({ type: "session.idle", data: { sessionID: "sess-1" } })
+  await server.drain()
+  check("the run's own idle does not re-fire it", commands.length === 1, JSON.stringify(commands))
+
+  // ------------------------------------------- the closing report and invoice --
+  const reportPath = path.join(entry, "report-01.md")
+  check("no report before the plan completes", !fs.existsSync(reportPath))
+  fs.writeFileSync(plan, "Status: complete\n\n" + fs.readFileSync(plan, "utf8"))
+  await hooks["tool.execute.after"]({ status: "completed", tool: "edit", sessionID: "sess-1", input: { filePath: plan } })
+  const stamp = Date.now()
+  sessionMessages("sess-1").push(
+    { type: "user", content: [{ type: "text", text: "approved" }] },
+    { type: "assistant", agent: "plan", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 1000 }, cost: 0.5, tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 10, write: 2 } }, content: [{ type: "text", text: "not the last word" }] },
+    { type: "assistant", agent: "plan", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 2000 }, cost: 0.25, tokens: { input: 50, output: 10, reasoning: 0, cache: { read: 0, write: 0 } }, content: [{ type: "text", text: "Step 1 done — commit abc1234. Tests: bun test." }] },
+  )
+  // V2 has no session enumeration, so the subagent sessions are announced the way the
+  // server announces them: `session.created`, carrying parentID and agent.
+  server.push({ type: "session.created", data: { sessionID: "child-1", parentID: "sess-1", agent: "hoko-plan-executor" } })
+  server.push({ type: "session.created", data: { sessionID: "grandchild-1", parentID: "child-1", agent: "hoko-quality-assurance" } })
+  sessionMessages("child-1").push({ type: "assistant", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 3000 }, cost: 0.1, tokens: { input: 10, output: 2, cache: { read: 0, write: 0 } }, content: [] })
+  sessionMessages("grandchild-1").push({ type: "assistant", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 4000 }, cost: 0.05, tokens: { input: 5, output: 1, cache: { read: 0, write: 0 } }, content: [] })
+  server.push({ type: "session.idle", data: { sessionID: "sess-1" } })
+  await server.drain()
+  check("the closing report lands beside plan-01.md",
+    fs.existsSync(reportPath) && fs.readFileSync(reportPath, "utf8").includes("commit abc1234"),
+    fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8").slice(-160) : "missing")
+  check("only the last message is taken as the report", !fs.readFileSync(reportPath, "utf8").includes("not the last word"))
+
+  const usage = JSON.parse(fs.readFileSync(path.join(entry, "usage.json"), "utf8"))
+  check("usage.json records each assistant response's session, model, cost and tokens",
+    usage.some((row: any) => row.session_id === "sess-1" && row.model === "claude-test" && row.provider === "anthropic"
+      && row.agent === "plan" && row.cost === 0.5 && row.input === 100 && row.output === 20 && row.reasoning === 5
+      && row.cache_read === 10 && row.cache_write === 2), JSON.stringify(usage))
+  check("usage.json bills descendant sessions to the registered session with their own agent",
+    usage.some((row: any) => row.session_id === "sess-1" && row.agent === "hoko-plan-executor")
+      && usage.some((row: any) => row.session_id === "sess-1" && row.agent === "hoko-quality-assurance"),
+    JSON.stringify(usage))
+  const rates = JSON.parse(fs.readFileSync(path.join(entry, "rates.json"), "utf8"))
+  check("rates.json records the catalog rates by provider/model",
+    rates["anthropic/claude-test"]?.input === 3 && rates["anthropic/claude-test"]?.output === 15
+      && rates["anthropic/claude-test"]?.cache_read === 0.3 && rates["anthropic/claude-test"]?.cache_write === 3.75,
+    JSON.stringify(rates))
+  check("the invoice is written", fs.existsSync(path.join(entry, "invoice.md")) && fs.existsSync(path.join(entry, "invoice.json")))
+  const invoice = JSON.parse(fs.readFileSync(path.join(entry, "invoice.json"), "utf8"))
+  check("the invoice sums the run's reported cost", invoice.totals.cost === 0.9, JSON.stringify(invoice.totals))
+
+  // An existing report is left alone, a session whose usage cannot be read is named, and
+  // an invoice that cannot be generated is a notice — never a failed run.
+  const noticesBefore = notices.length
+  fs.writeFileSync(reportPath, "sentinel report\n")
+  const usageBefore = fs.readFileSync(path.join(entry, "usage.json"), "utf8")
+  sessionMessages("sess-1").push({ type: "assistant", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 5000 }, cost: 0.15, tokens: { input: 1, output: 1, cache: { read: 0, write: 0 } }, content: [] })
+  failMessages.add("sess-ghost")
+  const ghostRows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
+  ghostRows.push({ session_id: "sess-ghost", round: 1, role: "execute", since: new Date().toISOString() })
+  fs.writeFileSync(path.join(entry, "sessions.json"), JSON.stringify(ghostRows, null, 2) + "\n")
+  await hooks["tool.execute.after"]({ status: "completed", tool: "edit", sessionID: "sess-1", input: { filePath: plan } })
+  server.push({ type: "session.idle", data: { sessionID: "sess-1" } })
+  await server.drain()
+  check("an existing report is left alone", fs.readFileSync(reportPath, "utf8") === "sentinel report\n", fs.readFileSync(reportPath, "utf8"))
+  check("a session whose usage cannot be read is named", notices.some((message) => message.includes("sess-ghost")), notices.slice(noticesBefore).join(" | "))
+  check("the invoice is still regenerated when the report is skipped",
+    fs.readFileSync(path.join(entry, "usage.json"), "utf8") !== usageBefore, usageBefore)
+  fs.rmSync(path.join(entry, "sessions.json"), { force: true })
+  await hooks["tool.execute.after"]({ status: "completed", tool: "edit", sessionID: "sess-1", input: { filePath: plan } })
+  server.push({ type: "session.idle", data: { sessionID: "sess-1" } })
+  await server.drain()
+  check("a failed invoice is announced and does not throw",
+    notices.some((message) => message.includes("could not invoice")), notices.join(" | "))
 }
 
-// config: the plan agent gets its prompt, its deny catch-all and the plan-file exception
-const cfg: any = { agent: { "hoko-plan-executor": { permission: { bash: { "rm*": "deny" } } } } }
-await hooks.config(cfg)
-check("the plan agent carries the planning protocol",
-  /grill-me/.test(cfg.agent.plan?.prompt ?? "") && /hoko_execute/.test(cfg.agent.plan?.prompt ?? ""),
-  (cfg.agent.plan?.prompt ?? "").slice(0, 80))
-const planPerm = cfg.agent.plan.permission
-const editKeys = Object.keys(planPerm.edit)
-check("plan edit denies everything first", editKeys[0] === "*" && planPerm.edit["*"] === "deny", editKeys.join(","))
-check("plan edit allows the plan file, every spelling",
-  [".ai/plans/*.md", "*/.ai/plans/*.md", "**/.ai/plans/*.md"].every((g) => planPerm.edit[g] === "allow"),
-  editKeys.join(","))
-check("plan bash pre-allows the path-resolving commands",
-  ["date*", "mkdir -p*", "git rev-parse*", "test -f*"].every((c) => planPerm.bash[c] === "allow"),
-  Object.keys(planPerm.bash).join(","))
-check("plan mode gets the writing tools back", cfg.agent.plan.tools?.write === true && cfg.agent.plan.tools?.hoko_execute === true,
-  JSON.stringify(cfg.agent.plan.tools))
-check("an agent the user configured is left alone", !cfg.agent["hoko-plan-executor"].prompt,
-  JSON.stringify(Object.keys(cfg.agent["hoko-plan-executor"])))
-check("the build agent takes its model from the environment",
-  cfg.agent.build?.model === "anthropic/claude-test", JSON.stringify(cfg.agent.build))
-check("with HOKO_REVIEWER_DEEP_MODEL set, hoko-code-reviewer-deep runs on that model",
-  cfg.agent["hoko-code-reviewer-deep"]?.model === "anthropic/claude-deep-test",
-  JSON.stringify(cfg.agent["hoko-code-reviewer-deep"]))
-check("an unset model leaves the agent alone", !cfg.agent.plan.model, JSON.stringify(cfg.agent.plan.model))
-check("the standing instructions are registered",
-  (cfg.instructions ?? []).some((file: string) => file.endsWith("/instructions/hoko.md")),
-  JSON.stringify(cfg.instructions))
-check("every instructions file is registered, not just hoko.md",
-  (cfg.instructions ?? []).length === fs.readdirSync(path.join(shell.env.HOKO_ROOT, "instructions"))
-    .filter((name) => name.endsWith(".md")).length,
-  JSON.stringify(cfg.instructions))
-check("an instructions file the user already listed is not added twice", await (async () => {
-  const twice: any = { instructions: [...cfg.instructions] }
-  await hooks.config(twice)
-  return twice.instructions.length === cfg.instructions.length
-})(), "duplicated")
-check("the new skills are on the skills path", (cfg.skills?.paths ?? []).length === 1, JSON.stringify(cfg.skills))
-check("execute-plan is registered as a command", !!cfg.command?.["hoko/execute-plan"], Object.keys(cfg.command ?? {}).join(","))
-check("execute-plan runs on build", cfg.command?.["hoko/execute-plan"].agent === "build", JSON.stringify(cfg.command?.["hoko/execute-plan"]?.agent))
-check("pr is registered and runs on build",
-  cfg.command?.["hoko/pr"]?.agent === "build", Object.keys(cfg.command ?? {}).join(","))
-check("the journal commands are gone", !cfg.command?.["hoko/journal-plan"] && !cfg.command?.["hoko/journal-report"], Object.keys(cfg.command ?? {}).join(","))
+// ---------------------------------------------- the config-free registrations --
 
-// a plan agent the user configured keeps its own prompt, and still gets the exception
-const own: any = { agent: { plan: { prompt: "mine", permission: { bash: { "rm*": "deny" } } } } }
-await hooks.config(own)
-check("a hand-written plan agent keeps its prompt", own.agent.plan.prompt === "mine")
-check("it still gains the plan-file exception", own.agent.plan.permission.edit[".ai/plans/*.md"] === "allow")
-check("its own rules survive", own.agent.plan.permission.bash["rm*"] === "deny")
-
-// R4: rtk rewrites a command before permission checks run, so every command an agent
-// already allows needs its `rtk`-prefixed mirror or the rewrite falls to the catch-all.
 {
-  const agentsDir = path.join(shell.env.HOKO_ROOT, "agents")
-  const bashPermission = (name: string) => {
-    const lines = fs.readFileSync(path.join(agentsDir, `${name}.md`), "utf8").split("\n")
-    const start = lines.findIndex((line) => /^  bash:/.test(line))
-    const scalar = /^  bash:\s*(\S+)\s*$/.exec(lines[start])?.[1] ?? null
-    const map: Record<string, string> = {}
-    for (let i = start + 1; i < lines.length; i++) {
-      const line = lines[i]
-      if (line.trim() === "" || /^\s*#/.test(line)) continue
-      if (!/^\s{4,}/.test(line)) break
-      const match = /^\s+"([^"]+)":\s*(\S+)\s*$/.exec(line)
-      if (match) map[match[1]] = match[2]
-    }
-    return { scalar, map }
-  }
-  const matches = (pattern: string, command: string) =>
-    new RegExp("^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$").test(command)
-  // opencode takes the last matching rule, so walk the map in file order.
-  const decisionFor = (name: string, command: string) => {
-    let decision = "deny"
-    for (const [pattern, value] of Object.entries(bashPermission(name).map))
-      if (matches(pattern, command)) decision = value
-    return decision
-  }
-  // The commands `rtk rewrite` prefixes with `rtk `. Git reads are mirrored separately;
-  // composer is covered by the single family entry the step enumerates.
-  const rewritten = /^(make|just|task|php artisan test|npm (run|test)|pnpm|yarn|bun (run|test)|tsc|vitest|jest|pytest|mypy|ruff|go (test|vet|build)|golangci-lint|cargo (test|clippy|check|fmt)|mvn|rake|rspec|rubocop|dotnet build|docker|ls|rg)/
-  const testRunning = ["hoko-step-gate", "hoko-code-reviewer", "hoko-code-reviewer-deep",
-    "hoko-go-code-reviewer", "hoko-go-test-writer", "hoko-go-architect", "hoko-researcher"]
-  for (const agent of testRunning) {
-    const { map } = bashPermission(agent)
-    const missing = Object.keys(map)
-      .filter((pattern) => rewritten.test(pattern))
-      .filter((pattern) => map[`rtk ${pattern}`] !== map[pattern])
-    check(`${agent} mirrors every rtk-rewritten command it allows`, missing.length === 0, missing.join(", "))
-    if (Object.keys(map).some((pattern) => pattern.startsWith("composer ")))
-      check(`${agent} allows the rtk-prefixed composer command`, map["rtk composer *"] === "allow")
-  }
-  check("the gate permits rtk's rewrite of a containerised test command",
-    decisionFor("hoko-step-gate", "rtk docker exec app bun test") === "allow",
-    decisionFor("hoko-step-gate", "rtk docker exec app bun test"))
-  check("the gate permits rtk's rewrite of a compose test command",
-    decisionFor("hoko-step-gate", "rtk docker compose exec -T app make gate") === "allow",
-    decisionFor("hoko-step-gate", "rtk docker compose exec -T app make gate"))
-  check("hoko-quality-assurance already allows every command, rewritten included",
-    bashPermission("hoko-quality-assurance").scalar === "allow")
+  const { agentEditor, skills, hooks } = await boot()
+  const planAgent = agentEditor.get("plan")
+  const editRules = planAgent.permissions.filter((rule: any) => rule.action === "edit")
+  check("plan edit denies everything first", editRules[0].resource === "*" && editRules[0].effect === "deny",
+    JSON.stringify(editRules))
+  check("plan edit allows the plan file, every spelling",
+    [".ai/plans/*.md", "*/.ai/plans/*.md", "**/.ai/plans/*.md"].every((glob) =>
+      planAgent.permissions.some((rule: any) => rule.action === "edit" && rule.resource === glob && rule.effect === "allow")),
+    JSON.stringify(editRules))
+  check("plan shell pre-allows the path-resolving commands",
+    ["date*", "mkdir -p*", "git rev-parse*", "test -f*"].every((command) =>
+      planAgent.permissions.some((rule: any) => rule.action === "shell" && rule.resource === command && rule.effect === "allow")),
+    JSON.stringify(planAgent.permissions))
+  check("plan may call hoko_execute",
+    planAgent.permissions.some((rule: any) => rule.action === "hoko_execute" && rule.effect === "allow"),
+    JSON.stringify(planAgent.permissions))
+  check("the build agent takes its model from the environment",
+    agentEditor.get("build")?.model?.id === "claude-test" && agentEditor.get("build")?.model?.providerID === "anthropic",
+    JSON.stringify(agentEditor.get("build")?.model))
+  check("with HOKO_REVIEWER_DEEP_MODEL set, hoko-code-reviewer-deep runs on that model",
+    agentEditor.get("hoko-code-reviewer-deep")?.model?.id === "claude-deep-test",
+    JSON.stringify(agentEditor.get("hoko-code-reviewer-deep")?.model))
+  check("an agent with its own model is left alone", await (async () => {
+    const prior = { ...process.env }
+    process.env.HOKO_BUILD_MODEL = "anthropic/should-not-win"
+    const { agentEditor: own } = await boot({ agents: [{ id: "build", mode: "primary", model: { id: "mine", providerID: "custom" } }] })
+    const kept = own.get("build")?.model
+    process.env = prior
+    return kept?.id === "mine" && kept?.providerID === "custom"
+  })())
+  check("an unset model leaves the agent alone", !agentEditor.get("plan")?.model, JSON.stringify(agentEditor.get("plan")?.model))
+
+  const names = skills.map((skill: any) => skill.id)
+  check("every skill directory is registered",
+    ["grill-me", "hoko-commit", "hoko-quality-assurance", "hoko-senior-go-developer"].every((id) => names.includes(id)),
+    names.join(","))
+  const api = skills.find((skill: any) => skill.id === "hoko-api-developer")
+  check("a folded skill description is folded, not left as a block marker",
+    typeof api?.description === "string" && api.description.includes("REST conventions") && !api.description.includes(">-"),
+    JSON.stringify(api?.description))
+  check("a skill points at its own SKILL.md",
+    skills.every((skill: any) => skill.path === path.join(ROOT, "skills", skill.id, "SKILL.md")),
+    JSON.stringify(skills.map((skill: any) => skill.path)))
+  check("a skill carries its body",
+    (skills.find((skill: any) => skill.id === "grill-me")?.content ?? "").includes("Interview me relentlessly"))
+
+  const system: any[] = []
+  hooks["session.context"]({ sessionID: "sess-1", agent: "plan", system, messages: [], options: {}, tools: {}, model: {} })
+  const instructionFiles = fs.readdirSync(path.join(ROOT, "instructions")).filter((name) => name.endsWith(".md"))
+  check("every instructions file reaches the model request",
+    system.length === instructionFiles.length,
+    `${system.length} vs ${instructionFiles.length}`)
+  check("the standing instructions are in the system parts",
+    system.some((part: any) => part.type === "text" && part.text.includes("Never merge")),
+    JSON.stringify(system.map((part: any) => part.text.slice(0, 40))))
 }
 
-// journaling is opt-in: with no root configured the handoff still happens and nothing
-// is written anywhere
-{
-  const before = { ...process.env }
-  process.env.HOKO_JOURNAL_PATH = ""
-  const quiet: any = await HokoPlugin({ client, worktree: proj, directory: proj })
-  const s = "sess-nojournal"
-  await quiet["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: "no journal please" }] })
-  await quiet["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: plan } })
-  const out: any = await quiet.tool.hoko_execute.execute({}, { ...ctx, sessionID: s })
-  const text = out.output ?? out
-  check("journaling off still hands the plan off", /Handed off/.test(text), text)
-  check("journaling off mentions no journal entry", !/[Jj]ournal/.test(text), text)
-  const shellOff = { env: {} as Record<string, string> }
-  await quiet["shell.env"]({ sessionID: s }, shellOff)
-  check("journaling off exports no journal path", !("HOKO_JOURNAL_PATH" in shellOff.env),
-    JSON.stringify(shellOff.env.HOKO_JOURNAL_PATH))
-  process.env = before
-}
+// ------------------------------------------- the plans directory is configurable --
 
-// the plans directory is configurable, and everything that keys off it follows
 {
   const before = { ...process.env }
   process.env.HOKO_PLANS_DIR = "docs/plans"
-  const moved: any = await HokoPlugin({ client, worktree: proj, directory: proj })
-  const cfg: any = {}
-  await moved.config(cfg)
+  const { agentEditor, hooks } = await boot()
+  const planAgent = agentEditor.get("plan")
   check("plan edit allows the configured plans directory",
-    ["docs/plans/*.md", "*/docs/plans/*.md", "**/docs/plans/*.md"]
-      .every((g) => cfg.agent.plan.permission.edit[g] === "allow"),
-    Object.keys(cfg.agent.plan.permission.edit).join(","))
+    ["docs/plans/*.md", "*/docs/plans/*.md", "**/docs/plans/*.md"].every((glob) =>
+      planAgent.permissions.some((rule: any) => rule.action === "edit" && rule.resource === glob && rule.effect === "allow")),
+    JSON.stringify(planAgent.permissions.filter((rule: any) => rule.action === "edit")))
   check("the default plans directory is no longer allowed",
-    cfg.agent.plan.permission.edit[".ai/plans/*.md"] === undefined,
-    Object.keys(cfg.agent.plan.permission.edit).join(","))
+    !planAgent.permissions.some((rule: any) => rule.resource === ".ai/plans/*.md"),
+    JSON.stringify(planAgent.permissions.filter((rule: any) => rule.action === "edit")))
   const s = "sess-moved"
   const elsewhere = path.join(proj, "docs", "plans", "20260908130000-moved.md")
   fs.mkdirSync(path.dirname(elsewhere), { recursive: true })
   fs.writeFileSync(elsewhere, "## Goal\nMoved.\n")
-  await moved["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: elsewhere } })
-  check("a plan in the configured directory is remembered",
-    fs.readFileSync(state(s).replace(/\.prompt$/, ".plan"), "utf8") === elsewhere)
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { filePath: elsewhere } })
+  check("a plan in the configured directory is remembered", fs.readFileSync(state(s, ".plan"), "utf8") === elsewhere)
   const shellMoved = { env: {} as Record<string, string> }
-  await moved["shell.env"]({ sessionID: s }, shellMoved)
-  check("the plans directory is exported", shellMoved.env.HOKO_PLANS_DIR === "docs/plans",
-    shellMoved.env.HOKO_PLANS_DIR)
-  check("the coverage floor defaults to 85", shellMoved.env.HOKO_COVERAGE_MIN === "85",
-    shellMoved.env.HOKO_COVERAGE_MIN)
+  await hooks["shell.create.before"]({ command: "ls", cwd: proj, timeout: 0, shell: "/bin/zsh", env: shellMoved.env })
+  check("the plans directory is exported", shellMoved.env.HOKO_PLANS_DIR === "docs/plans", shellMoved.env.HOKO_PLANS_DIR)
+  check("the coverage floor defaults to 85", shellMoved.env.HOKO_COVERAGE_MIN === "85", shellMoved.env.HOKO_COVERAGE_MIN)
   process.env = before
 }
 
-// the git guard
+// ------------------------------------------------------------------ git guard --
+
 {
   const bases = { integration: "develop", release: "main" }
   const verdict = (command: string, branch = "feature/ABC-1-thing") => gitVerdict(command, branch, bases)
@@ -546,203 +473,153 @@ check("its own rules survive", own.agent.plan.permission.bash["rm*"] === "deny")
   check("a feature cut from main is refused", level("git checkout -b feature/ABC-1-x origin/main") === "refuse")
   check("a hotfix cut from develop is refused", level("git switch -c hotfix/ABC-1-x origin/develop") === "refuse")
   check("a hotfix cut from main is allowed", level("git switch -c hotfix/ABC-1-x origin/main") === "allow")
-  check("a bare create off the right base is allowed",
-    level("git checkout -b feature/ABC-1-x", "develop") === "allow")
-  check("a bare create off the wrong base only warns",
-    level("git checkout -b feature/ABC-1-x", "main") === "warn",
-    JSON.stringify(verdict("git checkout -b feature/ABC-1-x", "main")))
+  check("a bare create off the right base is allowed", level("git checkout -b feature/ABC-1-x", "develop") === "allow")
+  check("a bare create off the wrong base only warns", level("git checkout -b feature/ABC-1-x", "main") === "warn")
 
+  const { hooks: guard } = await boot()
   let threw = ""
   try {
-    await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "git checkout -b wip" } })
+    await guard["tool.execute.before"]({ tool: "bash", sessionID: "sess-1", input: { command: "git checkout -b wip" } })
   } catch (error: any) {
     threw = String(error.message)
   }
   check("the hook refuses the bash tool's bad branch name", threw.includes("branch naming rule"), threw)
-  const before = toasts.length
-  await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "git checkout -b feature/ABC-1-x" } })
-  check("the hook toasts a warning instead of throwing",
-    toasts.length === before + 1 && toasts[toasts.length - 1].includes("was cut from"),
-    toasts[toasts.length - 1])
-  await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "ls -la" } })
-  await hooks["tool.execute.before"]({ tool: "write", args: { command: "git commit" } })
+  const before = notices.length
+  await guard["tool.execute.before"]({ tool: "bash", sessionID: "sess-1", input: { command: "git checkout -b feature/ABC-1-x" } })
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  check("the hook notices a warning instead of throwing",
+    notices.length === before + 1 && notices[notices.length - 1].includes("was cut from"),
+    notices[notices.length - 1])
+  await guard["tool.execute.before"]({ tool: "bash", sessionID: "sess-1", input: { command: "ls -la" } })
+  await guard["tool.execute.before"]({ tool: "write", sessionID: "sess-1", input: { command: "git commit" } })
   check("the hook lets everything else through", true)
 }
 
-// fresh sessions: approval creates the run's session, navigates to it and moves the
-// cycle's state there
+// ---------------------------------------------------------------- no journaling --
+
+{
+  const before = { ...process.env }
+  process.env.HOKO_JOURNAL_PATH = ""
+  const { tools, hooks } = await boot()
+  const s = "sess-nojournal"
+  sessionAgent[s] = "plan"
+  await hooks["session.prompt"]({ sessionID: s, prompt: { text: "no journal please" } })
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { filePath: plan } })
+  const out = await tools.hoko_execute.execute({}, { sessionID: s, agent: "plan" })
+  const text = String(out.content ?? out)
+  check("journaling off still hands the plan off", /Handed off/.test(text), text)
+  check("journaling off mentions no journal entry", !/[Jj]ournal/.test(text), text)
+  const shellOff = { env: {} as Record<string, string> }
+  await hooks["shell.create.before"]({ command: "ls", cwd: proj, timeout: 0, shell: "/bin/zsh", env: shellOff.env })
+  check("journaling off exports no journal path", !("HOKO_JOURNAL_PATH" in shellOff.env), JSON.stringify(shellOff.env.HOKO_JOURNAL_PATH))
+  process.env = before
+}
+
+// ------------------------------------------------------------------ fresh runs --
+
 {
   const before = { ...process.env }
   process.env.HOKO_FRESH_SESSION = "1"
   const freshPlan = path.join(proj, ".ai", "plans", "20260917120000-fresh-run.md")
   fs.writeFileSync(freshPlan, "# Fresh run title\n## Goal\nRun it elsewhere.\n\n## Steps\n### 1. Go\n")
+  const { tools, hooks, server } = await boot()
   const approval = "sess-approve"
-  const fresh: any = await HokoPlugin({ client, worktree: proj, directory: proj })
-  const freshCtx = { sessionID: approval, worktree: proj, directory: proj, agent: "plan" }
-  await fresh["chat.message"]({ sessionID: approval }, { parts: [{ type: "text", text: "run it" }] })
-  await fresh["tool.execute.after"]({ tool: "write", sessionID: approval, args: { filePath: freshPlan } })
+  sessionAgent[approval] = "plan"
+  await hooks["session.prompt"]({ sessionID: approval, prompt: { text: "run it" } })
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: approval, input: { filePath: freshPlan } })
 
   const base = commands.length
-  const handed: any = await fresh.tool.hoko_execute.execute({}, freshCtx)
-  const text = handed.output ?? handed
-  check("a fresh approval creates a session titled from the plan heading",
-    created.at(-1)?.body?.title === "Fresh run title", JSON.stringify(created.at(-1)))
-  check("a fresh approval publishes tui.session.select for the new session",
-    published.at(-1)?.body?.type === "tui.session.select" &&
-      published.at(-1)?.body?.properties?.sessionID === "sess-fresh",
-    JSON.stringify(published.at(-1)))
-  check("a fresh approval reports the run's session", /Fresh session: sess-fresh/.test(text), text)
+  const handed = await tools.hoko_execute.execute({}, { sessionID: approval, agent: "plan" })
+  const text = String(handed.content ?? handed)
+  check("a fresh approval creates a session titled from the plan heading, on build",
+    created.at(-1)?.title === "Fresh run title" && created.at(-1)?.agent === "build", JSON.stringify(created.at(-1)))
+  check("a fresh approval reports the run's session", /Fresh session: sess-fresh-/.test(text), text)
   check("a fresh approval still hands the plan off", /Handed off/.test(text), text)
-  check("nothing runs before the approval session goes idle",
-    commands.length === base, JSON.stringify(commands.slice(base)))
+  check("nothing runs before the approval session goes idle", commands.length === base, JSON.stringify(commands.slice(base)))
 
   const createdBefore = created.length
-  const again: any = await fresh.tool.hoko_execute.execute({}, freshCtx)
+  const again = await tools.hoko_execute.execute({}, { sessionID: approval, agent: "plan" })
   check("a second approval while a handoff is queued is refused",
-    /already on its way/.test(String(again?.output ?? again)) && created.length === createdBefore,
-    String(again?.output ?? again))
+    /already on its way/.test(String(again?.content ?? again)) && created.length === createdBefore,
+    String(again?.content ?? again))
 
+  const target = created.at(-1) && `sess-fresh-${createdSeq}`
   check("the cycle's .plan moved to the run's session",
-    fs.readFileSync(state("sess-fresh").replace(/\.prompt$/, ".plan"), "utf8") === freshPlan)
+    fs.readFileSync(state(target!, ".plan"), "utf8") === freshPlan, state(target!, ".plan"))
   check("the cycle's .project landed on the run's session",
-    fs.readFileSync(state("sess-fresh").replace(/\.prompt$/, ".project"), "utf8") === proj)
-  const freshEntryPath = fs.readFileSync(state("sess-fresh").replace(/\.prompt$/, ".entry"), "utf8")
+    fs.readFileSync(state(target!, ".project"), "utf8") === proj)
+  const freshEntryPath = fs.readFileSync(state(target!, ".entry"), "utf8")
 
-  await fresh.event({ event: { type: "session.idle", properties: { sessionID: approval } } })
+  server.push({ type: "session.idle", data: { sessionID: approval } })
+  await server.drain()
   check("the queued command runs on the run's session",
-    commands.length === base + 1 &&
-      commands[base].path.id === "sess-fresh" &&
-      commands[base].body.command === "hoko/execute-plan" &&
-      commands[base].body.arguments === freshPlan &&
-      commands[base].body.agent === "build",
+    commands.length === base + 1 && commands[base].sessionID === target && commands[base].name === "hoko/execute-plan" && commands[base].text === freshPlan,
     JSON.stringify(commands.slice(base)))
   check("the queued handoff and its target are cleared",
-    !fs.existsSync(state(approval).replace(/\.prompt$/, ".handoff")) &&
-      !fs.existsSync(state(approval).replace(/\.prompt$/, ".target")))
+    !fs.existsSync(state(approval, ".handoff")) && !fs.existsSync(state(approval, ".target")))
 
-  await fresh["chat.message"]({ sessionID: "sess-fresh", agent: "build" }, { parts: [{ type: "text", text: "ship it" }] })
-  check("a message in the run's session never becomes a cycle",
-    !fs.existsSync(state("sess-fresh")), state("sess-fresh"))
+  sessionAgent[target!] = "build"
+  await hooks["session.prompt"]({ sessionID: target!, prompt: { text: "ship it" } })
+  check("a prompt in the run's session never becomes a cycle", !fs.existsSync(state(target!)), state(target!))
 
   fs.writeFileSync(freshPlan, "Status: complete\n\n" + fs.readFileSync(freshPlan, "utf8"))
-  await fresh["tool.execute.after"]({ tool: "edit", sessionID: "sess-fresh", args: { filePath: freshPlan } })
-  sessionMessages("sess-fresh").push({ info: { role: "assistant", time: { created: Date.now() + 1000 }, modelID: "claude-test", providerID: "anthropic", cost: 0.02, tokens: { input: 2, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, parts: [{ type: "text", text: "Fresh run report." }] })
-  await fresh.event({ event: { type: "session.idle", properties: { sessionID: "sess-fresh" } } })
+  await hooks["tool.execute.after"]({ status: "completed", tool: "edit", sessionID: target!, input: { filePath: freshPlan } })
+  sessionMessages(target!).push({ type: "assistant", model: { id: "claude-test", providerID: "anthropic" }, time: { created: Date.now() + 1000 }, cost: 0.02, tokens: { input: 2, output: 1, cache: { read: 0, write: 0 } }, content: [{ type: "text", text: "Fresh run report." }] })
+  server.push({ type: "session.idle", data: { sessionID: target! } })
+  await server.drain()
   const freshReport = path.join(freshEntryPath, "report-01.md")
   check("the run's closing report lands in the entry opened at approval",
     fs.existsSync(freshReport) && fs.readFileSync(freshReport, "utf8").includes("Fresh run report."),
     fs.existsSync(freshReport) ? fs.readFileSync(freshReport, "utf8").slice(-160) : "missing")
-
-  // a refused navigation leaves no session, no handoff and no journal entry
-  publishFails = 5
-  const navSession = "sess-navfail"
-  const navPlan = path.join(proj, ".ai", "plans", "20260917120500-nav.md")
-  fs.writeFileSync(navPlan, "# Nav fail\n## Goal\nNo nav.\n")
-  await fresh["chat.message"]({ sessionID: navSession }, { parts: [{ type: "text", text: "try" }] })
-  await fresh["tool.execute.after"]({ tool: "write", sessionID: navSession, args: { filePath: navPlan } })
-  const navOut: any = await fresh.tool.hoko_execute.execute({}, { ...freshCtx, sessionID: navSession })
-  const navText = navOut.output ?? navOut
-  check("a refused navigation reports the session and that nothing was handed off",
-    navText.includes("sess-fresh") && /Nothing was handed off/.test(navText), navText)
-  check("a refused navigation deletes the created session", deleted.includes("sess-fresh"), JSON.stringify(deleted))
-  check("a refused navigation queues no handoff",
-    !fs.existsSync(state(navSession).replace(/\.prompt$/, ".handoff")) &&
-      !fs.existsSync(state(navSession).replace(/\.prompt$/, ".target")))
-  check("a refused navigation files no journal entry",
-    !fs.existsSync(state(navSession).replace(/\.prompt$/, ".entry")))
-
-  // navigation is retried until the TUI knows the session
-  const publishedBefore = published.length
-  publishFails = 1
-  const retrySession = "sess-retry"
-  const retryPlan = path.join(proj, ".ai", "plans", "20260917120700-retry.md")
-  fs.writeFileSync(retryPlan, "# Retry run\n## Goal\nSecond time lucky.\n")
-  await fresh["chat.message"]({ sessionID: retrySession }, { parts: [{ type: "text", text: "retry" }] })
-  await fresh["tool.execute.after"]({ tool: "write", sessionID: retrySession, args: { filePath: retryPlan } })
-  const retryOut: any = await fresh.tool.hoko_execute.execute({}, { ...freshCtx, sessionID: retrySession })
-  check("navigation is retried until the TUI accepts it",
-    /Handed off/.test(String(retryOut?.output ?? retryOut)) && published.length === publishedBefore + 2,
-    String(retryOut?.output ?? retryOut))
-  await fresh.event({ event: { type: "session.idle", properties: { sessionID: retrySession } } })
-
-  // no `#` heading: the session is titled from the plan's filename slug
-  const unnamedSession = "sess-unnamed"
-  const unnamedPlan = path.join(proj, ".ai", "plans", "20260917120600-no-heading.md")
-  fs.writeFileSync(unnamedPlan, "## Goal\nNo heading here.\n")
-  await fresh["chat.message"]({ sessionID: unnamedSession }, { parts: [{ type: "text", text: "no heading" }] })
-  await fresh["tool.execute.after"]({ tool: "write", sessionID: unnamedSession, args: { filePath: unnamedPlan } })
-  const unnamedOut: any = await fresh.tool.hoko_execute.execute({}, { ...freshCtx, sessionID: unnamedSession })
-  check("a plan with no heading titles the session from its filename",
-    /Handed off/.test(String(unnamedOut?.output ?? unnamedOut)) && created.at(-1)?.body?.title === "no-heading",
-    JSON.stringify(created.at(-1)))
-  await fresh.event({ event: { type: "session.idle", properties: { sessionID: unnamedSession } } })
-
   process.env = before
 }
 
-// a build that exposes no session.create refuses with the escape hatch
-{
-  const before = { ...process.env }
-  process.env.HOKO_FRESH_SESSION = "1"
-  const noCreate = { ...client, session: { ...client.session, create: undefined } }
-  const bare: any = await HokoPlugin({ client: noCreate, worktree: proj, directory: proj })
-  const s = "sess-nocreate"
-  const planFile = path.join(proj, ".ai", "plans", "20260917120900-nocreate.md")
-  fs.writeFileSync(planFile, "# No create\n## Goal\nNope.\n")
-  await bare["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: "go" }] })
-  await bare["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: planFile } })
-  const createdBefore = created.length
-  const out: any = await bare.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
-  const text = out.output ?? out
-  check("a missing session.create refuses and names HOKO_FRESH_SESSION=0",
-    /session\.create/.test(text) && /HOKO_FRESH_SESSION=0/.test(text), text)
-  check("a missing session.create creates nothing", created.length === createdBefore, text)
-  check("a missing session.create queues no handoff",
-    !fs.existsSync(state(s).replace(/\.prompt$/, ".handoff")))
-  process.env = before
-}
+// --------------------------------------------- HOKO_FRESH_SESSION=0 stays put --
 
-// a build that exposes no tui.publish refuses with the same escape hatch
-{
-  const before = { ...process.env }
-  process.env.HOKO_FRESH_SESSION = "1"
-  const noPublish = { ...client, tui: { ...client.tui, publish: undefined } }
-  const bare: any = await HokoPlugin({ client: noPublish, worktree: proj, directory: proj })
-  const s = "sess-nopublish"
-  const planFile = path.join(proj, ".ai", "plans", "20260917120930-nopublish.md")
-  fs.writeFileSync(planFile, "# No publish\n## Goal\nNope.\n")
-  await bare["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: "go" }] })
-  await bare["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: planFile } })
-  const createdBefore = created.length
-  const out: any = await bare.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
-  const text = out.output ?? out
-  check("a missing tui.publish refuses and names HOKO_FRESH_SESSION=0",
-    /tui\.publish/.test(text) && /HOKO_FRESH_SESSION=0/.test(text), text)
-  check("a missing tui.publish creates nothing", created.length === createdBefore, text)
-  check("a missing tui.publish queues no handoff",
-    !fs.existsSync(state(s).replace(/\.prompt$/, ".handoff")))
-  process.env = before
-}
-
-// HOKO_FRESH_SESSION=0 hands off in the approval session, as before
 {
   const before = { ...process.env }
   process.env.HOKO_FRESH_SESSION = "0"
-  const off: any = await HokoPlugin({ client, worktree: proj, directory: proj })
+  const { tools, hooks, server } = await boot()
   const s = "sess-off"
+  sessionAgent[s] = "plan"
   const offPlan = path.join(proj, ".ai", "plans", "20260917121000-off.md")
   fs.writeFileSync(offPlan, "# Off run\n## Goal\nSame session.\n")
-  await off["chat.message"]({ sessionID: s }, { parts: [{ type: "text", text: "off please" }] })
-  await off["tool.execute.after"]({ tool: "write", sessionID: s, args: { filePath: offPlan } })
+  await hooks["session.prompt"]({ sessionID: s, prompt: { text: "off please" } })
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { filePath: offPlan } })
   const createdBefore = created.length
-  const out: any = await off.tool.hoko_execute.execute({}, { sessionID: s, worktree: proj, directory: proj, agent: "plan" })
-  const text = out.output ?? out
+  const out = await tools.hoko_execute.execute({}, { sessionID: s, agent: "plan" })
+  const text = String(out.content ?? out)
   check("with HOKO_FRESH_SESSION=0 no session is created", created.length === createdBefore, text)
   check("with HOKO_FRESH_SESSION=0 nothing reports a fresh session", !/Fresh session/.test(text), text)
-  const base = commands.length
-  await off.event({ event: { type: "session.idle", properties: { sessionID: s } } })
+  server.push({ type: "session.idle", data: { sessionID: s } })
+  await server.drain()
   check("with HOKO_FRESH_SESSION=0 the command targets the approval session",
-    commands.length === base + 1 && commands[base].path.id === s, JSON.stringify(commands.slice(base)))
+    commands.at(-1)?.sessionID === s, JSON.stringify(commands.at(-1)))
+  process.env = before
+}
+
+// A build that exposes no session.create refuses cleanly and queues nothing.
+{
+  const before = { ...process.env }
+  process.env.HOKO_FRESH_SESSION = "1"
+  const { tools, hooks } = await boot({
+    session: {
+      create: async () => {
+        throw new Error("nope")
+      },
+    },
+  })
+  const s = "sess-nocreate"
+  sessionAgent[s] = "plan"
+  const file = path.join(proj, ".ai", "plans", "20260917120900-nocreate.md")
+  fs.writeFileSync(file, "# No create\n## Goal\nNope.\n")
+  await hooks["session.prompt"]({ sessionID: s, prompt: { text: "go" } })
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { filePath: file } })
+  const out = await tools.hoko_execute.execute({}, { sessionID: s, agent: "plan" })
+  const text = String(out.content ?? out)
+  check("a failing session.create refuses and names HOKO_FRESH_SESSION=0",
+    /Could not create the run's session/.test(text) && /HOKO_FRESH_SESSION=0/.test(text), text)
+  check("a failing session.create queues no handoff", !fs.existsSync(state(s, ".handoff")))
   process.env = before
 }
 

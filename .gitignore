@@ -3,3 +3,4 @@ hoko.json
 .DS_Store
 node_modules/
 .ai/
+__pycache__/

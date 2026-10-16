@@ -1,5 +1,5 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///ABSOLUTE/PATH/TO/hoko-opencode-plugin/plugin/hoko.ts"],
+  "plugins": ["file:///ABSOLUTE/PATH/TO/hoko-opencode-plugin/plugin"],
   "model": "opencode-go/deepseek-v4-flash",
 }

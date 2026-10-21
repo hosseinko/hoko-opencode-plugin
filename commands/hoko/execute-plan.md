@@ -72,12 +72,13 @@ has got, so it survives a compaction or a session restart. Before starting:
 - Already-ticked boxes are work from an earlier run — leave them ticked and skip those
   steps.
 
-Then mirror the checklist into the session todo list with `todowrite`: one todo per
-unticked step, `<N>. <title>`, all `pending`. Keep the two in sync for the rest of the
-run — the todo list is what I watch live, the checklist is what survives the session. It
-is session state: a compaction or a restart can lose it, and the plan file's `## Progress`
-is what the run is rebuilt from, so a tick in the todo list is never the record of a
-finished step.
+Then mirror the checklist into the session todo list with `todowrite`, when this build
+exposes it: one todo per unticked step, `<N>. <title>`, all `pending`. Keep the two in
+sync for the rest of the run — the todo list is what I watch live, the checklist is what
+survives the session. It is session state: a compaction or a restart can lose it, and the
+plan file's `## Progress` is what the run is rebuilt from, so a tick in the todo list is
+never the record of a finished step. If `todowrite` is not available, say so once and use
+the plan checklist alone.
 
 ## Division of labour
 
@@ -99,8 +100,8 @@ plan already states.
 Work the unticked steps in checklist order, **one step per cycle**.
 
 1. **State** the step number, title, and what "done" means — one line, naming the
-   requirement ids on the step's `Satisfies:` line when it has them. Mark that
-   step's todo `in_progress` with `todowrite` before you delegate — exactly one todo is
+   requirement ids on the step's `Satisfies:` line when it has them. When `todowrite`
+   exists, mark that step's todo `in_progress` before you delegate — exactly one todo is
    `in_progress` at a time.
 
 2. **Delegate.** Launch the `hoko-plan-executor` subagent with the `task` tool

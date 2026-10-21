@@ -90,8 +90,8 @@ function makeServer() {
         if (failMessages.has(input.sessionID)) throw new Error(`no messages for ${input.sessionID}`)
         return sessionMessages(input.sessionID)
       },
-      // No `list`: V2's plugin session domain has no session enumeration (verified
-      // against opencode 2.0.30), so the plugin tracks descendants from events.
+      // The plugin tracks descendants from `session.created` events rather than listing
+      // every session, so the fake only needs the calls the plugin makes.
       get: async (input: any) => ({
         id: input.sessionID,
         agent: sessionAgent[input.sessionID],
@@ -315,8 +315,8 @@ async function boot(overrides: any = {}) {
     { type: "assistant", agent: "plan", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 1000 }, cost: 0.5, tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 10, write: 2 } }, content: [{ type: "text", text: "not the last word" }] },
     { type: "assistant", agent: "plan", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 2000 }, cost: 0.25, tokens: { input: 50, output: 10, reasoning: 0, cache: { read: 0, write: 0 } }, content: [{ type: "text", text: "Step 1 done — commit abc1234. Tests: bun test." }] },
   )
-  // V2 has no session enumeration, so the subagent sessions are announced the way the
-  // server announces them: `session.created`, carrying parentID and agent.
+  // Subagent sessions are announced the way the server announces them: `session.created`,
+  // carrying parentID and agent.
   server.push({ type: "session.created", data: { sessionID: "child-1", parentID: "sess-1", agent: "hoko-plan-executor" } })
   server.push({ type: "session.created", data: { sessionID: "grandchild-1", parentID: "child-1", agent: "hoko-quality-assurance" } })
   sessionMessages("child-1").push({ type: "assistant", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 3000 }, cost: 0.1, tokens: { input: 10, output: 2, cache: { read: 0, write: 0 } }, content: [] })
@@ -380,9 +380,18 @@ async function boot(overrides: any = {}) {
   check("plan edit denies everything first", editRules[0].resource === "*" && editRules[0].effect === "deny",
     JSON.stringify(editRules))
   check("plan edit allows the plan file, every spelling",
-    [".ai/plans/*.md", "*/.ai/plans/*.md", "**/.ai/plans/*.md"].every((glob) =>
+    [".ai/plans/*.md", "*/.ai/plans/*.md", "**/.ai/plans/*.md", path.join(proj, ".ai", "plans", "*.md")].every((glob) =>
       planAgent.permissions.some((rule: any) => rule.action === "edit" && rule.resource === glob && rule.effect === "allow")),
     JSON.stringify(editRules))
+  check("the stock plan agent receives the hoko protocol",
+    (planAgent.system ?? "").includes("You are the planning half") && planAgent.description.includes("grills the request"),
+    `${planAgent.description} / ${(planAgent.system ?? "").slice(0, 80)}`)
+  check("a custom plan prompt is left alone", await (async () => {
+    const { agentEditor: custom } = await boot({
+      agents: [{ id: "plan", mode: "primary", system: "My own plan protocol", description: "Mine" }],
+    })
+    return custom.get("plan")?.system === "My own plan protocol" && custom.get("plan")?.description === "Mine"
+  })())
   check("plan shell pre-allows the path-resolving commands",
     ["date*", "mkdir -p*", "git rev-parse*", "test -f*"].every((command) =>
       planAgent.permissions.some((rule: any) => rule.action === "shell" && rule.resource === command && rule.effect === "allow")),
@@ -396,13 +405,13 @@ async function boot(overrides: any = {}) {
   check("with HOKO_REVIEWER_DEEP_MODEL set, hoko-code-reviewer-deep runs on that model",
     agentEditor.get("hoko-code-reviewer-deep")?.model?.id === "claude-deep-test",
     JSON.stringify(agentEditor.get("hoko-code-reviewer-deep")?.model))
-  check("an agent with its own model is left alone", await (async () => {
+  check("an explicit HOKO_*_MODEL overrides an agent's own model", await (async () => {
     const prior = { ...process.env }
-    process.env.HOKO_BUILD_MODEL = "anthropic/should-not-win"
+    process.env.HOKO_BUILD_MODEL = "anthropic/should-win"
     const { agentEditor: own } = await boot({ agents: [{ id: "build", mode: "primary", model: { id: "mine", providerID: "custom" } }] })
     const kept = own.get("build")?.model
     process.env = prior
-    return kept?.id === "mine" && kept?.providerID === "custom"
+    return kept?.id === "should-win" && kept?.providerID === "anthropic"
   })())
   check("an unset model leaves the agent alone", !agentEditor.get("plan")?.model, JSON.stringify(agentEditor.get("plan")?.model))
 
@@ -439,7 +448,7 @@ async function boot(overrides: any = {}) {
   const { agentEditor, hooks } = await boot()
   const planAgent = agentEditor.get("plan")
   check("plan edit allows the configured plans directory",
-    ["docs/plans/*.md", "*/docs/plans/*.md", "**/docs/plans/*.md"].every((glob) =>
+    ["docs/plans/*.md", "*/docs/plans/*.md", "**/docs/plans/*.md", path.join(proj, "docs", "plans", "*.md")].every((glob) =>
       planAgent.permissions.some((rule: any) => rule.action === "edit" && rule.resource === glob && rule.effect === "allow")),
     JSON.stringify(planAgent.permissions.filter((rule: any) => rule.action === "edit")))
   check("the default plans directory is no longer allowed",
@@ -449,8 +458,8 @@ async function boot(overrides: any = {}) {
   const elsewhere = path.join(proj, "docs", "plans", "20260908130000-moved.md")
   fs.mkdirSync(path.dirname(elsewhere), { recursive: true })
   fs.writeFileSync(elsewhere, "## Goal\nMoved.\n")
-  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { filePath: elsewhere } })
-  check("a plan in the configured directory is remembered", fs.readFileSync(state(s, ".plan"), "utf8") === elsewhere)
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: elsewhere } })
+  check("a plan written with V2's path field is remembered", fs.readFileSync(state(s, ".plan"), "utf8") === elsewhere)
   const shellMoved = { env: {} as Record<string, string> }
   await hooks["shell.create.before"]({ command: "ls", cwd: proj, timeout: 0, shell: "/bin/zsh", env: shellMoved.env })
   check("the plans directory is exported", shellMoved.env.HOKO_PLANS_DIR === "docs/plans", shellMoved.env.HOKO_PLANS_DIR)
@@ -484,6 +493,13 @@ async function boot(overrides: any = {}) {
     threw = String(error.message)
   }
   check("the hook refuses the bash tool's bad branch name", threw.includes("branch naming rule"), threw)
+  threw = ""
+  try {
+    await guard["tool.execute.before"]({ tool: "shell", sessionID: "sess-1", input: { command: "git checkout -b wip" } })
+  } catch (error: any) {
+    threw = String(error.message)
+  }
+  check("the hook refuses V2's shell tool too", threw.includes("branch naming rule"), threw)
   const before = notices.length
   await guard["tool.execute.before"]({ tool: "bash", sessionID: "sess-1", input: { command: "git checkout -b feature/ABC-1-x" } })
   await new Promise((resolve) => setTimeout(resolve, 5))
@@ -533,6 +549,9 @@ async function boot(overrides: any = {}) {
   const text = String(handed.content ?? handed)
   check("a fresh approval creates a session titled from the plan heading, on build",
     created.at(-1)?.title === "Fresh run title" && created.at(-1)?.agent === "build", JSON.stringify(created.at(-1)))
+  check("a fresh approval marks the run session and keeps the approval location",
+    created.at(-1)?.metadata?.hoko === "run" && created.at(-1)?.location?.directory === proj,
+    JSON.stringify(created.at(-1)))
   check("a fresh approval reports the run's session", /Fresh session: sess-fresh-/.test(text), text)
   check("a fresh approval still hands the plan off", /Handed off/.test(text), text)
   check("nothing runs before the approval session goes idle", commands.length === base, JSON.stringify(commands.slice(base)))
@@ -621,6 +640,42 @@ async function boot(overrides: any = {}) {
     /Could not create the run's session/.test(text) && /HOKO_FRESH_SESSION=0/.test(text), text)
   check("a failing session.create queues no handoff", !fs.existsSync(state(s, ".handoff")))
   process.env = before
+}
+
+// ------------------------------------------------------------- the TUI plugin --
+
+{
+  const tui: any = (await import("./tui.ts")).default
+  const listeners: Record<string, (event: any) => void> = {}
+  const navigated: any[] = []
+  const synced: string[] = []
+  const toasts: any[] = []
+  const cleanup = tui.setup({
+    data: {
+      on: (name: string, callback: (event: any) => void) => {
+        listeners[name] = callback
+        return () => delete listeners[name]
+      },
+      session: { sync: async (sessionID: string) => void synced.push(sessionID) },
+    },
+    ui: {
+      tabs: { focus: () => false },
+      router: { navigate: (route: any) => void navigated.push(route) },
+      toast: { show: (toast: any) => void toasts.push(toast) },
+    },
+  })
+  check("the TUI plugin is the same id the loader sees", tui.id === "hoko.tui", tui.id)
+  listeners["session.created"]({ type: "session.created", data: { sessionID: "sess-other" } })
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  check("an ordinary session does not steal the screen", navigated.length === 0)
+  listeners["session.created"]({ type: "session.created", data: { sessionID: "sess-run", metadata: { hoko: "run" } } })
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  check("a hoko run syncs and navigates to its session",
+    synced.includes("sess-run") && navigated.at(-1)?.type === "session" && navigated.at(-1)?.sessionID === "sess-run",
+    JSON.stringify({ synced, navigated }))
+  check("a hoko run is announced", toasts.at(-1)?.message === "Run started", JSON.stringify(toasts))
+  cleanup?.()
+  check("the TUI listener is removed on cleanup", !listeners["session.created"])
 }
 
 console.log()

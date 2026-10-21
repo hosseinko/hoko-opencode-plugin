@@ -194,10 +194,10 @@ journal, and starts `/hoko/execute-plan` on the build agent there, where the exe
 step-gate subagents work each step and the deep reviewer and QA close the run. The
 planning transcript stays behind — the run reads the plan file, not this conversation.
 
-If the tool refuses — the opencode build has no session API, session creation fails, or the
-TUI will not open the new session — nothing is journaled or queued, and the refusal is in
-the tool result; a session it created but the TUI would not open is deleted.
-`HOKO_FRESH_SESSION=0` hands off in this session instead.
+If the tool refuses — the opencode build has no session API or session creation fails —
+nothing is journaled or queued, and the refusal is in the tool result. The `tui.ts`
+entrypoint follows the new session and announces it; if the screen does not move, the run
+still started. `HOKO_FRESH_SESSION=0` hands off in this session instead.
 
 - Do not implement anything yourself, before or after the call.
 - Do not tell the user to switch to build mode or to run a command — the handoff is

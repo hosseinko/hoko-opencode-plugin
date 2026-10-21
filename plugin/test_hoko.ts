@@ -284,8 +284,8 @@ async function boot(overrides: any = {}) {
   await hooks["session.prompt"]({ sessionID: "sess-1", prompt: { text: "now the second thing" } })
   check("a new cycle captures a new prompt", fs.readFileSync(state("sess-1"), "utf8") === "now the second thing")
 
-  // session.idle fires the handoff, once.
-  server.push({ type: "session.idle", data: { sessionID: "sess-1" } })
+  // V2's end-of-turn event fires the handoff, once.
+  server.push({ type: "session.execution.succeeded", data: { sessionID: "sess-1" } })
   await server.drain()
   check("the handoff runs execute-plan on the approval session",
     commands.length === 1 && commands[0].sessionID === "sess-1" && commands[0].name === "hoko/execute-plan" && commands[0].text === plan,
@@ -300,9 +300,9 @@ async function boot(overrides: any = {}) {
   check("the plan row's since is the prompt-capture time, not the filing time",
     sessionsRows.find((row: any) => row.round === 1 && row.role === "plan")?.since === capturedIso,
     JSON.stringify(sessionsRows))
-  server.push({ type: "session.idle", data: { sessionID: "sess-1" } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: "sess-1" } })
   await server.drain()
-  check("the run's own idle does not re-fire it", commands.length === 1, JSON.stringify(commands))
+  check("the run's own turn end does not re-fire it", commands.length === 1, JSON.stringify(commands))
 
   // ------------------------------------------- the closing report and invoice --
   const reportPath = path.join(entry, "report-01.md")
@@ -321,7 +321,7 @@ async function boot(overrides: any = {}) {
   server.push({ type: "session.created", data: { sessionID: "grandchild-1", parentID: "child-1", agent: "hoko-quality-assurance" } })
   sessionMessages("child-1").push({ type: "assistant", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 3000 }, cost: 0.1, tokens: { input: 10, output: 2, cache: { read: 0, write: 0 } }, content: [] })
   sessionMessages("grandchild-1").push({ type: "assistant", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 4000 }, cost: 0.05, tokens: { input: 5, output: 1, cache: { read: 0, write: 0 } }, content: [] })
-  server.push({ type: "session.idle", data: { sessionID: "sess-1" } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: "sess-1" } })
   await server.drain()
   check("the closing report lands beside plan-01.md",
     fs.existsSync(reportPath) && fs.readFileSync(reportPath, "utf8").includes("commit abc1234"),
@@ -357,7 +357,7 @@ async function boot(overrides: any = {}) {
   ghostRows.push({ session_id: "sess-ghost", round: 1, role: "execute", since: new Date().toISOString() })
   fs.writeFileSync(path.join(entry, "sessions.json"), JSON.stringify(ghostRows, null, 2) + "\n")
   await hooks["tool.execute.after"]({ status: "completed", tool: "edit", sessionID: "sess-1", input: { filePath: plan } })
-  server.push({ type: "session.idle", data: { sessionID: "sess-1" } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: "sess-1" } })
   await server.drain()
   check("an existing report is left alone", fs.readFileSync(reportPath, "utf8") === "sentinel report\n", fs.readFileSync(reportPath, "utf8"))
   check("a session whose usage cannot be read is named", notices.some((message) => message.includes("sess-ghost")), notices.slice(noticesBefore).join(" | "))
@@ -365,10 +365,34 @@ async function boot(overrides: any = {}) {
     fs.readFileSync(path.join(entry, "usage.json"), "utf8") !== usageBefore, usageBefore)
   fs.rmSync(path.join(entry, "sessions.json"), { force: true })
   await hooks["tool.execute.after"]({ status: "completed", tool: "edit", sessionID: "sess-1", input: { filePath: plan } })
-  server.push({ type: "session.idle", data: { sessionID: "sess-1" } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: "sess-1" } })
   await server.drain()
   check("a failed invoice is announced and does not throw",
     notices.some((message) => message.includes("could not invoice")), notices.join(" | "))
+}
+
+// Every way a V2 turn ends must fire the queued handoff, and nothing else may: an
+// approval whose turn failed or was interrupted still leaves a run to start.
+{
+  const { tools, hooks, server } = await boot()
+  const s = "sess-turn-end"
+  sessionAgent[s] = "plan"
+  const turnPlan = path.join(proj, ".ai", "plans", "20260908130000-turn-end.md")
+  fs.writeFileSync(turnPlan, "# Turn end\n## Goal\nRun it whatever the outcome.\n")
+  await hooks["session.prompt"]({ sessionID: s, prompt: { text: "approve it" } })
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: turnPlan } })
+  const base = commands.length
+  await tools.hoko_execute.execute({}, { sessionID: s, agent: "plan" })
+
+  server.push({ type: "session.tool.called", data: { sessionID: s } })
+  await server.drain()
+  check("an unrelated session event runs nothing",
+    commands.length === base, JSON.stringify(commands.slice(base)))
+
+  server.push({ type: "session.execution.failed", data: { sessionID: s } })
+  await server.drain()
+  check("a failed turn still runs the queued handoff",
+    commands.length === base + 1 && commands.at(-1)?.sessionID === s, JSON.stringify(commands.slice(base)))
 }
 
 // ---------------------------------------------- the config-free registrations --
@@ -569,7 +593,7 @@ async function boot(overrides: any = {}) {
     fs.readFileSync(state(target!, ".project"), "utf8") === proj)
   const freshEntryPath = fs.readFileSync(state(target!, ".entry"), "utf8")
 
-  server.push({ type: "session.idle", data: { sessionID: approval } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: approval } })
   await server.drain()
   check("the queued command runs on the run's session",
     commands.length === base + 1 && commands[base].sessionID === target && commands[base].name === "hoko/execute-plan" && commands[base].text === freshPlan,
@@ -584,7 +608,7 @@ async function boot(overrides: any = {}) {
   fs.writeFileSync(freshPlan, "Status: complete\n\n" + fs.readFileSync(freshPlan, "utf8"))
   await hooks["tool.execute.after"]({ status: "completed", tool: "edit", sessionID: target!, input: { filePath: freshPlan } })
   sessionMessages(target!).push({ type: "assistant", model: { id: "claude-test", providerID: "anthropic" }, time: { created: Date.now() + 1000 }, cost: 0.02, tokens: { input: 2, output: 1, cache: { read: 0, write: 0 } }, content: [{ type: "text", text: "Fresh run report." }] })
-  server.push({ type: "session.idle", data: { sessionID: target! } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: target! } })
   await server.drain()
   const freshReport = path.join(freshEntryPath, "report-01.md")
   check("the run's closing report lands in the entry opened at approval",
@@ -610,7 +634,7 @@ async function boot(overrides: any = {}) {
   const text = String(out.content ?? out)
   check("with HOKO_FRESH_SESSION=0 no session is created", created.length === createdBefore, text)
   check("with HOKO_FRESH_SESSION=0 nothing reports a fresh session", !/Fresh session/.test(text), text)
-  server.push({ type: "session.idle", data: { sessionID: s } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
   await server.drain()
   check("with HOKO_FRESH_SESSION=0 the command targets the approval session",
     commands.at(-1)?.sessionID === s, JSON.stringify(commands.at(-1)))

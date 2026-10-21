@@ -78,6 +78,15 @@ const PROTECTED_BRANCHES = ["main", "master", "staging", "develop"]
 const BRANCH_NAME = /^(feature|bugfix|hotfix|release)\/(?:[A-Z][A-Z0-9]*-\d+-)?[a-z0-9]+(?:-[a-z0-9]+)*$/
 const GIT_CREATE = /\bgit\s+(?:checkout\s+-b|switch\s+-c)\s+(\S+)(?:\s+(\S+))?/
 const GIT_COMMIT = /\bgit\s+(?:-\S+\s+)*commit\b/
+// V2 ends a turn with `session.execution.<outcome>`, not V1's `session.idle`. Both are
+// accepted: the handler consumes the `.handoff`/`.report` file before it acts, so a
+// repeated event is harmless.
+const END_OF_TURN = new Set([
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted",
+  "session.idle",
+])
 
 const MODEL_ENV: Record<string, string> = {
   plan: "HOKO_PLAN_MODEL",
@@ -848,14 +857,14 @@ export default {
             }
             continue
           }
-          if (event?.type !== "session.idle") continue
+          if (!END_OF_TURN.has(event?.type)) continue
           const sessionID = event.data?.sessionID
           if (!sessionID) continue
           const pending = state(sessionID, ".handoff")
           const plan = read(pending)
           if (plan) {
             const target = read(state(sessionID, ".target")) || sessionID
-            // Cleared before firing: the run's own idle event must not start it again.
+            // Cleared before firing: the run's own turn end must not start it again.
             fs.rmSync(pending, { force: true })
             fs.rmSync(state(sessionID, ".target"), { force: true })
             const since = statStart(state(sessionID, ".prompt.used")) ?? statStart(state(sessionID, ".prompt"))

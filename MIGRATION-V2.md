@@ -31,7 +31,8 @@ scripts/install-agents.sh
 ```
 
 It symlinks each file, so editing one here stays live. Re-running is safe. Without this,
-`plan` falls back to opencode's stock plan agent and the `hoko-*` subagents do not exist.
+the `hoko-*` subagents do not exist. `plan` still works without the symlink because the
+plugin applies this repo's `agents/plan.md` prompt to opencode's built-in plan agent.
 
 ### 3. Remove the V1 instructions entry, if you have one
 
@@ -56,11 +57,11 @@ V1 relied on four things V2 removed. Each has a replacement or is simply gone.
 | --- | --- |
 | `config` hook registering agents | Agents are files; install step above |
 | `config` hook appending to `instructions` | The plugin pushes them into every model request from the `context` hook — same effect |
-| `tui.showToast` | No TUI API. Handoff and journaling lines go to the opencode server log; the git guard's "cut from the wrong base" warning arrives as a synthetic notice in the session |
-| `tui.publish` moving the TUI to the run's fresh session, and `agent_cycle` moving the agent indicator | No TUI API. The run's session is still created and the run still starts there; the screen does not follow it |
+| `tui.showToast` | The server plugin has no TUI API; `tui.ts` announces the run, and the git guard's "cut from the wrong base" warning arrives as a synthetic notice in the session |
+| `tui.publish` moving the TUI to the run's fresh session, and `agent_cycle` moving the agent indicator | `tui.ts` listens for the run session's `hoko: run` marker, syncs it and navigates to it; the run still starts there |
 | `shell.env` exporting `HOKO_PROMPT_FILE` | The V2 shell hook carries no session id. Nothing read it |
 | A command naming an agent (`agent: hoko-researcher`) | Commands cannot name agents. `/hoko/research` now asks the current agent to delegate to `hoko-researcher`; `/hoko/plan`, `/hoko/commit`, `/hoko/pr` and `/hoko/execute-plan` switch the session's agent explicitly |
-| The plugin detecting a hand-written `plan` block | Not detectable in V2. The permission exception is always layered on, and a `HOKO_*_MODEL` only applies to an agent with no model of its own |
+| The plugin detecting a hand-written `plan` block | A `plan` agent with a system prompt is treated as the user's own; an empty one receives this repo's protocol. The permission exception is always layered on, and a `HOKO_*_MODEL` is authoritative when set |
 | The plan agent's `tools:` map | V2 agents have no tool map; tool availability follows permissions |
 
 `plugin/hoko.ts` now uses the V2 API: a plain default export with `setup(ctx)`, and

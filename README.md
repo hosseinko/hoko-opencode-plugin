@@ -29,10 +29,11 @@ There is nothing to build and no dependency to install. The plugin has no depend
 purpose — that is why its tool takes no arguments, since declaring arguments would mean
 importing zod, and importing zod would mean an install step.
 
-One thing V2 changed: a plugin can no longer register agents, and there is no TUI API. So
-this repo's `agents/*.md` are installed as files (step 3) and the toast and the jump to
-the run's session are gone. Everything else — commands, skills, the standing instructions
-— is registered by the plugin as before.
+One thing V2 changed: a plugin can no longer register agents, so this repo's
+`agents/*.md` are installed as files (step 3). The server plugin also has no TUI API, so
+the jump to the run's session lives in `plugin/tui.ts`, the terminal entrypoint V2 loads
+beside the server one. Everything else — commands, skills, the standing instructions —
+is registered by the plugin as before.
 
 ### 1. Put the repo somewhere stable
 
@@ -63,8 +64,9 @@ that file:
 
 Replace the placeholder with the path from step 1. It must be a `file://` URL with an
 absolute path, and it must point at the **`plugin` directory**, not at `plugin/hoko.ts`:
-V2 loads a path entry as a directory and imports its `index.ts`, and a path to a file is
-rejected with `configured plugin path must be a directory`. If
+V2 loads a path entry as a directory, imports its `index.ts`, and loads its `tui.ts` as
+the terminal entrypoint. A path to a file is rejected with
+`configured plugin path must be a directory`. If
 `~/.config/opencode/opencode.json` already exists, add the entry to the `plugins` array
 you have rather than replacing the file.
 
@@ -88,7 +90,9 @@ scripts/install-agents.sh
 
 That symlinks every `agents/*.md` into `~/.config/opencode/agents/`, so editing one here
 stays live. Re-running is safe, and a real file already sitting at a target path is left
-alone and reported rather than overwritten. To undo, delete the symlinks.
+alone and reported rather than overwritten. To undo, delete the symlinks. V2's built-in
+`plan` agent shadows the `plan.md` symlink, so the plugin applies that same file's prompt
+to the built-in agent itself; the hoko subagents still need the symlinks.
 
 ### 4. Configure it (optional)
 
@@ -139,10 +143,9 @@ Tab → Plan
 ```
 
 You should get grilled one question at a time, then a plan path under `.ai/plans/`, then
-a request to approve. Say **approved** and watch for the run starting at step 1 with a
-`hoko-plan-executor` subagent. Two things V2 took away: no toast names the plan, and the
-TUI does not follow the run into its fresh session — the run still starts there, the
-screen just stays on the planning session.
+a request to approve. Say **approved** and the TUI moves to a fresh session where the run
+starts at step 1 with a `hoko-plan-executor` subagent. The `tui.ts` entrypoint announces
+the run and switches to its session.
 
 To undo all of this, delete the plugin entry from `opencode.json`, delete the symlinks
 step 3 made, and reload.
@@ -161,11 +164,11 @@ whole thing down, so run the tests after touching it.
 | --- | --- |
 | Log says `configured plugin path must be a directory` | The `plugins` entry points at `plugin/hoko.ts`. V2 a path entry loads as a directory — point it at `.../hoko-opencode-plugin/plugin`. |
 | No `/hoko` commands, no `hoko-` agents | The plugin never loaded. Check the entry in `opencode.json` is an absolute `file://` URL to the `plugin` directory, then `opencode service restart`. |
-| Plan mode answers like stock opencode | The `plan` agent is not installed — run `scripts/install-agents.sh` and reload. |
+| Plan mode answers like stock opencode | The plugin's `plan` prompt is not reaching the built-in agent. Reload and check `opencode debug agents`: `plan` must carry a system prompt and the hoko permissions. |
 | The plan arrives in the chat, not as a file | The edit exception is not reaching the plans directory — check the permission list in `opencode debug agents`. The agent says so itself rather than losing the plan. |
 | "approved" produces a reply but no run | The plan agent did not call `hoko_execute`, or the tool is not permitted. Check the permission list in `opencode debug agents`; if there is no plan *file* in the session, the tool refuses by design. |
-| The handoff produces a session with no run | Run `/hoko/execute-plan <path>` yourself and check the opencode log — V2 has no toast, so a failed handoff is written there. |
-| The screen stays on Plan after approval | Expected. V2 exposes no TUI API, so the plugin cannot move the TUI to the run's session. The run is on build either way. |
+| The handoff produces a session with no run | Run `/hoko/execute-plan <path>` yourself and check the opencode log — a failed handoff is written there and announced as a synthetic notice. |
+| The screen stays on Plan after approval | `plugin/tui.ts` did not load, or the run session was created without its `hoko: run` marker. Check the plugin list and the server log. |
 | No journal entry | Expected unless `HOKO_JOURNAL_PATH` is set — journaling is off by default. With it set: `python3` missing, or the root is not writable. `hoko_execute` reports the reason in its output instead of failing silently. |
 | Entry has no `report-NN.md` | The run never set `Status: complete` — a blocker or a `not ready` gate — or the closing report was not the last thing posted. |
 | Plans land in `.claude/plans/` | Stale Claude Code skills are being picked up — see [Claude Code interference](#claude-code-interference). |
@@ -190,10 +193,10 @@ Behavior that changed, all of it forced by the V2 API:
 | --- | --- |
 | The plugin registered the agents | Agents are files under `~/.config/opencode/agents/`, installed by `scripts/install-agents.sh` |
 | The plugin appended `instructions/*.md` to the config | The plugin adds them to every model request from the `context` hook — same effect, they are in context on every turn of every agent |
-| `tui.showToast` announced the handoff, the journaled report and the invoice | No TUI API. The handoff and journaling lines go to the opencode server log; the git guard's warning arrives as a synthetic notice in the session |
-| Approving switched the TUI to the run's fresh session | No TUI API. The run's session is still created and the run still starts there; the screen does not follow it |
+| `tui.showToast` announced the handoff, the journaled report and the invoice | The server plugin has no TUI API; `plugin/tui.ts` announces the run, and the git guard's warning still arrives as a synthetic notice in the session |
+| Approving switched the TUI to the run's fresh session | `plugin/tui.ts` listens for the run session's `hoko: run` marker, syncs it and navigates to it |
 | `HOKO_PROMPT_FILE` was exported into every shell | The V2 shell hook carries no session id, so it is gone. Nothing read it |
-| The plugin detected a hand-written `plan` block and left its prompt alone | V2 exposes no way to tell a hand-written agent from a generated one, so the exception is always layered on, and a model override only applies to an agent with no model of its own |
+| The plugin detected a hand-written `plan` block and left its prompt alone | A plan agent that already carries a system prompt is the user's own and is left alone; an empty one receives this repo's protocol. `HOKO_*_MODEL` is now authoritative when set |
 | `/hoko/research` ran as a subtask because a command could name a subagent | A command cannot name an agent, and a session cannot run on a subagent-only agent, so the command asks the current agent to delegate to `hoko-researcher` |
 | The plan agent's `tools` map was switched on | V2 agents have no `tools` map; tool availability follows permissions |
 
@@ -220,7 +223,7 @@ The plugin reads, in increasing order of precedence: `hoko.env` in this repo,
 | `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` | the session's model |
 | `HOKO_JOURNAL_PATH` | journal root | **unset — journaling is off** |
 | `HOKO_PLANS_DIR` | where plans are written, relative to the repo root | `.ai/plans` |
-| `HOKO_FRESH_SESSION` | approval starts the run in a fresh session; V2 has no TUI API, so nothing follows it there. `0`, `false`, `no` or `off` hand off in the approval session | on |
+| `HOKO_FRESH_SESSION` | approval starts the run in a fresh session and `tui.ts` moves the screen to it. `0`, `false`, `no` or `off` hand off in the approval session | on |
 | `HOKO_COVERAGE_MIN` | the full gate's coverage floor, in percent | `85` |
 | `HOKO_COMMIT_AUTO` | `1` = `hoko-commit` commits without confirming the message | off |
 | `HOKO_BASE_BRANCH` | branch playing the `develop` role — what features branch from and target | `develop`, else the remote's default branch |
@@ -312,8 +315,8 @@ the `hoko_execute` tool. That tool, not the model, does the switching:
 The run's context is the plan file and nothing else — none of the planning transcript
 rides along. So there is no Tab-to-build step and no command to remember, and build never
 starts from a blank slate: it starts inside the execute-plan protocol with the plan path
-in hand. In V1 the prompt box followed the run; V2 exposes no TUI API, so the screen
-stays where it was. The run is on the build agent either way — that V1 step was cosmetic.
+in hand. The server plugin cannot move the screen itself, so `plugin/tui.ts` follows the
+new session's marker and brings the prompt box with the run.
 
 `HOKO_FRESH_SESSION=0` — or `false`, `no`, `off` — skips the new session and queues the
 handoff on the approval session, so the plan runs there as before. When creating the
@@ -401,8 +404,8 @@ go looking.
   sets `Status: complete`, so nothing is filed and the entry stays open. It then
   collects every registered session's assistant responses and those of its descendant
   sessions into `usage.json`, snapshots the model catalog's rates into `rates.json`, and
-  renders the token invoice. V2 exposes no way to list sessions, so descendants are
-  tracked from the `session.created` events the plugin observes while it is loaded.
+  renders the token invoice. Descendants are tracked from the `session.created` events
+  the plugin observes while it is loaded.
 - `invoice.json` and `invoice.md` list, per model, the input, output, reasoning,
   cache-read and cache-write tokens and their cost; per round, role and agent type (a
   registered session's own loop is `main`), billing each response to the row registered
@@ -427,11 +430,12 @@ and share it for `plansDir`, `coverageMin`, `commitAuto` and the rest.
 
 ```
 plugin/
-  index.ts            the entry point V2 imports: re-exports hoko.ts's default
+  index.ts            the server entry point V2 imports: re-exports hoko.ts's default
   hoko.ts             registers everything; settings from hoko.env; the hoko_execute
                       tool; prompt capture, the fresh-session handoff to build, and
                       journaling
-  test_hoko.ts        tests for the plugin's hooks and tool
+  tui.ts              the terminal entrypoint: follows the run session and announces it
+  test_hoko.ts        tests for both entrypoints, their hooks and the tool
 Dockerfile            bun + python3, for the test suite only
 docker-compose.yml    the `test` service: `docker compose run --rm test`
 agents/
@@ -531,7 +535,7 @@ The parts most likely to want changing:
   rules.
 - **The branching rules** — `instructions/hoko.md` states them (protected branches, which
   base each prefix is cut from, the `<type>/<TICKET-><slug>` naming); `gitVerdict` in
-  `plugin/hoko.ts` enforces them, refusing the bash tool a commit on a protected branch, a
+  `plugin/hoko.ts` enforces them, refusing the shell tool a commit on a protected branch, a
   name off the convention, or a branch cut from an explicitly wrong base. A branch created
   without a start point is only toasted, so stacking one branch on another still works.
   Change both together, or the guard contradicts the prose.

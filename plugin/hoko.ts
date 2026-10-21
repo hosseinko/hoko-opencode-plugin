@@ -1,13 +1,14 @@
 /**
  * hoko — registers the plan-and-execute workflow with opencode (V2).
  *
- * One line in ~/.config/opencode/opencode.json points at this file:
+ * One line in ~/.config/opencode/opencode.json points at this directory:
  *
- *   { "plugins": ["file:///abs/path/to/hoko-opencode-plugin/plugin/hoko.ts"] }
+ *   { "plugins": ["file:///abs/path/to/hoko-opencode-plugin/plugin"] }
  *
- * From there the plugin:
- *   - owns the `plan` agent's plan-file exception and applies model overrides from
- *     hoko.env / the environment
+ * `index.ts` is the server entrypoint and `tui.ts` the terminal entrypoint V2 resolves
+ * beside it. From there the plugin:
+ *   - owns the `plan` agent's prompt and plan-file exception and applies model overrides
+ *     from hoko.env / the environment
  *   - registers this repo's commands and skills into the live registry
  *   - adds every instructions/*.md to every model request
  *   - captures the first prompt of each plan cycle verbatim, for the journal
@@ -21,10 +22,10 @@
  *
  * V2 removals this port has to work around (see README, "Migration from V1"):
  *   - a plugin cannot register agents, so this repo's agents/*.md are discovered from
- *     ~/.config/opencode/agents/ instead (scripts/install-agents.sh)
- *   - there is no TUI API, so the toast and the TUI jump to the run's session are gone;
- *     warnings go to the session as a synthetic notice, and the run still starts in a
- *     fresh session without the TUI following it
+ *     ~/.config/opencode/agents/ instead (scripts/install-agents.sh); `plan` collides
+ *     with opencode's built-in plan agent, so its prompt is applied from this file too
+ *   - the server has no TUI API, so the jump to the run's session lives in `tui.ts`, the
+ *     terminal plugin V2 loads beside this one
  *   - shell.env has no session id, so HOKO_PROMPT_FILE is no longer exported
  *
  * The entrypoint is a plain default export rather than Plugin.define so the file keeps
@@ -45,6 +46,7 @@ const AGENTS_DIR = path.join(CONFIG_DIR, "agents")
 const JOURNAL_SCRIPT = path.join(ROOT, "scripts", "journal.py")
 const PLAN_FILE_SCRIPT = path.join(ROOT, "scripts", "plan-file.py")
 const INVOICE_SCRIPT = path.join(ROOT, "scripts", "invoice.py")
+const PLAN_PROMPT_FILE = path.join(ROOT, "agents", "plan.md")
 const MAIN_AGENT = "main"
 // Skills only bind when a model invokes one, so rules that must hold even in plain
 // build-mode chat — never merge, never push — live in an instructions file instead.
@@ -61,7 +63,12 @@ const DEFAULT_COVERAGE_MIN = "85"
 // opencode matches edit patterns with a plain wildcard matcher and does not document
 // whether the subject is the absolute path or one relative to the project root, so the
 // exception is spelled every way it can arrive. `*` matches across separators.
-const planGlobs = (dir: string) => [`${dir}/*.md`, `*/${dir}/*.md`, `**/${dir}/*.md`]
+const planGlobs = (dir: string, root: string) => [
+  `${dir}/*.md`,
+  `*/${dir}/*.md`,
+  `**/${dir}/*.md`,
+  path.join(root, ...dir.split("/"), "*.md"),
+]
 // The plan protocol shells out for the timestamp, the project root and the directory it
 // writes into. Left at plan mode's default these prompt mid-grilling, and a denied one
 // leaves the model with no path — which is how a plan ends up in the chat instead of a
@@ -328,14 +335,13 @@ export default {
     const journaling = Boolean(env.HOKO_JOURNAL_PATH)
     const fresh = !/^(0|false|no|off)$/i.test(env.HOKO_FRESH_SESSION ?? "")
 
-    const git = (...args: string[]) => {
+    const gitAt = (cwd: string, ...args: string[]) => {
       try {
-        return execFileSync("git", args, { cwd: project, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()
+        return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()
       } catch {
         return ""
       }
     }
-
     // The state dir is the same value the plugin hands to journal.py, so the anchor it
     // writes and the anchor the script reads can never diverge — including a
     // HOKO_STATE_DIR that came from hoko.env rather than the environment.
@@ -348,10 +354,10 @@ export default {
       path.join(stateDir, createHash("sha256").update(sessionID).digest("hex").slice(0, 16) + suffix)
 
     /** Which real branches play the `develop` and `main` roles in this repository. */
-    const baseBranches = () => {
+    const baseBranches = (cwd: string) => {
       const has = (name: string) =>
-        Boolean(git("rev-parse", "--verify", "--quiet", name) || git("rev-parse", "--verify", "--quiet", `origin/${name}`))
-      const fallback = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").replace(/^origin\//, "")
+        Boolean(gitAt(cwd, "rev-parse", "--verify", "--quiet", name) || gitAt(cwd, "rev-parse", "--verify", "--quiet", `origin/${name}`))
+      const fallback = gitAt(cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").replace(/^origin\//, "")
       const release = has("main") ? "main" : has("master") ? "master" : fallback || "main"
       return { release, integration: env.HOKO_BASE_BRANCH || (has("develop") ? "develop" : release) }
     }
@@ -365,9 +371,8 @@ export default {
       } catch {}
     }
 
-    // V2 exposes no way to list sessions — there is no `ctx.session.list` — so descendant
-    // sessions are tracked from `session.created` events instead, which is what bills a
-    // subagent's responses to the run that spawned it. Activity before this plugin
+    // Descendant sessions are tracked from `session.created` events, which is what bills
+    // a subagent's responses to the run that spawned it. Activity before this plugin
     // loaded is the only thing missed.
     const descendants = new Map<string, { parentID: string; agent: string }>()
 
@@ -382,8 +387,8 @@ export default {
       }
     }
 
-    // V2 exposes no TUI API, so a toast is gone. A warning the user has to see goes to
-    // the session as a synthetic notice; anything else goes to the server log.
+    // The server plugin has no TUI API. A warning the user has to see goes to the session
+    // as a synthetic notice; the terminal entrypoint handles toasts and navigation.
     const notify = (sessionID: string | undefined, message: string) => {
       if (!sessionID || typeof ctx.session.synthetic !== "function") {
         console.warn(`hoko: ${message}`)
@@ -591,28 +596,49 @@ export default {
       console.warn(`hoko: no ${PLAN_AGENT} agent — install this repo's agents into ${AGENTS_DIR} (scripts/install-agents.sh)`)
     }
 
-    // Nothing here can read the user's own opencode.json, so a `plan` block of theirs is
-    // not detected the way V1 detected it: the exception is always layered on, and a
-    // model override is only applied when the agent has no model of its own.
+    // V2's built-in plan agent shadows a `plan.md` installed under the config dir, and it
+    // ships without a system prompt. The protocol therefore has to be applied here. A
+    // plan agent that already carries a prompt is the user's own and is left alone.
+    const planSource = (() => {
+      try {
+        const { data, body } = parseFrontmatter(fs.readFileSync(PLAN_PROMPT_FILE, "utf8"))
+        return {
+          system: body,
+          name: typeof data.name === "string" ? data.name : "Plan",
+          description: typeof data.description === "string" ? data.description : "",
+        }
+      } catch {
+        return { system: "", name: "", description: "" }
+      }
+    })()
+
     await ctx.agent.transform((editor: any) => {
       editor.update(PLAN_AGENT, (agent: any) => {
+        if (!agent.system) {
+          if (planSource.system) agent.system = planSource.system
+          if (planSource.name) agent.name = planSource.name
+          if (planSource.description) agent.description = planSource.description
+          agent.mode = "primary"
+        }
         // Last matching rule wins, so the catch-all deny goes first and keeps plan mode
         // read-only apart from the plan file itself.
         agent.permissions = [
           ...(agent.permissions ?? []),
           { action: "edit", resource: "*", effect: "deny" },
-          ...planGlobs(plansDir).map((glob) => ({ action: "edit", resource: glob, effect: "allow" })),
+          ...planGlobs(plansDir, project).map((glob) => ({ action: "edit", resource: glob, effect: "allow" })),
           ...PLAN_BASH.map((command) => ({ action: "shell", resource: command, effect: "allow" })),
           { action: "hoko_execute", resource: "*", effect: "allow" },
         ]
       })
+      // A HOKO_*_MODEL is an explicit choice for that agent, so it wins over an inherited
+      // model instead of only filling a gap.
       for (const [name, key] of Object.entries(MODEL_ENV)) {
         const ref = env[key]
         if (!ref) continue
         const model = parseModel(ref)
         if (!model) continue
         editor.update(name, (agent: any) => {
-          if (!agent.model) agent.model = model
+          agent.model = model
         })
       }
     })
@@ -695,7 +721,13 @@ export default {
           let target = context.sessionID
           if (fresh) {
             try {
-              const created: any = await ctx.session.create({ title: planTitle(plan), agent: EXECUTE_AGENT })
+              const approval: any = await ctx.session.get({ sessionID: context.sessionID }).catch(() => undefined)
+              const created: any = await ctx.session.create({
+                title: planTitle(plan),
+                agent: EXECUTE_AGENT,
+                ...(approval?.location ? { location: approval.location } : {}),
+                metadata: { hoko: "run" },
+              })
               target = created?.id ?? ""
               if (!target) throw new Error("the server returned no session id")
             } catch (error: any) {
@@ -747,11 +779,12 @@ export default {
       })
     })
 
-    await ctx.tool.hook("execute.before", (event: any) => {
-      if (event.tool !== "bash") return
+    await ctx.tool.hook("execute.before", async (event: any) => {
+      if (!["shell", "bash"].includes(event.tool)) return
       const command = String(event.input?.command ?? "")
       if (!/\bgit\b/.test(command)) return
-      const verdict = gitVerdict(command, git("rev-parse", "--abbrev-ref", "HEAD"), baseBranches())
+      const cwd = event.sessionID ? await sessionDir(event.sessionID) : project
+      const verdict = gitVerdict(command, gitAt(cwd, "rev-parse", "--abbrev-ref", "HEAD"), baseBranches(cwd))
       if (!verdict) return
       if (verdict.level === "refuse") throw new Error(verdict.message)
       notify(event.sessionID, verdict.message)
@@ -760,11 +793,13 @@ export default {
     await ctx.tool.hook("execute.after", (event: any) => {
       if (event.status !== "completed") return
       if (!["write", "edit", "patch"].includes(event.tool)) return
-      const file = event.input?.filePath
+      // V2 renamed the write/edit input field from `filePath` to `path`; accept both so a
+      // plan written by either shape is still the plan this session hands off.
+      const file = event.input?.path ?? event.input?.filePath
       if (typeof file !== "string" || !file.endsWith(".md")) return
       // The plans directory's own last segment is what marks a plan file, so a plan
       // still registers when it was written through a symlink or a relative path.
-      if (!file.split(path.sep).includes(plansDir.split("/").pop()!)) return
+      if (!file.split(/[\\/]/).includes(plansDir.split("/").pop()!)) return
       write(state(event.sessionID, ".plan"), path.resolve(file))
       // A plan turning complete is the one deterministic end-of-run signal there is, and
       // the closing report the conductor posts next is what the journal entry wants.

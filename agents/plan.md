@@ -60,6 +60,10 @@ subagent (`subagent_type: hoko-researcher`) with the specific question. It files
 findings under `.ai/research/` and reports a path; cite that path in the plan's
 *Decisions* so the executor can read the evidence.
 
+Once the grilling is done, ask which QA checks the run gets — `CRAP` and `Mutation`,
+always, never skipped because the change looks small — and record the answer as the
+plan's `QA:` header line.
+
 Stop grilling once you can write the plan. Never fill a material gap with an assumption
 — an unresolved blocker goes under **Open questions** in the plan.
 
@@ -70,13 +74,16 @@ reuse, the test framework and where its files live, and the exact commands to ru
 and lint/typecheck.
 
 If `specs/` exists at the repository root and a spec covers what this change touches,
-read it first: it already states the behaviour that must hold, so the plan's
-*Requirements* are the subset this change delivers, carrying the spec's ids as
-`R1 (SPEC-012/REQ-3) …`, and anything the change contradicts is an *Open question*, not
-a silent override. If the change adds a capability that deserves a spec and has none —
-rules with thresholds or precedence, a contract with something outside the repo,
-behaviour on bad input — say so and offer `hoko-feature-specs` before planning. Do not
-write the spec yourself here, and do not create `specs/` where the project has none.
+read it first: it already states the behaviour that must hold, so the plan does not
+restate it. Point at it with a `Spec:` header line naming the file, its front-matter id
+and the requirements this change delivers, `Spec: specs/login.md (SPEC-012: REQ-3, REQ-5)`,
+and let each step claim them as `SPEC-012/REQ-3` on its `Satisfies:` line. Write
+*Requirements* only for behaviour the spec does not state, and anything the change
+contradicts is an *Open question*, not a silent override. If the change adds a capability
+that deserves a spec and has none — rules with thresholds or precedence, a contract with
+something outside the repo, behaviour on bad input — say so and offer
+`hoko-feature-specs` before planning. Do not write the spec yourself here, and do not
+create `specs/` where the project has none.
 
 ## 3. Write the plan file
 
@@ -113,24 +120,35 @@ Use this structure, omitting any section that would be empty:
 ```
 Ticket: <KEY>        — the issue key the request carried, e.g. ABC-123; omit the line
                         entirely when it carried none
+QA: <crap, mutation>  — the checks the user chose in the grilling, or `QA: none`
+Spec: <path> (<spec id>: REQ-N, …)  — one line per spec the plan delivers; omit when
+                        the plan restates its own requirements
 ## Goal
 ## Non-goals
 ## Decisions          — every answer from the grilling that constrains implementation
 ## Requirements       — the observable behaviour this change owes, in EARS form
 ## Test conventions   — framework; test file location and naming; exact run command;
                         lint/typecheck command, or none
-## Progress
-- [ ] 1. <same title as the step below>
-- [ ] 2. <...>
 ## Steps
 ### 1. <imperative title>
-- Files: <paths>
 - Change: <what, concretely>
 - Satisfies: <the requirement ids this step delivers, or `none — internal`>
 - Tests: <what proves those requirements, in the project's style>
+- Irreversible: <what cannot be undone — only on a step whose commit revert does not
+  undo its effect>
 - Risks: <omit this line unless there is a concrete, specific risk>
+## Verification       — manual or human checks the plan itself needs stated, never a
+                        numbered step: a step carries a diff, and one that only verifies
+                        has none, so it derails a run that expects to commit it. Omit
+                        when there is nothing beyond the steps' own tests.
 ## Open questions     — omit if none
 ```
+
+`## Progress` is not part of what you write: the approval step generates it from the
+`### <N>.` headings once the plan is approved, one unchecked
+`- [ ] <N>. <title>` box per step. Do not write the section yourself and do not carry
+`Status:` lines on the steps themselves; the executor ticks the generated boxes as it
+goes.
 
 Write it for a stranger. A subagent with **no access to this conversation** will
 implement from that file alone, so every decision you reached must be written down
@@ -141,15 +159,15 @@ no line. The *Test conventions* section is load-bearing: the subagent runs
 exactly the command you record there.
 
 The **Requirements** section states the change's observable behaviour as numbered
-`R<N>` lines in EARS form — one behaviour per line, in the project's own vocabulary,
+`R<N>` list items in EARS form — one behaviour per line, in the project's own vocabulary,
 naming the actual component rather than "the system":
 
-    R1. The <component> shall <response>.
-    R2. While <precondition>, the <component> shall <response>.
-    R3. When <trigger>, the <component> shall <response>.
-    R4. If <unwanted trigger>, then the <component> shall <response>.
-    R5. Where <feature is configured>, the <component> shall <response>.
-    R6. While <precondition>, when <trigger>, the <component> shall <response>.
+    - **R1** The <component> shall <response>.
+    - **R2** While <precondition>, the <component> shall <response>.
+    - **R3** When <trigger>, the <component> shall <response>.
+    - **R4** If <unwanted trigger>, then the <component> shall <response>.
+    - **R5** Where <feature is configured>, the <component> shall <response>.
+    - **R6** While <precondition>, when <trigger>, the <component> shall <response>.
 
 One `shall` per line — an "and" joining two responses is two requirements. Nothing that
 cannot fail a test: "shall be efficient", "shall handle errors gracefully" and "shall be
@@ -164,15 +182,30 @@ Every requirement must be claimed by exactly one step's `Satisfies:` line. A req
 no step claims is a hole in the plan; a step that claims none is internal plumbing and
 says so.
 
-The **Progress** section is mandatory and is never omitted: one unchecked
-`- [ ] <N>. <title>` line per step, in order, titles matching the `### <N>.` headings
-exactly. It is the single source of truth for how far a run has got — carry no `Status:`
-lines on the steps themselves. Write every box unchecked; the executor ticks them.
+A plan with a `Spec:` line needs no *Requirements* section for what that line lists:
+the spec holds the behaviour, so the plan holds only the steps. Every `REQ-N` the line
+lists must exist in the named spec and be claimed by exactly one step as
+`<spec id>/REQ-N`, and a step may claim only what the line lists. A plan may carry both
+a `Spec:` line and *Requirements* of its own, and a step claims from either.
+
+A step is *irreversible* when reverting its commit does not undo its effect, as with a
+datastore schema migration or a change to a queue or payload contract. Add
+`- Irreversible: <what cannot be undone>` to each such step and to no other — it is a
+marker for the human reviewing before merge, and nothing pauses before the step.
 
 Step rules: a step is the largest chunk that still stays comprehensible in one sitting.
 Prefer fewer, coherent steps — never split work to hit a count. Each step must leave the
 repo green and be independently committable, and the order must not break anything
-between commits.
+between commits — an interface change lands together with its implementations in the
+same step, not split across two that would leave the repo red in between.
+
+Lint the plan before you post it, and fix the plan rather than the finding until the only
+output is notes. The one blocking finding to expect is the missing `## Progress` section:
+the approval step generates it, so leave it out.
+
+```bash
+python3 "${HOKO_ROOT}/scripts/plan-lint.py" --plan "<absolute plan path>"
+```
 
 ## 4. Present the plan and ask for approval
 
@@ -190,9 +223,12 @@ When the user approves — "approved", "go ahead", "ship it", anything that mean
 call the `hoko_execute` tool. It takes no arguments: it uses the plan file you wrote in
 this session. That tool is the only way out of planning: it creates a fresh session for
 the run, switches the TUI to it, files the plan and this cycle's original prompt in the
-journal, and starts `/hoko/execute-plan` on the build agent there, where the executor and
-step-gate subagents work each step and the deep reviewer and QA close the run. The
-planning transcript stays behind — the run reads the plan file, not this conversation.
+journal, and starts `/hoko/execute-plan` on the build agent there: it files the plan with
+`plan-file.py file`, seeds the checklist with `plan-progress.py init`, hands each step to
+`hoko-plan-executor` and commits it through `step-commit.py`, then runs
+`hoko-quality-assurance`, the spec pass and one `hoko-final-reviewer` over
+`<Base>..HEAD` before the pull request. The planning transcript stays behind — the run
+reads the plan file, not this conversation.
 
 If the tool refuses — the opencode build has no session API or session creation fails —
 nothing is journaled or queued, and the refusal is in the tool result. The `tui.ts`

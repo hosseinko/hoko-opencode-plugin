@@ -3,7 +3,7 @@
 FROM oven/bun:1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 git \
+    && apt-get install -y --no-install-recommends python3 git make \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work

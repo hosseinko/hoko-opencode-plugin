@@ -12,9 +12,8 @@ description: >-
 
 # API developer
 
-These rules are not optional and not proportional to the size of the change. A new
-endpoint that ships without its schema, its swagger entry, its version group and its
-route name is unfinished, not "to be tidied later".
+These rules apply whatever the size of the change. A new endpoint that ships without its
+schema, its swagger entry, its version group and its route name is unfinished.
 
 Detect the framework and router from the project (`composer.json`, the route files,
 existing endpoints) and express these rules in that project's idioms. Match the
@@ -51,10 +50,9 @@ res/schema/json/
 
 Rules:
 
-- **Reuse, never restate.** A shape that appears in two schemas becomes one file under
+- Reuse, do not restate. A shape that appears in two schemas becomes one file under
   `components/` and is pulled in with `$ref`. Before writing a new object, grep
-  `components/` for it. Copy-pasting a property block between two schema files is the
-  failure this rule exists to prevent.
+  `components/` for it. Do not copy a property block between two schema files.
 - One schema per payload, named `<action>.request.json` / `<resource>.response.json`,
   mirroring the route's version and path segments as directories.
 - Declare `$schema`, `$id`, `type`, `required`, and `additionalProperties: false`.
@@ -81,8 +79,8 @@ A single `swagger.yml` lives at the project root and describes every exposed end
 
 ## 3. Versioned routes
 
-All routes live under a version group, starting at `v1` — no unversioned endpoint,
-ever, not even for internal or debug use.
+All routes live under a version group, starting at `v1`; no endpoint is unversioned,
+not even for internal or debug use.
 
 - A breaking change opens `v2`; it never mutates a shipped `v1` shape.
 - The version is the outermost group, with everything else nested inside it.
@@ -92,10 +90,8 @@ ever, not even for internal or debug use.
 Inside a version, routes sharing a path prefix are one group: everything under
 `/dictionary/` is a `dictionary` group, nested further where the paths nest deeper.
 
-- **Configure the group, not the route.** Middleware, prefix, name prefix, controller,
-  and auth belong on the group. Repeating the same middleware on five sibling routes is
-  the smell this rule targets — if you are writing the same modifier twice, it belongs
-  one level up.
+- Configure the group, not the route. Middleware, prefix, name prefix, controller, and
+  auth belong on the group; a modifier written twice belongs one level up.
 - A middleware that genuinely applies to a single route stays on that route; that is the
   exception, and it should be visibly the exception.
 

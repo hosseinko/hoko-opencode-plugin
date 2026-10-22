@@ -12,12 +12,15 @@
  *   - registers this repo's commands and skills into the live registry
  *   - adds every instructions/*.md to every model request
  *   - captures the first prompt of each plan cycle verbatim, for the journal
- *   - serves `hoko_execute`: approval files the plan in the journal, opens a fresh
+ *   - serves `hoko_execute`: approval lints the plan, files it, opens a fresh
  *     session for the run and runs /hoko/execute-plan on the build agent there
- *   - journals the run's closing report once the plan file turns Status: complete
+ *   - closes a finished run through `plan-progress.py complete`, which journals the
+ *     closing report and renders the invoice from the usage this plugin collected
  *   - refuses git commands that break the branching rules: a commit on a protected
  *     branch, a branch name off the convention, a branch cut from an explicitly wrong
  *     base (a bare create off the wrong branch only warns)
+ *   - denies the conductor's own reads and edits while a run's newest progress.json
+ *     reports `in_progress`, so the step work stays with the subagents (plugin/guard.ts)
  *   - exposes the resolved settings and HOKO_ROOT to every shell
  *
  * V2 removals this port has to work around (see README, "Migration from V1"):
@@ -29,8 +32,8 @@
  *   - shell.env has no session id, so HOKO_PROMPT_FILE is no longer exported
  *
  * The entrypoint is a plain default export rather than Plugin.define so the file keeps
- * the original zero-dependency property: node's standard library only, nothing to
- * resolve at load time.
+ * the original zero-dependency property: node's standard library and its own sibling
+ * modules, nothing to resolve from a package at load time.
  */
 
 import fs from "node:fs"
@@ -40,11 +43,23 @@ import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 
+import { activeRun, guardVerdict } from "./guard.ts"
+
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const CONFIG_DIR = path.join(os.homedir(), ".config", "opencode")
+// The checkout the settings loader reads its repo-scoped files from. A caller that must not
+// read the live checkout's config — the test suite — points it at its own directory; the
+// plugin itself leaves it unset and reads the checkout it is installed in.
+function repoRoot(): string {
+  return process.env.HOKO_REPO_ROOT || ROOT
+}
+// The home this process was given: os.homedir() is cached at process start by some
+// runtimes, so it can name a different home than the session actually runs under.
+const CONFIG_DIR = path.join(process.env.HOME || os.homedir(), ".config", "opencode")
 const AGENTS_DIR = path.join(CONFIG_DIR, "agents")
 const JOURNAL_SCRIPT = path.join(ROOT, "scripts", "journal.py")
 const PLAN_FILE_SCRIPT = path.join(ROOT, "scripts", "plan-file.py")
+const PLAN_LINT_SCRIPT = path.join(ROOT, "scripts", "plan-lint.py")
+const PLAN_PROGRESS_SCRIPT = path.join(ROOT, "scripts", "plan-progress.py")
 const INVOICE_SCRIPT = path.join(ROOT, "scripts", "invoice.py")
 const PLAN_PROMPT_FILE = path.join(ROOT, "agents", "plan.md")
 const MAIN_AGENT = "main"
@@ -73,14 +88,14 @@ const planGlobs = (dir: string, root: string) => [
 // writes into. Left at plan mode's default these prompt mid-grilling, and a denied one
 // leaves the model with no path — which is how a plan ends up in the chat instead of a
 // file. Everything else keeps the agent's default.
-const PLAN_BASH = ["date*", "mkdir -p*", "git rev-parse*", "ls*", "test -f*"]
+const PLAN_BASH = ["date*", "mkdir -p*", "git rev-parse*", "ls*", "test -f*", "python3 *plan-lint.py*"]
 const PROTECTED_BRANCHES = ["main", "master", "staging", "develop"]
 const BRANCH_NAME = /^(feature|bugfix|hotfix|release)\/(?:[A-Z][A-Z0-9]*-\d+-)?[a-z0-9]+(?:-[a-z0-9]+)*$/
 const GIT_CREATE = /\bgit\s+(?:checkout\s+-b|switch\s+-c)\s+(\S+)(?:\s+(\S+))?/
 const GIT_COMMIT = /\bgit\s+(?:-\S+\s+)*commit\b/
 // V2 ends a turn with `session.execution.<outcome>`, not V1's `session.idle`. Both are
-// accepted: the handler consumes the `.handoff`/`.report` file before it acts, so a
-// repeated event is harmless.
+// accepted: the handler clears the `.handoff` file before it acts and a closed run's
+// `progress.json` marks it done, so a repeated event is harmless.
 const END_OF_TURN = new Set([
   "session.execution.succeeded",
   "session.execution.failed",
@@ -93,9 +108,56 @@ const MODEL_ENV: Record<string, string> = {
   build: "HOKO_BUILD_MODEL",
   "hoko-plan-executor": "HOKO_EXECUTOR_MODEL",
   "hoko-code-reviewer": "HOKO_REVIEWER_MODEL",
-  "hoko-code-reviewer-deep": "HOKO_REVIEWER_DEEP_MODEL",
+  "hoko-final-reviewer": "HOKO_FINAL_REVIEW",
   "hoko-quality-assurance": "HOKO_QA_MODEL",
   "hoko-researcher": "HOKO_RESEARCH_MODEL",
+}
+
+// Which `efforts` stage each agent runs at. The task pipeline embeds the effort in the
+// model ref it hands the conductor; a plan run passes no model, so this is what puts the
+// effort on the model the plugin resolves for the agent. `hoko-researcher` has no stage.
+const EFFORT_STAGE: Record<string, string> = {
+  "hoko-specifier": "refine",
+  "hoko-spec-writer": "spec",
+  "hoko-planner": "plan",
+  plan: "plan",
+  "hoko-plan-executor": "implement",
+  build: "implement",
+  "hoko-quality-assurance": "qa",
+  "hoko-code-reviewer": "review",
+  "hoko-final-reviewer": "review",
+}
+
+const DEFAULT_EFFORTS: Record<string, string> = {
+  refine: "high",
+  spec: "high",
+  plan: "high",
+  implement: "high",
+  qa: "medium",
+  review: "high",
+}
+
+/** The same defaults, hoko.json and HOKO_EFFORTS precedence the Python settings loader
+ *  applies, so an effort means the same thing on either side of the run. */
+function stageEfforts(env: Record<string, string>): Record<string, string> {
+  const levels = { ...DEFAULT_EFFORTS }
+  const apply = (layer: any) => {
+    if (!layer || typeof layer !== "object" || Array.isArray(layer)) return
+    for (const [stage, level] of Object.entries(layer)) {
+      if (stage in levels && typeof level === "string") levels[stage] = level
+    }
+  }
+  for (const file of [path.join(repoRoot(), "hoko.json"), path.join(CONFIG_DIR, "hoko.json")]) {
+    try {
+      apply(JSON.parse(fs.readFileSync(file, "utf8")).efforts)
+    } catch {}
+  }
+  if (env.HOKO_EFFORTS) {
+    try {
+      apply(JSON.parse(env.HOKO_EFFORTS))
+    } catch {}
+  }
+  return levels
 }
 
 function readEnvFile(file: string): Record<string, string> {
@@ -121,10 +183,28 @@ function readEnvFile(file: string): Record<string, string> {
   return env
 }
 
-/** Repo defaults, overridden by the machine-local file, overridden by the real environment. */
-function settings(): Record<string, string> {
+/** `hoko.json`'s own values, the plugin's file first and the machine's last, so the
+ *  machine's wins — the layer scripts/settings.py reads beneath the environment. A file
+ *  that is missing or malformed contributes nothing, which leaves the defaults in place. */
+function fileSettings(): Record<string, any> {
+  const merged: Record<string, any> = {}
+  for (const file of [path.join(repoRoot(), "hoko.json"), path.join(CONFIG_DIR, "hoko.json")]) {
+    try {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"))
+      if (data && typeof data === "object" && !Array.isArray(data)) Object.assign(merged, data)
+    } catch {}
+  }
+  return merged
+}
+
+/** Repo defaults, then `hoko.json`, then hoko.env, then the real environment — the same
+ *  precedence scripts/settings.py applies, so a setting means one thing on either side.
+ *  Exported for the terminal half: the guard and the display resolve the plans directory
+ *  from this one reader, so a configured value names one directory for both. */
+export function settings(): Record<string, string> {
+  const fromFile = fileSettings()
   const merged = {
-    ...readEnvFile(path.join(ROOT, "hoko.env")),
+    ...readEnvFile(path.join(repoRoot(), "hoko.env")),
     ...readEnvFile(path.join(CONFIG_DIR, "hoko.env")),
   }
   // Any HOKO_* variable in the real environment wins, whether or not a file mentions it.
@@ -134,6 +214,12 @@ function settings(): Record<string, string> {
     if (!key.startsWith("HOKO_")) continue
     if (value) merged[key] = value
     else delete merged[key]
+  }
+  // The two settings the guard reads are the two the config file can name, and the
+  // environment wins over both: a configured plans directory cannot silently disarm it.
+  if (!merged.HOKO_PLANS_DIR && typeof fromFile.plansDir === "string") merged.HOKO_PLANS_DIR = fromFile.plansDir
+  if (!merged.HOKO_LOOP_GUARD && typeof fromFile.loopGuard === "boolean") {
+    merged.HOKO_LOOP_GUARD = fromFile.loopGuard ? "true" : "false"
   }
   // No built-in journal root: an unset HOKO_JOURNAL_PATH means journaling is off, not
   // that entries land in somebody else's notes directory.
@@ -233,6 +319,16 @@ function parseModel(ref: string): { providerID: string; id: string; variant?: st
   return { providerID: name.slice(0, slash), id: name.slice(slash + 1), ...(variant ? { variant } : {}) }
 }
 
+/** `model` carrying `effort` as its variant. A variant already on the ref is an explicit
+ *  choice and wins; an empty effort leaves the model bare. */
+function modelWithEffort(
+  model: { providerID: string; id: string; variant?: string },
+  effort: string,
+): { providerID: string; id: string; variant?: string } {
+  if (!effort || model.variant) return model
+  return { ...model, variant: effort }
+}
+
 /**
  * What to do about a git command: refuse it, warn about it, or nothing. The branching
  * rules in instructions/hoko.md say this in prose; a model can talk itself past prose.
@@ -280,6 +376,36 @@ function read(file: string) {
     return fs.readFileSync(file, "utf8").trim()
   } catch {
     return ""
+  }
+}
+
+/** A plan's header block: its lines before the first `## ` section. `Status:` lives
+ *  there, and a plan that quotes the word further down has not finished. */
+function headerText(text: string): string {
+  const at = text.search(/^##\s/m)
+  return at === -1 ? text : text.slice(0, at)
+}
+
+/** `plan-lint.py`'s blocking findings, or "" when the plan is clean. `--structural`
+ *  limits the preflight to what denies approval: `## Progress` is generated by the
+ *  filing this check runs before. `--rewrite` turns a numbered-list `## Steps` into step
+ *  headings first, since that is a shape the run reads and the planner's listing is not
+ *  a reason to refuse the plan. */
+function lintPlan(plan: string, cwd: string): string {
+  try {
+    execFileSync("python3", [PLAN_LINT_SCRIPT, "--plan", plan, "--structural", "--rewrite"], {
+      cwd,
+      env: process.env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    return ""
+  } catch (error: any) {
+    return (
+      String(error?.stdout ?? "").trim() ||
+      String(error?.stderr ?? "").trim() ||
+      String(error?.message ?? error).trim()
+    )
   }
 }
 
@@ -343,6 +469,7 @@ export default {
     const plansDir = env.HOKO_PLANS_DIR
     const journaling = Boolean(env.HOKO_JOURNAL_PATH)
     const fresh = !/^(0|false|no|off)$/i.test(env.HOKO_FRESH_SESSION ?? "")
+    const loopGuard = !/^(0|false|no|off)$/i.test(env.HOKO_LOOP_GUARD ?? "")
 
     const gitAt = (cwd: string, ...args: string[]) => {
       try {
@@ -530,64 +657,109 @@ export default {
     }
 
     /** The closing report is the last thing the conductor posts once the plan is complete,
-     *  so that message is the report — no model has to hand it over. The run's usage is
-     *  then collected and the token invoice rendered beside it. */
-    const fileReport = async (sessionID: string) => {
-      if (!journaling) return
-      const entry = read(state(sessionID, ".entry"))
-      const plan = read(state(sessionID, ".plan"))
-      if (!entry || !plan) return
-      const cwd = read(state(sessionID, ".project")) || project
+     *  so that message is the report — no model has to hand it over. `plan-progress.py
+     *  complete` then sets the status, journals the report and renders the invoice in one
+     *  call, which is why the run's usage has to be written first. */
+    const lastAssistantText = async (sessionID: string): Promise<string> => {
+      let report = ""
+      const messages: any[] = await ctx.session.context({ sessionID })
+      for (const message of messages) {
+        if (message?.type !== "assistant") continue
+        const text = (message.content ?? [])
+          .filter((part: any) => part.type === "text" && typeof part.text === "string")
+          .map((part: any) => part.text)
+          .join("\n")
+          .trim()
+        if (text) report = text
+      }
+      return report
+    }
 
-      const journalFile = /^Journal:\s*(.+)$/m.exec(read(plan))?.[1]?.trim() ?? ""
-      const round = /^plan-(\d+)\.md$/.exec(path.basename(journalFile))?.[1]
-      if (!round) {
-        notify(sessionID, "the plan is not filed in the journal")
+    /** `usage.json` and `rates.json` in the entry: what the invoice prices from. */
+    const writeUsage = async (entry: string) => {
+      const usage = await collectUsage(entry)
+      write(path.join(entry, "usage.json"), JSON.stringify(usage, null, 2) + "\n")
+      const rates = await collectRates()
+      write(path.join(entry, "rates.json"), JSON.stringify(rates, null, 2) + "\n")
+    }
+
+    /**
+     * Closes a run once it has finished. A plan run is closed by `plan-progress.py
+     * complete`, so the report and the invoice are filed by the one command that owns
+     * `Status: complete`. A task run is already closed by `task.py finish`, which cannot
+     * invoice because only this plugin can read a session's messages; it therefore gets
+     * its usage written here and its invoice rendered again.
+     *
+     * The plan's own `progress.json` is what makes this run once: `complete` marks it
+     * `done`, and a later turn end sees that and stops.
+     */
+    const closeRun = async (sessionID: string) => {
+      const plan = read(state(sessionID, ".plan"))
+      if (!plan || !fs.existsSync(plan)) return
+      const planText = read(plan)
+      const cwd = read(state(sessionID, ".project")) || project
+      const entry = read(state(sessionID, ".entry"))
+
+      const taskFile = path.join(path.dirname(plan), "progress.json")
+      const taskPlan = /^plan-\d+\.md$/.test(path.basename(plan)) && fs.existsSync(taskFile)
+      if (taskPlan) {
+        let document: any
+        try {
+          document = JSON.parse(fs.readFileSync(taskFile, "utf8"))
+        } catch {
+          return
+        }
+        if (document?.status !== "done") return
+        const folder = entry || String(document?.flow?.journal ?? "")
+        if (!folder || !fs.existsSync(folder)) return
+        if (fs.existsSync(path.join(folder, "usage.json"))) return
+        try {
+          await writeUsage(folder)
+          run(INVOICE_SCRIPT, ["write", "--entry", folder], cwd, env)
+          console.log(`hoko: invoiced ${path.basename(folder)}`)
+        } catch (error: any) {
+          notify(sessionID, `could not invoice the run — ${error.message}`)
+        }
         return
       }
-      const reportPath = path.join(path.dirname(journalFile), `report-${round}.md`)
 
-      if (!fs.existsSync(reportPath)) {
-        let report = ""
+      // `Status:` lives in the header block; a plan that merely quotes the word further
+      // down has not finished.
+      if (!/^\s*(?:\*\*)?Status:(?:\*\*)?\s*complete\b/im.test(headerText(planText))) return
+      const sidecar = path.join(path.dirname(plan), `${path.basename(plan, ".md")}.progress.json`)
+      try {
+        const status = JSON.parse(fs.readFileSync(sidecar, "utf8"))?.status
+        if (status === "done" || status === "stopped") return
+      } catch {}
+
+      if (entry) {
         try {
-          const messages: any[] = await ctx.session.context({ sessionID })
-          for (const message of messages) {
-            if (message?.type !== "assistant") continue
-            const text = (message.content ?? [])
-              .filter((part: any) => part.type === "text" && typeof part.text === "string")
-              .map((part: any) => part.text)
-              .join("\n")
-              .trim()
-            if (text) report = text
-          }
+          await writeUsage(entry)
         } catch (error: any) {
-          notify(sessionID, `could not read the run's report — ${String(error)}`)
-          return
-        }
-        if (!report) {
-          notify(sessionID, "the run posted no closing report to journal")
-          return
-        }
-        const file = state(sessionID, `.report-${Date.now()}.md`)
-        write(file, `${report}\n`)
-        try {
-          const filed = journal(env, cwd, ["report", "--plan", plan, "--report-file", file])
-          console.log(`hoko: journaled ${path.basename(filed)}`)
-        } catch (error: any) {
-          notify(sessionID, `could not journal the report — ${error.message}`)
+          notify(sessionID, `could not collect the run's usage — ${error.message}`)
           return
         }
       }
-
+      let report = ""
       try {
-        const usage = await collectUsage(entry)
-        write(path.join(entry, "usage.json"), JSON.stringify(usage, null, 2) + "\n")
-        const rates = await collectRates()
-        write(path.join(entry, "rates.json"), JSON.stringify(rates, null, 2) + "\n")
-        run(INVOICE_SCRIPT, ["write", "--entry", entry], cwd, env)
-        console.log(`hoko: invoiced ${path.basename(entry)}`)
+        report = await lastAssistantText(sessionID)
       } catch (error: any) {
-        notify(sessionID, `could not invoice the run — ${error.message}`)
+        notify(sessionID, `could not read the run's report — ${String(error)}`)
+        return
+      }
+      if (!report && entry) {
+        notify(sessionID, "the run posted no closing report to journal")
+        return
+      }
+      const file = path.join(os.tmpdir(), `hoko-report-${process.pid}-${Date.now()}.md`)
+      try {
+        write(file, `${report}\n`)
+        const said = run(PLAN_PROGRESS_SCRIPT, ["complete", "--plan", plan, "--report-file", file], cwd, env)
+        console.log(`hoko: closed ${path.basename(plan)}${said ? ` — ${said.split("\n")[0]}` : ""}`)
+      } catch (error: any) {
+        notify(sessionID, `could not close the run — ${error.message}`)
+      } finally {
+        fs.rmSync(file, { force: true })
       }
     }
 
@@ -622,6 +794,7 @@ export default {
     })()
 
     await ctx.agent.transform((editor: any) => {
+      const efforts = stageEfforts(env)
       editor.update(PLAN_AGENT, (agent: any) => {
         if (!agent.system) {
           if (planSource.system) agent.system = planSource.system
@@ -640,14 +813,17 @@ export default {
         ]
       })
       // A HOKO_*_MODEL is an explicit choice for that agent, so it wins over an inherited
-      // model instead of only filling a gap.
+      // model instead of only filling a gap. The stage's effort rides on the same ref as its
+      // variant, which is how a plan run — whose command names no model — still runs the
+      // implementer at `efforts.implement`.
       for (const [name, key] of Object.entries(MODEL_ENV)) {
         const ref = env[key]
         if (!ref) continue
         const model = parseModel(ref)
         if (!model) continue
+        const effort = efforts[EFFORT_STAGE[name] ?? ""] ?? ""
         editor.update(name, (agent: any) => {
-          agent.model = model
+          agent.model = modelWithEffort(model, effort)
         })
       }
     })
@@ -711,10 +887,10 @@ export default {
         name: "hoko_execute",
         description:
           "Start implementing the plan the user has just approved. Takes no arguments — " +
-          "it uses the plan file written in this session. Files that plan and the cycle's " +
-          "original prompt in the journal, opens a fresh session and runs " +
-          "/hoko/execute-plan on the build agent there. This is the only way to leave " +
-          "planning: never implement the plan yourself.",
+          "it uses the plan file written in this session. Lints that plan first and refuses " +
+          "a blocking finding, then files the plan and the cycle's original prompt in the " +
+          "journal, opens a fresh session and runs /hoko/execute-plan on the build agent " +
+          "there. This is the only way to leave planning: never implement the plan yourself.",
         input: { type: "object", properties: {}, required: [], additionalProperties: false },
         execute: async (_input: any, context: any) => {
           const cwd = await sessionDir(context.sessionID)
@@ -726,6 +902,16 @@ export default {
           }
           if (read(state(context.sessionID, ".handoff"))) {
             return { content: "This plan is already on its way to the build agent. Wait for that run instead of approving it again." }
+          }
+          // Approval is the last gate on the plan's structure, and it runs before the
+          // session exists so a refused plan leaves no run behind.
+          const refusal = lintPlan(plan, cwd)
+          if (refusal) {
+            return {
+              content:
+                `The plan cannot be approved — plan-lint.py found a blocking finding:\n\n${refusal}\n\n` +
+                `Fix the plan and approve it again. Nothing was filed and no run session was created.`,
+            }
           }
           let target = context.sessionID
           if (fresh) {
@@ -753,20 +939,28 @@ export default {
             const recorded = read(state(context.sessionID, ".project"))
             if (recorded) write(state(target, ".project"), recorded)
           }
+          // Filing is what gives the plan its `Project:`, `Journal:` and `## Progress`
+          // lines and copies it into the repository. The path it prints is that copy —
+          // the file the subagents edit and the run completes — so it replaces whatever
+          // path the approval session had.
+          let filed = plan
+          try {
+            const args = ["file", "--plan", plan, "--session", context.sessionID]
+            // Only this cycle's own anchor counts. `.prompt.used` is a previous
+            // cycle's, so seeding this row from it would bill that cycle's responses
+            // here; absent an anchor, journal.py's now fallback applies.
+            const since = statStart(state(context.sessionID, ".prompt"))
+            if (since) args.push("--since", since)
+            filed = run(PLAN_FILE_SCRIPT, args, cwd, env) || plan
+          } catch (error: any) {
+            lines.push(`Not filed — ${error.message}. Say so in your reply; the run continues.`)
+          }
+          write(state(context.sessionID, ".plan"), filed)
           if (journaling) {
-            try {
-              const args = ["file", "--plan", plan, "--session", context.sessionID]
-              // Only this cycle's own anchor counts. `.prompt.used` is a previous
-              // cycle's, so seeding this row from it would bill that cycle's responses
-              // here; absent an anchor, journal.py's now fallback applies.
-              const since = statStart(state(context.sessionID, ".prompt"))
-              if (since) args.push("--since", since)
-              const planCopy = run(PLAN_FILE_SCRIPT, args, cwd, env)
-              const entry = path.dirname(planCopy)
-              write(state(context.sessionID, ".entry"), entry)
-              lines.push(`Journal entry: ${entry}`)
-            } catch (error: any) {
-              lines.push(`Not journaled — ${error.message}. Say so in your reply; the run continues.`)
+            const journalPlan = /^Journal:\s*(.+)$/m.exec(read(filed))?.[1]?.trim() ?? ""
+            if (journalPlan) {
+              write(state(context.sessionID, ".entry"), path.dirname(journalPlan))
+              lines.push(`Journal entry: ${path.dirname(journalPlan)}`)
             }
           }
           if (fresh) {
@@ -776,10 +970,10 @@ export default {
               } catch {}
             }
           }
-          write(state(context.sessionID, ".handoff"), plan)
+          write(state(context.sessionID, ".handoff"), filed)
           if (fresh) write(state(context.sessionID, ".target"), target)
           lines.push(
-            `Handed off: /hoko/execute-plan ${plan} starts on the ${EXECUTE_AGENT} agent the moment this turn ends.`,
+            `Handed off: /hoko/execute-plan ${filed} starts on the ${EXECUTE_AGENT} agent the moment this turn ends.`,
             `Reply with one line — the plan path${journaling ? " and the journal entry" : ""} — then stop. Do not implement anything, do not call any other tool.`,
           )
           if (fresh) lines.push(`Fresh session: ${target}`)
@@ -789,14 +983,29 @@ export default {
     })
 
     await ctx.tool.hook("execute.before", async (event: any) => {
-      if (!["shell", "bash"].includes(event.tool)) return
-      const command = String(event.input?.command ?? "")
-      if (!/\bgit\b/.test(command)) return
+      const tool = String(event.tool ?? "")
       const cwd = event.sessionID ? await sessionDir(event.sessionID) : project
-      const verdict = gitVerdict(command, gitAt(cwd, "rev-parse", "--abbrev-ref", "HEAD"), baseBranches(cwd))
-      if (!verdict) return
-      if (verdict.level === "refuse") throw new Error(verdict.message)
-      notify(event.sessionID, verdict.message)
+
+      if (["shell", "bash"].includes(tool)) {
+        const command = String(event.input?.command ?? "")
+        if (/\bgit\b/.test(command)) {
+          const verdict = gitVerdict(command, gitAt(cwd, "rev-parse", "--abbrev-ref", "HEAD"), baseBranches(cwd))
+          if (verdict?.level === "refuse") throw new Error(verdict.message)
+          if (verdict) notify(event.sessionID, verdict.message)
+        }
+      }
+
+      if (!loopGuard) return
+      const run = activeRun(cwd, plansDir)
+      if (!run) return
+      let agent = ""
+      if (event.sessionID) {
+        try {
+          agent = (await ctx.session.get({ sessionID: event.sessionID }))?.agent ?? ""
+        } catch {}
+      }
+      const verdict = guardVerdict({ tool, path: event.input?.path ?? event.input?.filePath, agent, run })
+      if (verdict !== "allow") throw new Error(verdict)
     })
 
     await ctx.tool.hook("execute.after", (event: any) => {
@@ -810,9 +1019,6 @@ export default {
       // still registers when it was written through a symlink or a relative path.
       if (!file.split(/[\\/]/).includes(plansDir.split("/").pop()!)) return
       write(state(event.sessionID, ".plan"), path.resolve(file))
-      // A plan turning complete is the one deterministic end-of-run signal there is, and
-      // the closing report the conductor posts next is what the journal entry wants.
-      if (/^Status:\s*complete/im.test(read(file))) write(state(event.sessionID, ".report"), "1")
     })
 
     // V2's shell hook carries no session id, so HOKO_PROMPT_FILE — the one setting that
@@ -872,10 +1078,9 @@ export default {
             continue
           }
 
-          const due = state(sessionID, ".report")
-          if (!read(due)) continue
-          fs.rmSync(due, { force: true })
-          await fileReport(sessionID)
+          // A run that finished is closed from the plan's own status; the run's
+          // progress.json is what keeps a closed run closed.
+          await closeRun(sessionID)
         }
       } catch (error: any) {
         if (!controller.signal.aborted) console.error(`hoko: event subscription ended — ${String(error)}`)

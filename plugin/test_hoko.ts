@@ -1408,7 +1408,11 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   const repoBackup = path.join(ROOT, "hoko.json.backup")
   // Parked outside the checkout, so a kill between a plant and its restore leaves the
   // displaced config where the repository's own state cannot overwrite or hide it.
-  const parkedConfig = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hoko-repo-config-")), "hoko.json")
+  const parkedRoot = (() => {
+    const root = path.resolve(ROOT)
+    const tmp = path.resolve(os.tmpdir())
+    return tmp === root || tmp.startsWith(root + path.sep) ? path.dirname(root) : tmp
+  })()
   const envObject = process.env
   const priorPlansDir = process.env.HOKO_PLANS_DIR
   const priorConfig = fs.existsSync(configFile) ? fs.readFileSync(configFile, "utf8") : undefined
@@ -1419,10 +1423,11 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     else fs.writeFileSync(file, text)
   }
   /**
-   * Plants a fixture config in the checkout for the reader to read, returning its restore.
+   * Plants a fixture config in the checkout for the reader to read, returning the parked path
+   * and the restore.
    *
    * The fixture replaces the repository's own config, so the original is copied beside it
-   * and to a temp file outside the checkout first: a kill before the restore must leave it
+   * and to a directory outside the checkout first: a kill before the restore must leave it
    * recoverable on disk, not only in memory. A backup already on disk is that original from
    * an interrupted pass, so it wins over the file currently in place and is never copied over.
    */
@@ -1434,18 +1439,18 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     const foundBackup = fs.existsSync(repoBackup)
     if (foundBackup) fs.copyFileSync(repoBackup, repoConfig)
     else fs.copyFileSync(repoConfig, repoBackup)
-    fs.copyFileSync(repoConfig, parkedConfig)
+    const parkedDir = fs.mkdtempSync(path.join(parkedRoot, "hoko-repo-config-"))
+    const parked = path.join(parkedDir, "hoko.json")
+    fs.copyFileSync(repoConfig, parked)
     fs.mkdirSync(CONFIG, { recursive: true })
     fs.writeFileSync(configFile, JSON.stringify({ plansDir: "machine/plans" }))
     fs.writeFileSync(repoConfig, text)
     process.env.HOKO_PLANS_DIR = ""
-    return () => {
+    const undo = () => {
       restore(configFile, priorConfig)
-      const restored = fs.existsSync(parkedConfig)
-      if (restored) {
-        fs.copyFileSync(parkedConfig, repoConfig)
-        fs.rmSync(parkedConfig, { force: true })
-      }
+      const restored = fs.existsSync(parked)
+      if (restored) fs.copyFileSync(parked, repoConfig)
+      fs.rmSync(parkedDir, { recursive: true, force: true })
       // The backup is the last copy of a config found on entry unless the parked copy put it
       // back, so a restore that could not do that leaves it for the next pass rather than
       // leaving the checkout with only the fixture. A backup written from the pass's own seed
@@ -1457,6 +1462,7 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
       if (priorPlansDir === undefined) delete process.env.HOKO_PLANS_DIR
       else process.env.HOKO_PLANS_DIR = priorPlansDir
     }
+    return { parked, undo }
   }
 
   /**
@@ -1481,7 +1487,7 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     restore(repoConfig, entry.config)
     restore(repoBackup, entry.backup)
     const asFound = asFoundRepoConfig()
-    const undo = plantRepoConfig(fixture)
+    const { undo } = plantRepoConfig(fixture)
     try {
       check(`with ${label}, the live hoko.json holds the fixture while the backup holds a different config`,
         fs.existsSync(repoConfig) && fs.readFileSync(repoConfig, "utf8") === fixture
@@ -1540,7 +1546,7 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     const planted = JSON.stringify({ plansDir: "recovered/plans" })
     fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: "interrupted/plans" }))
     fs.writeFileSync(repoBackup, planted)
-    const undo = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
+    const { undo } = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
     try {
       check("the reader test never overwrites a backup it found with the file currently in place",
         fs.readFileSync(repoBackup, "utf8") === planted, fs.readFileSync(repoBackup, "utf8"))
@@ -1556,7 +1562,7 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   // A pass that throws after writing its fixture must still remove the seed it wrote.
   {
     const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
-    const undo = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
+    const { undo } = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
     let threw = ""
     try {
       await (async () => { throw new Error("the case threw") })()
@@ -1583,18 +1589,18 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
     const original = JSON.stringify({ plansDir: "parked/original" })
     fs.writeFileSync(repoConfig, original)
-    const undo = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
+    const { parked, undo } = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
     try {
-      check("the reader test keeps a config it displaces recoverable outside the repository root",
-        !parkedConfig.startsWith(ROOT + path.sep) && fs.existsSync(parkedConfig)
-          && fs.readFileSync(parkedConfig, "utf8") === original,
-        fs.existsSync(parkedConfig) ? fs.readFileSync(parkedConfig, "utf8") : "nothing parked")
+      check("the reader test parks a config it displaces in a directory outside the repository root",
+        !parked.startsWith(ROOT + path.sep) && fs.existsSync(parked)
+          && fs.readFileSync(parked, "utf8") === original,
+        fs.existsSync(parked) ? parked : "nothing parked")
     } finally {
       undo()
     }
-    check("the reader test removes the parked config once the plant is restored",
-      !fs.existsSync(parkedConfig) && fs.readFileSync(repoConfig, "utf8") === original,
-      fs.existsSync(parkedConfig) ? "parked config left behind" : "config differs")
+    check("the reader test removes the parked copy's directory once the plant is restored",
+      !fs.existsSync(path.dirname(parked)) && fs.readFileSync(repoConfig, "utf8") === original,
+      fs.existsSync(path.dirname(parked)) ? "parked directory left behind" : "config differs")
     restore(repoConfig, kept)
   }
 
@@ -1605,8 +1611,8 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     const original = JSON.stringify({ plansDir: "orphaned/original" })
     fs.writeFileSync(repoConfig, original)
     fs.rmSync(repoBackup, { force: true })
-    const undo = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
-    fs.rmSync(parkedConfig, { force: true })
+    const { parked, undo } = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
+    fs.rmSync(parked, { force: true })
     undo()
     check("the reader test keeps a backup holding a config found on entry when the restore cannot put it back",
       fs.existsSync(repoBackup) && fs.readFileSync(repoBackup, "utf8") === original,
@@ -1623,7 +1629,7 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     const planted = JSON.stringify({ plansDir: "recovered/plans" })
     fs.rmSync(repoConfig, { force: true })
     fs.writeFileSync(repoBackup, planted)
-    const undo = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
+    const { undo } = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
     undo()
     check("the reader test never deletes a hoko.json it did not write",
       fs.existsSync(repoConfig) && fs.readFileSync(repoConfig, "utf8") === planted,

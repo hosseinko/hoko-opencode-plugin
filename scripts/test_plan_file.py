@@ -157,6 +157,21 @@ class TestPlanFile(unittest.TestCase):
         self.assertFalse(anchor.exists(), "the write should retire the session anchor")
         self.assertTrue(anchor.with_name(anchor.name + ".used").exists())
 
+    def test_the_project_anchor_fills_prompt_md_and_survives_filing(self):
+        repo = self.repo()
+        plan = self.tmp / "plan.md"
+        plan.write_text(plan_text("Anchor the cycle"))
+        import hashlib
+        digest = hashlib.sha256(str(repo).encode("utf-8")).hexdigest()[:16]
+        anchor = self.state / f"project-{digest}.prompt"
+        anchor.write_text("the project's own first prompt")
+
+        result = self.run_file(plan, session="s1", repo=repo)
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        entry = Path(result.stdout.strip()).parent
+        self.assertIn("the project's own first prompt", (entry / "prompt.md").read_text())
+        self.assertEqual(anchor.read_text(), "the project's own first prompt")
+
     def test_the_plan_row_records_the_capture_time_not_the_filing_time(self):
         repo = self.repo()
         plan = self.tmp / "plan.md"

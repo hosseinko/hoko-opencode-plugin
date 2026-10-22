@@ -73,13 +73,11 @@ def project_anchor(root):
 
 def journal_root():
     """The journal root from settings (`journalPath`, `hoko.json` /
-    `~/.config/opencode/hoko.json` / `HOKO_JOURNAL_PATH`). Exits naming the setting
-    when it is unset: journaling is opt-in, and a caller that reaches here asked for a
-    journal folder."""
+    `~/.config/opencode/hoko.json` / `HOKO_JOURNAL_PATH`), or None when it is unset —
+    journaling is off, and that is a normal, silent state, not an error."""
     path = settings.get("journalPath")
     if not path:
-        die("HOKO_JOURNAL_PATH is not set — journaling is off. "
-            "Set it in hoko.json to keep a journal.")
+        return None
     return Path(os.path.expandvars(path)).expanduser()
 
 
@@ -334,6 +332,9 @@ def cmd_write(args):
         die("the prompt is empty")
 
     root = journal_root()
+    if root is None:
+        die("HOKO_JOURNAL_PATH is not set — journaling is off. "
+            "Set it in hoko.json to keep a journal.")
 
     project = resolve_project(args.project or plan_format.project_name(plan_text), plan, anchor)
     slug = slugify(args.slug) if args.slug else (slugify(plan_title(plan_text)) or plan_slug(plan))

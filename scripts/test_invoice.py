@@ -369,6 +369,17 @@ class TestCalls(InvoiceTestCase):
         self.assertEqual(call["started"], "2026-10-21T10:00:00.000Z")
         self.assertEqual(call["duration_ms"], 120000)
 
+    def test_after_leaves_out_responses_written_before_that_moment(self):
+        self.register("S1", role="execute")
+        self.usage("S1", "gpt-5", agent="hoko-plan-executor",
+                   time="2026-10-21T10:00:00Z", input=1000, cost=0.01)
+        self.usage("S1", "gpt-5", agent="hoko-plan-executor",
+                   time="2026-10-21T10:02:00Z", input=2000, cost=0.02)
+        (call,) = self.calls(after=invoice.parse_time("2026-10-21T10:01:00Z"))
+        self.assertEqual(call["input_tokens"], 2000)
+        self.assertEqual(call["started"], "2026-10-21T10:02:00.000Z")
+        self.assertEqual(call["duration_ms"], 0)
+
     def test_rows_replace_the_entries_sessions_file(self):
         self.register("S1")
         self.usage("S1", "gpt-5", agent="hoko-plan-executor", input=1)

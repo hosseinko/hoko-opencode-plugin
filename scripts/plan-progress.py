@@ -60,7 +60,6 @@ import invoice
 import journal
 import plan_format
 import progress
-import settings
 
 LEGACY_STATUS = re.compile(r"^[ \t]*-?\s*Status:\s*done\s*$\n?", re.M | re.I)
 
@@ -81,9 +80,8 @@ def read_plan(path):
 
 
 def configured_journal_root():
-    """The journal root, or None when journaling is off. The setting is read before
-    `journal_root()`, which exits rather than returning None while no path is set."""
-    return journal.journal_root() if settings.get("journalPath") else None
+    """The journal root, or None when journaling is off."""
+    return journal.journal_root()
 
 
 def strip_legacy_status(steps_body, spans):

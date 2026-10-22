@@ -124,7 +124,7 @@ def ensure_gitignore(repo_root, plans_dir_rel):
             handle.write(line + "\n")
 
 
-def repository_copy(repo_root, plan_path, text, project):
+def repository_copy(repo_root, plan_path, text):
     """The plan's copy in the repository's plans directory. A plan filed from outside
     that directory gets the planner's `<stamp>-<slug>.md` name; one already inside it
     keeps its name, because the plugin has already recorded that path for the run."""
@@ -214,8 +214,7 @@ def file_plan(plan_path, session_id=None, project_override=None, since=None):
         if repo_root is not None:
             repo_copy = journaled_copy(repo_root, existing)
             if repo_copy is None:
-                repo_copy = repository_copy(repo_root, plan_path, text,
-                                            own_project(text) or plan_path.parent.name)
+                repo_copy = repository_copy(repo_root, plan_path, text)
             init_progress(repo_copy)
         return existing, existing.parent, repo_root
 
@@ -243,7 +242,7 @@ def file_plan(plan_path, session_id=None, project_override=None, since=None):
         plan_copy = plan_path
 
     if repo_root is not None:
-        repo_copy = repository_copy(repo_root, plan_path, plan_path.read_text(encoding="utf-8"), project)
+        repo_copy = repository_copy(repo_root, plan_path, plan_path.read_text(encoding="utf-8"))
         init_progress(repo_copy)
     return plan_copy, folder, repo_root
 

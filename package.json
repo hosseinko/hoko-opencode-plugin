@@ -4,5 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "bun plugin/test_hoko.ts && python3 scripts/run_tests.py"
+  },
+  "devDependencies": {
+    "solid-js": "1.9.17"
   }
 }

@@ -1433,6 +1433,23 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   }
 }
 
+// ------------------------------------------------------ the suite's own dependency --
+
+{
+  const { default: solid } = (await import("solid-js/package.json")) as any
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"))
+  const pinned = manifest.devDependencies?.["solid-js"]
+  check("the Solid dependency the renderer half needs is a declared, pinned dev dependency",
+    typeof pinned === "string" && /^\d+\.\d+\.\d+$/.test(pinned), JSON.stringify(manifest.devDependencies))
+  check("the suite runs on the Solid version the manifest pins", solid.version === pinned,
+    `${solid.version} vs ${pinned}`)
+
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8")
+  check("the README names the Solid dependency the suite needs", readme.includes("solid-js"))
+  check("the README does not claim there is no dependency to install",
+    !/no dependenc(y|ies) to install/i.test(readme), "README still claims nothing has to be installed")
+}
+
 console.log()
 if (fails.length) { console.log(`${fails.length} failed: ${fails.join(", ")}`); process.exit(1) }
 console.log("all passed")

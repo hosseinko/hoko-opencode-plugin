@@ -35,12 +35,15 @@ and Go — and trigger only on a diff in that stack.
 | opencode | 2.0 or newer — `opencode --version`. On V1 see [Migration from V1](#migration-from-v1) |
 | python3 | 3.9 or newer — the engine every run calls: the plan lint and filing, the checklist, the gates, the task pipeline, the invoice |
 | git | runs commit each step, and the gates diff against a base |
-| node modules | **none.** `plugin/hoko.ts` uses node's standard library only |
+| node modules | **none at runtime.** `plugin/hoko.ts` uses node's standard library only; the test suite needs `solid-js` |
 
-There is nothing to build and no dependency to install. The plugin has no dependencies on
-purpose — that is why its tool takes no arguments, since declaring arguments would mean
-importing zod, and importing zod would mean an install step. `bun` is needed only to run
-the plugin's own tests, never at runtime.
+There is nothing to build, and the plugin itself has no runtime dependencies: that is why
+its tool takes no arguments, since declaring arguments would mean importing zod, and
+importing zod would mean an install step. `bun` is needed only to run the plugin's own
+tests, never at runtime, and that suite has one dependency — `solid-js`, pinned in
+`package.json`, because `plugin/status.tsx` is the renderer half and needs a JSX runtime in
+a plain process. Bun fetches the pinned version on the suite's first run, or `bun install`
+does it up front.
 
 One thing V2 changed: a plugin can no longer register agents, so this repo's
 `agents/*.md` are installed as files (step 3). The server plugin also has no TUI API, so

@@ -23,9 +23,14 @@ class PackageManifestTestCase(unittest.TestCase):
     def test_the_package_is_an_es_module(self):
         self.assertEqual("module", self.package.get("type"))
 
-    def test_the_plugin_has_nothing_to_install(self):
-        for field in ("dependencies", "devDependencies", "peerDependencies"):
-            self.assertFalse(self.package.get(field), f"{field} would add an install step")
+    def test_the_plugin_has_no_runtime_dependencies(self):
+        for field in ("dependencies", "peerDependencies"):
+            self.assertFalse(self.package.get(field), f"{field} would add a runtime install step")
+
+    def test_the_suite_declares_one_pinned_dependency_for_the_renderer(self):
+        dev = self.package.get("devDependencies", {})
+        self.assertEqual(["solid-js"], sorted(dev), "the suite's only dependency is the renderer's")
+        self.assertRegex(dev["solid-js"], r"^\d+\.\d+\.\d+$", "the version is pinned, not a range")
 
 
 class PluginEntrypointTestCase(unittest.TestCase):

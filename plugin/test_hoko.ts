@@ -1453,6 +1453,17 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     }
   }
 
+  /**
+   * The hoko.json the checkout holds, read before a plant: a backup is the original an
+   * interrupted pass displaced, so it outranks the live file a previous pass may have
+   * seeded, and a checkout with neither holds none.
+   */
+  const asFoundRepoConfig = () => {
+    if (fs.existsSync(repoBackup)) return fs.readFileSync(repoBackup, "utf8")
+    return fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
+  }
+
+  const firstPassAsFound = asFoundRepoConfig()
   const undo = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
   const originalRepoConfig = fs.readFileSync(repoBackup, "utf8")
   check("the repository's own hoko.json stays recoverable on disk while its fixture is in place",
@@ -1482,16 +1493,32 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     sharedPane.includes("Machine run"), sharedPane)
   undo()
   check("the reader test removes a config it seeded itself when the case completes",
-    hadRepoConfig || !fs.existsSync(repoConfig),
+    firstPassAsFound !== undefined || !fs.existsSync(repoConfig),
     fs.existsSync(repoConfig) ? "seed left behind" : "removed")
   check("the reader test leaves the checkout's hoko.json as it found it and its backup gone",
     !fs.existsSync(repoBackup)
-      && (fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined)
-        === (hadRepoConfig ? originalRepoConfig : undefined),
+      && (fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined) === firstPassAsFound,
     fs.existsSync(repoBackup) ? "backup left behind" : "config differs")
   check("the reader test restores only HOKO_PLANS_DIR without replacing process.env",
     process.env === envObject && process.env.HOKO_PLANS_DIR === priorPlansDir,
     `${process.env === envObject} / ${process.env.HOKO_PLANS_DIR}`)
+
+  // Only a backup on entry: that backup is the checkout's original, so the first pass
+  // expects its content in place afterwards rather than expecting its own seed removed.
+  {
+    const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
+    const planted = JSON.stringify({ plansDir: "recovered/plans" })
+    fs.rmSync(repoConfig, { force: true })
+    fs.writeFileSync(repoBackup, planted)
+    const asFound = asFoundRepoConfig()
+    const undo = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
+    undo()
+    check("the first pass expects a backup found on entry in place, not its seed removed",
+      asFound === planted && !fs.existsSync(repoBackup)
+        && (fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined) === planted,
+      `${asFound ?? "absent"} / ${fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "absent"}`)
+    restore(repoConfig, kept)
+  }
 
   // A pass killed after its fixture was written leaves the true original only in the backup
   // beside it: the next pass must recover that, not copy its own file over it.

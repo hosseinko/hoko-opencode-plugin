@@ -164,6 +164,10 @@ class TaskPipelineTestCase(unittest.TestCase):
         self.assertIn("You write no implementation code", self.flat)
         self.assertIn("The conductor does not modify or open a source or spec file", self.flat)
 
+    def test_the_conductor_bans_writes_only_and_keeps_its_preflight_interpreter_call_legal(self):
+        self.assertIn("`python3 -c` that writes one", self.flat)
+        self.assertIn("python3 -c 'import time; print(int(time.time() * 1000))'", self.flat)
+
 
 class SkillFrontMatterTestCase(unittest.TestCase):
     """Every skill names itself after the directory opencode keys it by."""

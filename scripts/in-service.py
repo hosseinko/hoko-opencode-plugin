@@ -40,11 +40,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-import settings  # noqa: E402  (sibling module, path set above)
+import settings
 
 COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 

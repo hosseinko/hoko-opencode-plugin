@@ -30,12 +30,8 @@ import argparse
 import sys
 from pathlib import Path
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-import commands  # noqa: E402  (sibling module, path set above)
-import gate as gate_runner  # noqa: E402
+import commands
+import gate as gate_runner
 
 
 def resolve_test_command(resolved):

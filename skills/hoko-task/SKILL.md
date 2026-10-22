@@ -88,10 +88,12 @@ commit by hand: `step-commit.py` runs the fast gate, commits and ticks the plan 
 enforced call. You never run `git add`, `git commit` or `plan-progress.py tick`.
 
 The conductor does not modify or open a source or spec file by any route: not `write`,
-`edit` or `patch`, not `sed -i`, redirection, a heredoc into an interpreter, `php -r`,
-`python3 -c`, `patch`. The files you may read and the only ones you write are in the task
-folder under `plansDir`: hand-offs, `progress.json`, plans. The plugin's loop guard
-enforces that while a run is `in_progress`. If it denies a call, you skipped a
+`edit` or `patch`, not `sed -i`, a shell redirection into a file, a heredoc or `php -r` or
+`python3 -c` that writes one, not `patch`. Each of those bans is on a write, so the
+preflight's `python3 -c` that prints the clock, and every heredoc this skill feeds to
+`task.py`'s stdin, stay legal. The files you may read and the only ones you write are in
+the task folder under `plansDir`: hand-offs, `progress.json`, plans. The plugin's loop
+guard enforces that while a run is `in_progress`. If it denies a call, you skipped a
 delegation; launch the agent instead.
 
 Keep your context small. Do not paste an agent's report back to the user verbatim, and do

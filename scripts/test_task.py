@@ -1733,6 +1733,7 @@ class TestJournal(RefusedStart, JournalTaskCase):
         started = self.start("Fix login redirect", "Fix the login redirect, please.")
         entry = self.entry()
         self.assertEqual(os.path.basename(entry), os.path.basename(started["dir"]))
+        self.assertEqual(started["journal"], entry)
         self.assertIn("Fix the login redirect, please.", Path(entry, "prompt.md").read_text())
         self.assertFalse(os.path.exists(os.path.join(entry, "plan-01.md")))
         self.assertEqual(self.progress(started["dir"])["flow"]["journal"], entry)

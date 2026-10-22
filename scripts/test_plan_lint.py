@@ -154,6 +154,14 @@ class TestStructure(PlanLintTestCase):
         self.assertFinding(self.lint(replace={"### 2. Wire it into the importer": "### 3. Wire it into the importer"}),
                            "expected [1, 2]")
 
+    def test_a_step_number_used_twice(self):
+        self.assertFinding(self.lint(replace={"### 2. Wire it into the importer": "### 1. Wire it into the importer"}),
+                           "step 1 appears twice")
+
+    def test_no_steps_section(self):
+        self.assertFinding(self.lint(replace={"## Steps": "## Notes"}),
+                           "no `## Steps` section")
+
     def test_an_undeclared_satisfies_id_blocks_while_a_missing_goal_only_notes(self):
         undeclared = self.lint(replace={"- Satisfies: R1, R2": "- Satisfies: R1, R2, R9"})
         self.assertFinding(undeclared, "claims R9, which no requirement declares")

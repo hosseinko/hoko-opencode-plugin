@@ -887,11 +887,14 @@ bun plugin/test_hoko.ts && python3 scripts/run_tests.py
 ```
 
 `bun plugin/test_hoko.ts` covers the server entrypoint, the guard and the display;
-`python3 scripts/run_tests.py` runs every `scripts/test_*.py` suite in parallel, one per
-engine script — settings, the plan format and lint, progress, the gates, the step commit,
-events and analytics, journaling, the invoice, the task pipeline, the follow-up renderer,
-the docs and the manifests. `make test` is the same runner and `make test-serial` runs the
-suites one after another when a failure needs readable output.
+`python3 scripts/run_tests.py` discovers two roots and runs them in parallel: every
+`scripts/test_*.py` suite, one per engine script — settings, the plan format and lint,
+progress, the gates, the step commit, events and analytics, journaling, the invoice, the
+task pipeline, the follow-up renderer, the docs and the manifests — and the Go script suite
+under `skills/hoko-senior-go-developer/scripts/`, which `unittest discover` over `scripts/`
+cannot see. `--start-dir <dir>` narrows discovery to that one folder and drops the other
+root. `make test` is the same runner; `make test-serial` runs the `scripts/` suites one
+after another when a failure needs readable output.
 
 Run a single Python suite by path — `python3 scripts/test_settings.py` — one suite through
 the runner with `python3 scripts/run_tests.py --pattern test_settings.py`, and the

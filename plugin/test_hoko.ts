@@ -905,6 +905,38 @@ async function boot(overrides: any = {}) {
   process.env = before
 }
 
+// ----------------------------- approval rewrites a numbered-list plan before judging --
+{
+  const before = { ...process.env }
+  process.env.HOKO_FRESH_SESSION = "0"
+  const { tools, hooks, server } = await boot()
+  const s = "sess-numbered"
+  sessionAgent[s] = "plan"
+  const numbered = path.join(proj, ".ai", "plans", "20260917123000-numbered.md")
+  fs.writeFileSync(numbered, [
+    "# Numbered plan", "", "## Goal", "Rewrite the steps.", "",
+    "## Requirements", "", "- **R1** The plan shall be filed with step headings.", "",
+    "## Steps", "1. **Do it.** Then stop.", "   - Satisfies: R1", "",
+  ].join("\n"))
+  await hooks["session.prompt"]({ sessionID: s, prompt: { text: "approve the numbered plan" } })
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: numbered } })
+
+  const base = commands.length
+  const out = await tools.hoko_execute.execute({}, { sessionID: s, agent: "plan" })
+  const text = String(out.content ?? out)
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  const handedOff = commands[base]?.text
+  check("a numbered-list plan is filed and handed off, not refused",
+    /Handed off/.test(text) && !/cannot be approved/.test(text), text)
+  check("the file handed off carries the rewritten step headings",
+    !!handedOff && /^### 1\. Do it$/m.test(fs.readFileSync(handedOff, "utf8")),
+    handedOff ? fs.readFileSync(handedOff, "utf8") : "nothing handed off")
+  check("the numbered list is gone from the file handed off",
+    !!handedOff && !/^1\. \*\*Do it\.\*\*/m.test(fs.readFileSync(handedOff, "utf8")))
+  process.env = before
+}
+
 // ---------------------------------- a task run is invoiced after task.py finish --
 {
   const taskEntry = fs.mkdtempSync(path.join(journalRoot, "task-entry-"))

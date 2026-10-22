@@ -59,6 +59,10 @@ root before doing anything.
 Read the whole plan. If **Open questions** contains something that blocks step 1, ask it
 and stop. If the open questions only affect later steps, note that and start anyway.
 
+Approval can rewrite the plan before it judges it: a numbered-list `## Steps`
+(`1. **Title.** …`) is turned into `### <N>.` headings in the file itself. That is not a
+change to argue with — it is the shape this run reads.
+
 ## The ticket
 
 The plan's `Ticket:` line names a key, and that is all it is for here: the branch name.

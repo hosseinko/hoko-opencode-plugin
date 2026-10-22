@@ -22,6 +22,12 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-home-"))
 process.env.HOME = HOME
 const CONFIG = path.join(HOME, ".config", "opencode")
 
+// The plugin also reads the checkout's own hoko.json and hoko.env, so that read lands in a
+// scratch root for the same reason: the developer's config must not decide what these
+// tests assert, and the suite must never write the checkout's file.
+const REPO = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-repo-"))
+process.env.HOKO_REPO_ROOT = REPO
+
 const STATE = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-state-"))
 process.env.HOKO_STATE_DIR = STATE
 const { createHash } = await import("node:crypto")

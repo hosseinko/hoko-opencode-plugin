@@ -1404,238 +1404,96 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   runIn("machine/plans", "Machine run", "Implement")
 
   const configFile = path.join(CONFIG, "hoko.json")
-  const repoConfig = path.join(ROOT, "hoko.json")
-  const repoBackup = path.join(ROOT, "hoko.json.backup")
-  // Parked outside the checkout, so a kill between a plant and its restore leaves the
-  // displaced config where the repository's own state cannot overwrite or hide it.
-  const parkedRoot = (() => {
-    const root = path.resolve(ROOT)
-    const tmp = path.resolve(os.tmpdir())
-    return tmp === root || tmp.startsWith(root + path.sep) ? path.dirname(root) : tmp
-  })()
-  const envObject = process.env
-  const priorPlansDir = process.env.HOKO_PLANS_DIR
+  const checkoutConfigPath = path.join(ROOT, "hoko.json")
+  const checkoutConfig = fs.existsSync(checkoutConfigPath) ? fs.readFileSync(checkoutConfigPath, "utf8") : undefined
   const priorConfig = fs.existsSync(configFile) ? fs.readFileSync(configFile, "utf8") : undefined
-  const hadRepoConfig = fs.existsSync(repoConfig)
-  const checkoutConfig = hadRepoConfig ? fs.readFileSync(repoConfig, "utf8") : undefined
-  const restore = (file: string, text: string | undefined) => {
-    if (text === undefined) fs.rmSync(file, { force: true })
-    else fs.writeFileSync(file, text)
-  }
-  /**
-   * Plants a fixture config in the checkout for the reader to read, returning the parked path
-   * and the restore.
-   *
-   * The fixture replaces the repository's own config, so the original is copied beside it
-   * and to a directory outside the checkout first: a kill before the restore must leave it
-   * recoverable on disk, not only in memory. A backup already on disk is that original from
-   * an interrupted pass, so it wins over the file currently in place and is never copied over.
-   */
-  const plantRepoConfig = (text: string) => {
-    // A checkout without a live config has nothing to lose, so this case seeds one to keep
-    // the backup it asserts real; the seed is removed again by the returned restore.
-    const seeded = !fs.existsSync(repoConfig)
-    if (seeded) fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: ".ai/plans" }))
-    const foundBackup = fs.existsSync(repoBackup)
-    if (foundBackup) fs.copyFileSync(repoBackup, repoConfig)
-    else fs.copyFileSync(repoConfig, repoBackup)
-    const parkedDir = fs.mkdtempSync(path.join(parkedRoot, "hoko-repo-config-"))
-    const parked = path.join(parkedDir, "hoko.json")
-    fs.copyFileSync(repoConfig, parked)
-    fs.mkdirSync(CONFIG, { recursive: true })
-    fs.writeFileSync(configFile, JSON.stringify({ plansDir: "machine/plans" }))
-    fs.writeFileSync(repoConfig, text)
-    process.env.HOKO_PLANS_DIR = ""
-    const undo = () => {
-      restore(configFile, priorConfig)
-      const restored = fs.existsSync(parked)
-      if (restored) fs.copyFileSync(parked, repoConfig)
-      fs.rmSync(parkedDir, { recursive: true, force: true })
-      // The backup is the last copy of a config found on entry unless the parked copy put it
-      // back, so a restore that could not do that leaves it for the next pass rather than
-      // leaving the checkout with only the fixture. A backup written from the pass's own seed
-      // holds nothing found on entry.
-      if (restored || (seeded && !foundBackup)) fs.rmSync(repoBackup, { force: true })
-      // Only a backup this pass wrote itself holds its own seed. One found on entry holds the
-      // checkout's original, which stays even though the pass seeded a file to work with.
-      if (seeded && !foundBackup) fs.rmSync(repoConfig, { force: true })
-      if (priorPlansDir === undefined) delete process.env.HOKO_PLANS_DIR
-      else process.env.HOKO_PLANS_DIR = priorPlansDir
-    }
-    return { parked, undo }
-  }
-
-  /**
-   * The hoko.json the checkout holds, read before a plant: a backup is the original an
-   * interrupted pass displaced, so it outranks the live file a previous pass may have
-   * seeded, and a checkout with neither holds none.
-   */
-  const asFoundRepoConfig = () => {
-    if (fs.existsSync(repoBackup)) return fs.readFileSync(repoBackup, "utf8")
-    return fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
-  }
-
+  const priorRepoRoot = process.env.HOKO_REPO_ROOT
+  const priorPlansDir = process.env.HOKO_PLANS_DIR
+  const envObject = process.env
   const fixture = JSON.stringify({ plansDir: "repo/plans" })
 
   /**
-   * One first pass of the reader: plant the fixture, run the display and the guard against
-   * it, and restore. Each entry state can only falsify its own closing expectation — a
-   * clean checkout the seed's removal, a backup-only one the recovery of the config it
-   * found — so the pass runs once per state.
+   * One pass of the reader against a repo root of its own. The reader takes the checkout it
+   * reads hoko.json from in HOKO_REPO_ROOT, so a case plants its fixture in a temp directory
+   * and never writes the checkout's own config.
    */
-  const firstPass = async (label: string, entry: { config?: string; backup?: string }) => {
-    restore(repoConfig, entry.config)
-    restore(repoBackup, entry.backup)
-    const asFound = asFoundRepoConfig()
-    const { undo } = plantRepoConfig(fixture)
-    try {
-      check(`with ${label}, the live hoko.json holds the fixture while the backup holds a different config`,
-        fs.existsSync(repoConfig) && fs.readFileSync(repoConfig, "utf8") === fixture
-          && fs.existsSync(repoBackup) && fs.readFileSync(repoBackup, "utf8") !== fixture,
-        `${fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "no config"} / ${fs.existsSync(repoBackup) ? fs.readFileSync(repoBackup, "utf8") : "no backup"}`)
-
-      const shared = display(theme)
-      runSlots(shared.context, one)
-      const sharedLine = render(slotOf(shared.slots, "prompt.footer.status").render())
-      const sharedPane = render(slotOf(shared.slots, "sidebar.content").render({ sessionID: "root" }))
-
-      sessionAgent["sess-one-plans"] = "build"
-      sessionDirs["sess-one-plans"] = one
-      const { hooks: onePlans } = await boot()
-      let armedThere = ""
-      try {
-        await onePlans["tool.execute.before"]({
-          tool: "read", sessionID: "sess-one-plans", input: { path: path.join(one, "src", "main.ts") },
-        })
-      } catch (error: any) {
-        armedThere = String(error.message)
-      }
-      check("plansDir in both hoko.json files gives the status line the run the guard arms from",
-        sharedLine === "hoko · one@main · Implement 1/1 · cycle 1" && /hoko-plan-executor/.test(armedThere),
-        `${sharedLine} / ${armedThere || "allowed"}`)
-      check("the machine hoko.json is read from the home the process was given",
-        sharedPane.includes("Machine run"), sharedPane)
-    } finally {
-      undo()
+  const passIn = async (entry: { repo?: string; machine?: string }) => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-test-repo-"))
+    fs.mkdirSync(CONFIG, { recursive: true })
+    for (const [dir, text] of [[repoRoot, entry.repo], [CONFIG, entry.machine]] as const) {
+      const file = path.join(dir, "hoko.json")
+      if (text === undefined) fs.rmSync(file, { force: true })
+      else fs.writeFileSync(file, text)
     }
+    process.env.HOKO_REPO_ROOT = repoRoot
+    process.env.HOKO_PLANS_DIR = ""
 
-    const left = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
-    check(`with ${label}, the reader test leaves the checkout's hoko.json as it found it and its backup gone`,
-      !fs.existsSync(repoBackup) && left === asFound,
-      `${left ?? "absent"} vs ${asFound ?? "absent"}${fs.existsSync(repoBackup) ? " / backup left behind" : ""}`)
-    check(`with ${label}, the reader test restores only HOKO_PLANS_DIR without replacing process.env`,
-      process.env === envObject && process.env.HOKO_PLANS_DIR === priorPlansDir,
-      `${process.env === envObject} / ${process.env.HOKO_PLANS_DIR}`)
-    if (entry.config === undefined && entry.backup === undefined) {
-      check("the reader test removes a config it seeded itself when the case completes",
-        !fs.existsSync(repoConfig), fs.existsSync(repoConfig) ? "seed left behind" : "removed")
-    }
-  }
+    const shared = display(theme)
+    runSlots(shared.context, one)
+    const sharedLine = render(slotOf(shared.slots, "prompt.footer.status").render())
+    const sharedPane = render(slotOf(shared.slots, "sidebar.content").render({ sessionID: "root" }))
 
-  await firstPass("no config and no backup", {})
-  await firstPass("only a leftover backup", { backup: JSON.stringify({ plansDir: "recovered/plans" }) })
-  restore(repoConfig, checkoutConfig)
-  check("the reader test leaves the checkout's config as it found it after both entry states",
-    (fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined) === checkoutConfig,
-    `${fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "absent"} vs ${checkoutConfig ?? "absent"}`)
-
-  // A pass killed after its fixture was written leaves the true original only in the backup
-  // beside it: the next pass must recover that, not copy its own file over it.
-  {
-    const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
-    const planted = JSON.stringify({ plansDir: "recovered/plans" })
-    fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: "interrupted/plans" }))
-    fs.writeFileSync(repoBackup, planted)
-    const { undo } = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
+    sessionAgent["sess-one-plans"] = "build"
+    sessionDirs["sess-one-plans"] = one
+    const { hooks: onePlans } = await boot()
+    let armed = ""
     try {
-      check("the reader test never overwrites a backup it found with the file currently in place",
-        fs.readFileSync(repoBackup, "utf8") === planted, fs.readFileSync(repoBackup, "utf8"))
-    } finally {
-      undo()
-    }
-    check("the reader test restores the hoko.json held by a backup found on entry",
-      fs.existsSync(repoConfig) && fs.readFileSync(repoConfig, "utf8") === planted,
-      fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "no config")
-    restore(repoConfig, kept)
-  }
-
-  // A pass that throws after writing its fixture must still remove the seed it wrote.
-  {
-    const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
-    const { undo } = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
-    let threw = ""
-    try {
-      await (async () => { throw new Error("the case threw") })()
+      await onePlans["tool.execute.before"]({
+        tool: "read", sessionID: "sess-one-plans", input: { path: path.join(one, "src", "main.ts") },
+      })
     } catch (error: any) {
-      threw = String(error.message)
-    } finally {
-      undo()
+      armed = String(error.message)
     }
-    check("a throwing case still reaches its caller", threw === "the case threw", threw)
-    if (!hadRepoConfig) {
-      check("the reader test removes a config it seeded itself when the case throws",
-        !fs.existsSync(repoConfig), fs.existsSync(repoConfig) ? "seed left behind" : "removed")
-    }
-    check("the reader test leaves the checkout's hoko.json as it found it when the case throws",
-      (fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined) === kept,
-      `${fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "absent"} vs ${kept ?? "absent"}`)
-    check("a throwing case leaves no backup behind", !fs.existsSync(repoBackup))
-    restore(repoConfig, kept)
+
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+    fs.rmSync(configFile, { force: true })
+    return { sharedLine, sharedPane, armed }
   }
 
-  // A kill between the plant and its restore must leave the displaced config on disk
-  // outside the checkout, not only beside the fixture inside it.
+  // Both files name a plans directory: the machine's wins, as the loader documents.
   {
-    const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
-    const original = JSON.stringify({ plansDir: "parked/original" })
-    fs.writeFileSync(repoConfig, original)
-    const { parked, undo } = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
-    try {
-      check("the reader test parks a config it displaces in a directory outside the repository root",
-        !parked.startsWith(ROOT + path.sep) && fs.existsSync(parked)
-          && fs.readFileSync(parked, "utf8") === original,
-        fs.existsSync(parked) ? parked : "nothing parked")
-    } finally {
-      undo()
-    }
-    check("the reader test removes the parked copy's directory once the plant is restored",
-      !fs.existsSync(path.dirname(parked)) && fs.readFileSync(repoConfig, "utf8") === original,
-      fs.existsSync(path.dirname(parked)) ? "parked directory left behind" : "config differs")
-    restore(repoConfig, kept)
+    const { sharedLine, sharedPane, armed } = await passIn({
+      repo: fixture, machine: JSON.stringify({ plansDir: "machine/plans" }),
+    })
+    check("plansDir in both hoko.json files gives the status line the run the guard arms from",
+      sharedLine === "hoko · one@main · Implement 1/1 · cycle 1" && /hoko-plan-executor/.test(armed),
+      `${sharedLine} / ${armed || "allowed"}`)
+    check("the machine hoko.json is read from the home the process was given",
+      sharedPane.includes("Machine run"), sharedPane)
   }
 
-  // A restore that cannot find its parked copy has put nothing back, so the backup is the only
-  // copy of the config found on entry and must survive.
+  // Only the checkout's file: the reader must read it from the root it was pointed at.
   {
-    const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
-    const original = JSON.stringify({ plansDir: "orphaned/original" })
-    fs.writeFileSync(repoConfig, original)
-    fs.rmSync(repoBackup, { force: true })
-    const { parked, undo } = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
-    fs.rmSync(parked, { force: true })
-    undo()
-    check("the reader test keeps a backup holding a config found on entry when the restore cannot put it back",
-      fs.existsSync(repoBackup) && fs.readFileSync(repoBackup, "utf8") === original,
-      fs.existsSync(repoBackup) ? fs.readFileSync(repoBackup, "utf8") : "backup deleted")
-    if (fs.existsSync(repoBackup)) restore(repoConfig, fs.readFileSync(repoBackup, "utf8"))
-    fs.rmSync(repoBackup, { force: true })
-    restore(repoConfig, kept)
+    const { sharedLine, sharedPane, armed } = await passIn({ repo: fixture })
+    check("the repo hoko.json alone gives the status line the run the guard arms from",
+      sharedLine === "hoko · one@main · QA · cycle 1" && /hoko-plan-executor/.test(armed),
+      `${sharedLine} / ${armed || "allowed"}`)
+    check("the repo hoko.json alone gives the pane the run from that directory",
+      sharedPane.includes("Repo run"), sharedPane)
   }
 
-  // A checkout with no live config but a backup left by an interrupted pass: the pass seeds a
-  // file to work with, and must not take the backup's original for that seed.
+  // Neither file: the reader falls back to its default directory and finds no run there.
   {
-    const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
-    const planted = JSON.stringify({ plansDir: "recovered/plans" })
-    fs.rmSync(repoConfig, { force: true })
-    fs.writeFileSync(repoBackup, planted)
-    const { undo } = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
-    undo()
-    check("the reader test never deletes a hoko.json it did not write",
-      fs.existsSync(repoConfig) && fs.readFileSync(repoConfig, "utf8") === planted,
-      fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "deleted")
-    restore(repoConfig, kept)
+    const { sharedLine, sharedPane } = await passIn({})
+    check("with no hoko.json the status line falls back to the plain line",
+      sharedLine === "hoko · one@main"
+        && !sharedPane.includes("Repo run") && !sharedPane.includes("Machine run"),
+      `${sharedLine} / ${sharedPane}`)
   }
+
+  if (priorConfig === undefined) fs.rmSync(configFile, { force: true })
+  else fs.writeFileSync(configFile, priorConfig)
+  if (priorRepoRoot === undefined) delete process.env.HOKO_REPO_ROOT
+  else process.env.HOKO_REPO_ROOT = priorRepoRoot
+  if (priorPlansDir === undefined) delete process.env.HOKO_PLANS_DIR
+  else process.env.HOKO_PLANS_DIR = priorPlansDir
+  check("the reader test leaves the process environment it found",
+    process.env === envObject && process.env.HOKO_REPO_ROOT === priorRepoRoot
+      && process.env.HOKO_PLANS_DIR === priorPlansDir,
+    `${process.env === envObject} / ${process.env.HOKO_REPO_ROOT} / ${process.env.HOKO_PLANS_DIR}`)
+  check("the reader test never writes the checkout's own hoko.json",
+    (fs.existsSync(checkoutConfigPath) ? fs.readFileSync(checkoutConfigPath, "utf8") : undefined) === checkoutConfig,
+    `${fs.existsSync(checkoutConfigPath) ? fs.readFileSync(checkoutConfigPath, "utf8") : "absent"} vs ${checkoutConfig ?? "absent"}`)
 }
 
 // ------------------------------------------------------ the suite's own dependency --

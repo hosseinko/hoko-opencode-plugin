@@ -46,6 +46,12 @@ import { fileURLToPath } from "node:url"
 import { activeRun, guardVerdict } from "./guard.ts"
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+// The checkout the settings loader reads its repo-scoped files from. A caller that must not
+// read the live checkout's config — the test suite — points it at its own directory; the
+// plugin itself leaves it unset and reads the checkout it is installed in.
+function repoRoot(): string {
+  return process.env.HOKO_REPO_ROOT || ROOT
+}
 // The home this process was given: os.homedir() is cached at process start by some
 // runtimes, so it can name a different home than the session actually runs under.
 const CONFIG_DIR = path.join(process.env.HOME || os.homedir(), ".config", "opencode")
@@ -141,7 +147,7 @@ function stageEfforts(env: Record<string, string>): Record<string, string> {
       if (stage in levels && typeof level === "string") levels[stage] = level
     }
   }
-  for (const file of [path.join(ROOT, "hoko.json"), path.join(CONFIG_DIR, "hoko.json")]) {
+  for (const file of [path.join(repoRoot(), "hoko.json"), path.join(CONFIG_DIR, "hoko.json")]) {
     try {
       apply(JSON.parse(fs.readFileSync(file, "utf8")).efforts)
     } catch {}
@@ -182,7 +188,7 @@ function readEnvFile(file: string): Record<string, string> {
  *  that is missing or malformed contributes nothing, which leaves the defaults in place. */
 function fileSettings(): Record<string, any> {
   const merged: Record<string, any> = {}
-  for (const file of [path.join(ROOT, "hoko.json"), path.join(CONFIG_DIR, "hoko.json")]) {
+  for (const file of [path.join(repoRoot(), "hoko.json"), path.join(CONFIG_DIR, "hoko.json")]) {
     try {
       const data = JSON.parse(fs.readFileSync(file, "utf8"))
       if (data && typeof data === "object" && !Array.isArray(data)) Object.assign(merged, data)
@@ -198,7 +204,7 @@ function fileSettings(): Record<string, any> {
 export function settings(): Record<string, string> {
   const fromFile = fileSettings()
   const merged = {
-    ...readEnvFile(path.join(ROOT, "hoko.env")),
+    ...readEnvFile(path.join(repoRoot(), "hoko.env")),
     ...readEnvFile(path.join(CONFIG_DIR, "hoko.env")),
   }
   // Any HOKO_* variable in the real environment wins, whether or not a file mentions it.

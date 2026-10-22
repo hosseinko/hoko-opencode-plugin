@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Parallel runner for the plugin's unittest suites, behind `make test`.
 
-Discovers exactly what `python3 -m unittest discover -s scripts -p 'test_*.py'`
-discovers, spreads it over long-lived worker processes and prints a unittest-style
-summary. Exits 0 only when every unit passed.
+Discovers what `python3 -m unittest discover -s scripts -p 'test_*.py'` discovers in
+`scripts/`, plus every suite the repository ships outside it, spreads the work over
+long-lived worker processes and prints a unittest-style summary. Exits 0 only when every
+unit passed.
 
 Work units: a class that defines `setUpClass`, or every class of a module that defines
-`setUpModule`, runs whole in one worker so its fixture is built once; every other test
-is its own unit.
+`setUpModule`, runs whole in one worker so its fixture is built once; every other test is
+its own unit. A suite outside `scripts/` is one unit run whole as its own interpreter
+call, from its own directory.
 
 Usage: run_tests.py [--jobs N] [--start-dir DIR] [--pattern GLOB]
 """
@@ -17,6 +19,7 @@ import multiprocessing
 import multiprocessing.connection
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -29,6 +32,10 @@ HERE = Path(__file__).resolve().parent
 LINE = "=" * 70
 THIN = "-" * 70
 
+# `scripts/test_*.py` discovery cannot see a suite that ships under a skill, so the
+# default roots carry those too and no gate silently skips them.
+EXTRA_ROOTS = (HERE.parent / "skills" / "hoko-senior-go-developer" / "scripts",)
+
 
 @dataclass
 class Unit:
@@ -36,6 +43,7 @@ class Unit:
     names: list
     size: int
     whole: bool
+    script: Path | None = None
 
 
 @dataclass
@@ -48,31 +56,48 @@ class Outcome:
     unexpected_successes: list = field(default_factory=list)
 
 
-def worker_main(conn, start_dir, tmp_dir):
+def worker_main(conn, roots, tmp_dir):
     # TMPDIR must be settled before any test module is imported: journal.STATE_DIR and
     # other hook state derive from the temp dir at import time.
     os.environ["TMPDIR"] = tmp_dir
     tempfile.tempdir = None
-    sys.path.insert(0, start_dir)
+    sys.path[:0] = [str(root) for root in roots]
     loader = unittest.TestLoader()
     while True:
-        names = conn.recv()
-        if names is None:
+        unit = conn.recv()
+        if unit is None:
             return
-        suite = unittest.TestSuite(loader.loadTestsFromName(name) for name in names)
-        result = unittest.TestResult()
-        result.buffer = True
-        suite.run(result)
-        conn.send(
-            Outcome(
-                ran=result.testsRun,
-                failures=[(test.id(), tb) for test, tb in result.failures],
-                errors=[(test.id(), tb) for test, tb in result.errors],
-                skipped=len(result.skipped),
-                expected_failures=len(result.expectedFailures),
-                unexpected_successes=[test.id() for test in result.unexpectedSuccesses],
-            )
-        )
+        conn.send(run_script_unit(unit) if unit.script else run_unittest_unit(unit, loader))
+
+
+def run_unittest_unit(unit, loader):
+    suite = unittest.TestSuite(loader.loadTestsFromName(name) for name in unit.names)
+    result = unittest.TestResult()
+    result.buffer = True
+    suite.run(result)
+    return Outcome(
+        ran=result.testsRun,
+        failures=[(test.id(), tb) for test, tb in result.failures],
+        errors=[(test.id(), tb) for test, tb in result.errors],
+        skipped=len(result.skipped),
+        expected_failures=len(result.expectedFailures),
+        unexpected_successes=[test.id() for test in result.unexpectedSuccesses],
+    )
+
+
+def run_script_unit(unit):
+    proc = subprocess.run(
+        [sys.executable, unit.script.name],
+        cwd=str(unit.script.parent),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode == 0:
+        return Outcome(ran=1)
+    output = proc.stdout + proc.stderr
+    if not output.endswith("\n"):
+        output += f"\nexit code {proc.returncode}\n"
+    return Outcome(ran=1, errors=[(unit.label, output)])
 
 
 def class_suites(suite):
@@ -123,12 +148,26 @@ def plan_units(suite):
     return units, import_failures
 
 
+def script_units(roots, pattern):
+    """Every file matching `pattern` under an extra root is one whole unit."""
+    return [
+        Unit(str(path), [], 1, True, script=path)
+        for root in roots
+        for path in sorted(root.glob(pattern))
+        if path.is_file()
+    ]
+
+
+def default_roots():
+    return [HERE] + [root for root in EXTRA_ROOTS if root.is_dir()]
+
+
 class Worker:
-    def __init__(self, context, start_dir):
+    def __init__(self, context, roots):
         self.tmp_dir = tempfile.mkdtemp(prefix="hoko-tests-")
         self.conn, child = context.Pipe()
         self.process = context.Process(
-            target=worker_main, args=(child, start_dir, self.tmp_dir), daemon=True
+            target=worker_main, args=(child, roots, self.tmp_dir), daemon=True
         )
         self.process.start()
         child.close()
@@ -136,7 +175,7 @@ class Worker:
 
     def assign(self, unit):
         self.unit = unit
-        self.conn.send(unit.names)
+        self.conn.send(unit)
 
     def stop(self):
         try:
@@ -151,11 +190,11 @@ class Worker:
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
 
-def run_units(units, jobs, start_dir):
+def run_units(units, jobs, roots):
     context = multiprocessing.get_context("spawn")
     total = Outcome()
     pending = deque(units)
-    workers = [Worker(context, start_dir) for _ in range(min(jobs, len(units)))]
+    workers = [Worker(context, roots) for _ in range(min(jobs, len(units)))]
 
     def feed(worker):
         if pending:
@@ -179,7 +218,7 @@ def run_units(units, jobs, start_dir):
                     continue
                 merge(total, worker.unit, outcome)
                 if not worker.process.is_alive():
-                    workers[index] = worker = replace(context, worker, start_dir)
+                    workers[index] = worker = replace(context, worker, roots)
                 feed(worker)
     finally:
         for worker in workers:
@@ -203,9 +242,9 @@ def collect(worker):
     )
 
 
-def replace(context, dead, start_dir):
+def replace(context, dead, roots):
     dead.stop()
-    return Worker(context, start_dir)
+    return Worker(context, roots)
 
 
 def merge(total, unit, outcome):
@@ -258,17 +297,20 @@ def report(total, elapsed):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Run the unittest suites in parallel.")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="worker processes")
-    parser.add_argument("--start-dir", default=str(HERE), help="folder to discover suites in")
+    parser.add_argument("--start-dir", default=None, help="discover in this folder only")
     parser.add_argument("--pattern", default="test_*.py", help="test file glob")
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
 
-    start_dir = str(Path(args.start_dir).resolve())
+    roots = [Path(args.start_dir).resolve()] if args.start_dir else default_roots()
     began = time.monotonic()
-    suite = unittest.TestLoader().discover(start_dir, pattern=args.pattern, top_level_dir=start_dir)
+    suite = unittest.TestLoader().discover(
+        str(roots[0]), pattern=args.pattern, top_level_dir=str(roots[0])
+    )
     units, import_failures = plan_units(suite)
-    total = run_units(units, args.jobs, start_dir) if units else Outcome()
+    units += script_units(roots[1:], args.pattern)
+    total = run_units(units, args.jobs, roots) if units else Outcome()
     run_import_failures(import_failures, total)
     report(total, time.monotonic() - began)
     failed = total.failures or total.errors or total.unexpected_successes

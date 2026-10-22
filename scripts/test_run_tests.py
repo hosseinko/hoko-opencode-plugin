@@ -105,6 +105,32 @@ TEMP_DIRS = """
                 handle.write(os.environ["TMPDIR"] + "|" + tempfile.gettempdir() + "\\n")
 """
 
+GO_SUITE = """
+    import os
+    from pathlib import Path
+
+    MARKER = Path(os.environ["GO_SUITE_MARKER"])
+
+    def main():
+        MARKER.write_text("ran")
+        print("ok   go_check builds gofmt, go vet, golangci-lint, govulncheck in order")
+        print("all passed")
+
+    if __name__ == "__main__":
+        main()
+"""
+
+GO_SUITE_FAILING = """
+    import sys
+
+    def main():
+        print("FAIL go_check exits 0 when every check passes")
+        sys.exit(1)
+
+    if __name__ == "__main__":
+        main()
+"""
+
 
 class RunnerCase(unittest.TestCase):
     def setUp(self):
@@ -115,6 +141,7 @@ class RunnerCase(unittest.TestCase):
         self.suite.mkdir()
         self.tmpdir = self.root / "tmp"
         self.tmpdir.mkdir()
+        self.script = SCRIPT
 
     def add(self, name, source):
         (self.suite / f"{name}.py").write_text(textwrap.dedent(source), encoding="utf-8")
@@ -122,7 +149,7 @@ class RunnerCase(unittest.TestCase):
     def run_runner(self, *extra, **env):
         environment = dict(os.environ, TMPDIR=str(self.tmpdir), **env)
         return subprocess.run(
-            [sys.executable, str(SCRIPT), "--start-dir", str(self.suite), *extra],
+            [sys.executable, str(self.script), "--start-dir", str(self.suite), *extra],
             capture_output=True,
             text=True,
             env=environment,
@@ -236,6 +263,78 @@ class TestRunTests(RunnerCase):
         proc = self.run_runner("--jobs", "0")
         self.assertEqual(proc.returncode, 2)
         self.assertIn("--jobs must be at least 1", proc.stderr)
+
+
+class DefaultRootsCase(RunnerCase):
+    """The runner in a throwaway copy of the repository, discovering its default roots."""
+
+    def setUp(self):
+        super().setUp()
+        repo = self.root / "repo"
+        self.suite = repo / "scripts"
+        self.suite.mkdir(parents=True)
+        self.script = self.suite / "run_tests.py"
+        self.script.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        self.go_suite = repo / "skills" / "hoko-senior-go-developer" / "scripts"
+        self.go_suite.mkdir(parents=True)
+
+    def add_go_suite(self, source):
+        (self.go_suite / "test_go_scripts.py").write_text(
+            textwrap.dedent(source), encoding="utf-8"
+        )
+
+    def run_default(self, *extra, **env):
+        environment = dict(os.environ, TMPDIR=str(self.tmpdir), **env)
+        return subprocess.run(
+            [sys.executable, str(self.script), *extra],
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=120,
+        )
+
+
+class TestDefaultRoots(DefaultRootsCase):
+    def test_bun_run_test_runs_every_python_suite_including_the_one_under_skills(self):
+        marker = self.root / "go-suite-ran"
+        self.add("test_passing", PASSING)
+        self.add_go_suite(GO_SUITE)
+        proc = self.run_default(GO_SUITE_MARKER=str(marker))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "ran")
+        self.assertEqual(self.ran(proc), 3)
+
+    def test_a_failing_suite_under_skills_fails_the_run_with_its_output(self):
+        self.add("test_passing", PASSING)
+        self.add_go_suite(GO_SUITE_FAILING)
+        proc = self.run_default()
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn(f"ERROR: {self.go_suite / 'test_go_scripts.py'}", proc.stdout)
+        self.assertIn("FAIL go_check exits 0 when every check passes", proc.stdout)
+        self.assertIn("FAILED (errors=1)", proc.stdout)
+
+    def test_the_pattern_selects_suites_from_both_roots(self):
+        marker = self.root / "go-suite-ran"
+        self.add("test_passing", PASSING)
+        self.add_go_suite(GO_SUITE)
+        only_go = self.run_default("--pattern", "test_go_scripts.py", GO_SUITE_MARKER=str(marker))
+        self.assertEqual(only_go.returncode, 0, only_go.stdout + only_go.stderr)
+        self.assertEqual(self.ran(only_go), 1)
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        only_scripts = self.run_default("--pattern", "test_passing.py", GO_SUITE_MARKER=str(marker))
+        self.assertEqual(only_scripts.returncode, 0, only_scripts.stdout + only_scripts.stderr)
+        self.assertEqual(self.ran(only_scripts), 2)
+        self.assertFalse(marker.exists())
+
+    def test_start_dir_narrows_discovery_to_that_folder(self):
+        marker = self.root / "go-suite-ran"
+        self.add("test_passing", PASSING)
+        self.add_go_suite(GO_SUITE)
+        proc = self.run_runner(GO_SUITE_MARKER=str(marker))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.ran(proc), 2)
+        self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

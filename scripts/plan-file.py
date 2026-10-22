@@ -13,7 +13,8 @@ Ships with the `hoko` opencode plugin. One mode:
          `plan-01.md` it created, and registers `--session` against that entry as round
          1 role `plan`, stamped with `--since` when given. A plan whose `Journal:`
          line already names an existing file is not re-filed.
-         Prints the `plan-01.md` path, or the plan's own path when journaling is off.
+         Prints the repository copy's path — the file the run works from — falling back
+         to the journal copy when no repository root was found.
 
 Filing also copies the plan into the repository's plans directory — under a new
 `<stamp>-<slug>.md` name when the plan came from outside it, keeping the planner's own
@@ -23,7 +24,7 @@ directory's top segment is gitignored when the repository does not already track
 and the copy gets its `## Progress` checklist through `plan-progress.py init`.
 
 Journaling is opt-in: with no journalPath configured, only the `Project:` line is
-written and the plan's own path is printed.
+written and the repository copy's path is printed.
 """
 
 import argparse
@@ -201,8 +202,9 @@ def register(session_id, entry, since=None):
 
 def file_plan(plan_path, session_id=None, project_override=None, since=None):
     """Files `plan_path`, or — when it already names a filed journal round — just
-    returns that copy. Returns `(plan_copy, folder_or_None, repo_root_or_None)`, where
-    `folder` is None exactly when journaling is off."""
+    returns that round. Returns `(filed, folder_or_None, repo_root_or_None)`: `filed` is
+    the repository copy a run works from, or the journal copy when no repository root
+    was found, and `folder` is None exactly when journaling is off."""
     plan_path = plan_path.resolve()
     text = plan_path.read_text(encoding="utf-8")
     session_anchor = journal.state_file(session_id) if session_id else None
@@ -211,17 +213,17 @@ def file_plan(plan_path, session_id=None, project_override=None, since=None):
     existing = journal.journal_plan(text)
     if existing is not None and existing.is_file():
         register(session_id, existing.parent, since)
+        repo_copy = None
         if repo_root is not None:
             repo_copy = journaled_copy(repo_root, existing)
             if repo_copy is None:
                 repo_copy = repository_copy(repo_root, plan_path, text)
             init_progress(repo_copy)
-        return existing, existing.parent, repo_root
+        return (repo_copy or existing), existing.parent, repo_root
 
     project = journal.resolve_project(project_override or own_project(text), plan_path, session_anchor)
     plan_path.write_text(plan_format.ensure_header_line(text, "Project", project), encoding="utf-8")
 
-    folder = None
     if settings.get("journalPath"):
         prompt_file, cleanup = prompt_source(session_anchor, repo_root)
         try:
@@ -240,11 +242,13 @@ def file_plan(plan_path, session_id=None, project_override=None, since=None):
         register(session_id, folder, since)
     else:
         plan_copy = plan_path
+        folder = None
 
+    repo_copy = None
     if repo_root is not None:
         repo_copy = repository_copy(repo_root, plan_path, plan_path.read_text(encoding="utf-8"))
         init_progress(repo_copy)
-    return plan_copy, folder, repo_root
+    return (repo_copy or plan_copy), folder, repo_root
 
 
 def cmd_file(args):
@@ -252,11 +256,11 @@ def cmd_file(args):
     if not plan_path.is_file():
         die(f"no plan file at {plan_path}")
     try:
-        plan_copy, _folder, _repo_root = file_plan(
+        filed, _folder, _repo_root = file_plan(
             plan_path.resolve(), args.session or None, args.project or None, args.since or None)
     except PlanFileError as exc:
         die(str(exc))
-    print(plan_copy)
+    print(filed)
 
 
 def main():

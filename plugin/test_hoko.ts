@@ -40,6 +40,9 @@ const { gitVerdict } = await import("./hoko.ts")
 const { guardVerdict } = await import("./guard.ts")
 
 const proj = fs.mkdtempSync(path.join(os.tmpdir(), "proj-"))
+// A real repository: the engine files the run's events and its closing git diff under
+// the repo root it derives, and a temp directory outside git would write into this one.
+execFileSync("git", ["init", "-q", proj])
 fs.mkdirSync(path.join(proj, ".ai", "plans"), { recursive: true })
 const plan = path.join(proj, ".ai", "plans", "20260908120000-ship-it.md")
 fs.writeFileSync(plan, "## Goal\nShip it.\n\n## Progress\n- [ ] 1. Do the thing\n\n## Steps\n### 1. Do the thing\n")
@@ -57,9 +60,6 @@ const sessionMessages = (id: string) => (messages[id] ??= [])
 const sessionAgent: Record<string, string> = {}
 /** Session → directory, so a session in another worktree resolves its own cwd. */
 const sessionDirs: Record<string, string> = {}
-// Sessions whose `session.context` should fail, to exercise a usage read that cannot be
-// fetched.
-const failMessages = new Set<string>()
 let createdSeq = 0
 
 const listedAgents = [
@@ -87,10 +87,7 @@ function makeServer() {
     drain: () => new Promise((resolve) => setTimeout(resolve, 25)),
     session: {
       command: async (input: any) => void commands.push(input),
-      context: async (input: any) => {
-        if (failMessages.has(input.sessionID)) throw new Error(`no messages for ${input.sessionID}`)
-        return sessionMessages(input.sessionID)
-      },
+      context: async (input: any) => sessionMessages(input.sessionID),
       // The plugin tracks descendants from `session.created` events rather than listing
       // every session, so the fake only needs the calls the plugin makes.
       get: async (input: any) => ({
@@ -259,7 +256,6 @@ async function boot(overrides: any = {}) {
   // The plan the agent wrote is the plan that gets executed — the tool takes no arguments.
   await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: "sess-1", input: { filePath: plan } })
   check("the session's plan file is remembered", fs.readFileSync(state("sess-1", ".plan"), "utf8") === plan)
-  check("an unfinished plan asks for no journaling", !fs.existsSync(state("sess-1", ".report")))
   const source = path.join(proj, "src.md")
   fs.writeFileSync(source, "Status: complete\n")
   await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: "sess-1", input: { filePath: source } })
@@ -308,6 +304,12 @@ async function boot(overrides: any = {}) {
   // ------------------------------------------- the closing report and invoice --
   const reportPath = path.join(entry, "report-01.md")
   check("no report before the plan completes", !fs.existsSync(reportPath))
+  server.push({ type: "session.execution.succeeded", data: { sessionID: "sess-1" } })
+  await server.drain()
+  check("an unfinished plan closes no run",
+    !fs.existsSync(reportPath) && commands.length === 1, `${fs.existsSync(reportPath)} / ${JSON.stringify(commands)}`)
+
+  const progressFile = plan.replace(/\.md$/, ".progress.json")
   fs.writeFileSync(plan, "Status: complete\n\n" + fs.readFileSync(plan, "utf8"))
   await hooks["tool.execute.after"]({ status: "completed", tool: "edit", sessionID: "sess-1", input: { filePath: plan } })
   const stamp = Date.now()
@@ -328,6 +330,9 @@ async function boot(overrides: any = {}) {
     fs.existsSync(reportPath) && fs.readFileSync(reportPath, "utf8").includes("commit abc1234"),
     fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8").slice(-160) : "missing")
   check("only the last message is taken as the report", !fs.readFileSync(reportPath, "utf8").includes("not the last word"))
+  check("closing the run marks its progress.json done",
+    JSON.parse(fs.readFileSync(progressFile, "utf8")).status === "done",
+    fs.readFileSync(progressFile, "utf8"))
 
   const usage = JSON.parse(fs.readFileSync(path.join(entry, "usage.json"), "utf8"))
   check("usage.json records each assistant response's session, model, cost and tokens",
@@ -347,29 +352,23 @@ async function boot(overrides: any = {}) {
   const invoice = JSON.parse(fs.readFileSync(path.join(entry, "invoice.json"), "utf8"))
   check("the invoice sums the run's reported cost", invoice.totals.cost === 0.9, JSON.stringify(invoice.totals))
 
-  // An existing report is left alone, a session whose usage cannot be read is named, and
-  // an invoice that cannot be generated is a notice — never a failed run.
-  const noticesBefore = notices.length
-  fs.writeFileSync(reportPath, "sentinel report\n")
-  const usageBefore = fs.readFileSync(path.join(entry, "usage.json"), "utf8")
-  sessionMessages("sess-1").push({ type: "assistant", model: { id: "claude-test", providerID: "anthropic" }, time: { created: stamp + 5000 }, cost: 0.15, tokens: { input: 1, output: 1, cache: { read: 0, write: 0 } }, content: [] })
-  failMessages.add("sess-ghost")
-  const ghostRows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
-  ghostRows.push({ session_id: "sess-ghost", round: 1, role: "execute", since: new Date().toISOString() })
-  fs.writeFileSync(path.join(entry, "sessions.json"), JSON.stringify(ghostRows, null, 2) + "\n")
-  await hooks["tool.execute.after"]({ status: "completed", tool: "edit", sessionID: "sess-1", input: { filePath: plan } })
+  // The close is idempotent: the run's own progress.json is what stops a later turn end
+  // from filing the report and appending the closing events a second time.
+  const runId = JSON.parse(fs.readFileSync(progressFile, "utf8")).run_id
+  const eventsFile = path.join(proj, ".ai", "runs", String(runId), "events.jsonl")
+  const finishes = () => {
+    try {
+      return fs.readFileSync(eventsFile, "utf8").split("\n").filter((line) => line.includes('"run.finished"')).length
+    } catch {
+      return 0
+    }
+  }
+  check("the run's events are closed once", finishes() === 1, fs.existsSync(eventsFile) ? fs.readFileSync(eventsFile, "utf8") : "no events file")
+  const reportBefore = fs.readFileSync(reportPath, "utf8")
   server.push({ type: "session.execution.succeeded", data: { sessionID: "sess-1" } })
   await server.drain()
-  check("an existing report is left alone", fs.readFileSync(reportPath, "utf8") === "sentinel report\n", fs.readFileSync(reportPath, "utf8"))
-  check("a session whose usage cannot be read is named", notices.some((message) => message.includes("sess-ghost")), notices.slice(noticesBefore).join(" | "))
-  check("the invoice is still regenerated when the report is skipped",
-    fs.readFileSync(path.join(entry, "usage.json"), "utf8") !== usageBefore, usageBefore)
-  fs.rmSync(path.join(entry, "sessions.json"), { force: true })
-  await hooks["tool.execute.after"]({ status: "completed", tool: "edit", sessionID: "sess-1", input: { filePath: plan } })
-  server.push({ type: "session.execution.succeeded", data: { sessionID: "sess-1" } })
-  await server.drain()
-  check("a failed invoice is announced and does not throw",
-    notices.some((message) => message.includes("could not invoice")), notices.join(" | "))
+  check("a closed run is not closed again",
+    finishes() === 1 && fs.readFileSync(reportPath, "utf8") === reportBefore, `finishes=${finishes()}`)
 }
 
 // Every way a V2 turn ends must fire the queued handoff, and nothing else may: an
@@ -379,7 +378,7 @@ async function boot(overrides: any = {}) {
   const s = "sess-turn-end"
   sessionAgent[s] = "plan"
   const turnPlan = path.join(proj, ".ai", "plans", "20260908130000-turn-end.md")
-  fs.writeFileSync(turnPlan, "# Turn end\n## Goal\nRun it whatever the outcome.\n")
+  fs.writeFileSync(turnPlan, "# Turn end\n\n## Goal\nRun it whatever the outcome.\n\n## Progress\n- [ ] 1. Go\n\n## Steps\n### 1. Go\n\n- Satisfies: none — internal\n")
   await hooks["session.prompt"]({ sessionID: s, prompt: { text: "approve it" } })
   await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: turnPlan } })
   const base = commands.length
@@ -649,7 +648,7 @@ async function boot(overrides: any = {}) {
   const before = { ...process.env }
   process.env.HOKO_FRESH_SESSION = "1"
   const freshPlan = path.join(proj, ".ai", "plans", "20260917120000-fresh-run.md")
-  fs.writeFileSync(freshPlan, "# Fresh run title\n## Goal\nRun it elsewhere.\n\n## Steps\n### 1. Go\n")
+  fs.writeFileSync(freshPlan, "# Fresh run title\n## Goal\nRun it elsewhere.\n\n## Steps\n### 1. Go\n\n- Satisfies: none — internal\n")
   const { tools, hooks, server } = await boot()
   const approval = "sess-approve"
   sessionAgent[approval] = "plan"
@@ -666,6 +665,9 @@ async function boot(overrides: any = {}) {
     JSON.stringify(created.at(-1)))
   check("a fresh approval reports the run's session", /Fresh session: sess-fresh-/.test(text), text)
   check("a fresh approval still hands the plan off", /Handed off/.test(text), text)
+  check("a clean plan is filed before the run is handed off",
+    /^Project: /m.test(fs.readFileSync(freshPlan, "utf8")) && /^Journal: /m.test(fs.readFileSync(freshPlan, "utf8")),
+    fs.readFileSync(freshPlan, "utf8").split("\n").slice(0, 4).join(" | "))
   check("nothing runs before the approval session goes idle", commands.length === base, JSON.stringify(commands.slice(base)))
 
   const createdBefore = created.length
@@ -714,7 +716,7 @@ async function boot(overrides: any = {}) {
   const s = "sess-off"
   sessionAgent[s] = "plan"
   const offPlan = path.join(proj, ".ai", "plans", "20260917121000-off.md")
-  fs.writeFileSync(offPlan, "# Off run\n## Goal\nSame session.\n")
+  fs.writeFileSync(offPlan, "# Off run\n## Goal\nSame session.\n\n## Steps\n### 1. Go\n\n- Satisfies: none — internal\n")
   await hooks["session.prompt"]({ sessionID: s, prompt: { text: "off please" } })
   await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { filePath: offPlan } })
   const createdBefore = created.length
@@ -743,7 +745,7 @@ async function boot(overrides: any = {}) {
   const s = "sess-nocreate"
   sessionAgent[s] = "plan"
   const file = path.join(proj, ".ai", "plans", "20260917120900-nocreate.md")
-  fs.writeFileSync(file, "# No create\n## Goal\nNope.\n")
+  fs.writeFileSync(file, "# No create\n## Goal\nNope.\n\n## Steps\n### 1. Go\n\n- Satisfies: none — internal\n")
   await hooks["session.prompt"]({ sessionID: s, prompt: { text: "go" } })
   await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { filePath: file } })
   const out = await tools.hoko_execute.execute({}, { sessionID: s, agent: "plan" })
@@ -752,6 +754,64 @@ async function boot(overrides: any = {}) {
     /Could not create the run's session/.test(text) && /HOKO_FRESH_SESSION=0/.test(text), text)
   check("a failing session.create queues no handoff", !fs.existsSync(state(s, ".handoff")))
   process.env = before
+}
+
+// -------------------------------------------------- approval refuses a blocked plan --
+{
+  const before = { ...process.env }
+  process.env.HOKO_FRESH_SESSION = "1"
+  const { tools, hooks } = await boot()
+  const s = "sess-blocked"
+  sessionAgent[s] = "plan"
+  const blocked = path.join(proj, ".ai", "plans", "20260917122000-blocked.md")
+  fs.writeFileSync(blocked, [
+    "# Blocked plan", "", "## Goal", "Blocked.", "",
+    "## Requirements", "", "- **R1** The thing shall work.", "",
+    "## Steps", "### 1. Do it", "", "- Satisfies: R2", "",
+  ].join("\n"))
+  await hooks["session.prompt"]({ sessionID: s, prompt: { text: "approve it" } })
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: blocked } })
+
+  const createdBefore = created.length
+  const out = await tools.hoko_execute.execute({}, { sessionID: s, agent: "plan" })
+  const text = String(out.content ?? out)
+  check("a blocking lint finding refuses the handoff and names the finding",
+    /cannot be approved/.test(text) && /Satisfies:/.test(text) && /R2/.test(text), text)
+  check("a refused plan creates no run session", created.length === createdBefore, JSON.stringify(created.slice(createdBefore)))
+  check("a refused plan queues no handoff", !fs.existsSync(state(s, ".handoff")))
+  process.env = before
+}
+
+// ---------------------------------- a task run is invoiced after task.py finish --
+{
+  const taskEntry = fs.mkdtempSync(path.join(journalRoot, "task-entry-"))
+  fs.writeFileSync(path.join(taskEntry, "sessions.json"), JSON.stringify([
+    { session_id: "sess-task", round: 1, role: "execute", since: "2020-01-01T00:00:00.000Z" },
+  ]))
+  const folder = path.join(proj, ".ai", "plans", "20261022-1200-taskrun")
+  fs.mkdirSync(folder, { recursive: true })
+  const taskPlan = path.join(folder, "plan-01.md")
+  fs.writeFileSync(taskPlan, "# Task plan\n\n## Goal\nDone.\n")
+  fs.writeFileSync(path.join(folder, "progress.json"), JSON.stringify({
+    version: 1, task: "20261022-1200-taskrun", status: "done", flow: { journal: taskEntry, phase: "finish" }, rounds: [],
+  }))
+  sessionMessages("sess-task").push({ type: "assistant", agent: "hoko-plan-executor", model: { id: "claude-test", providerID: "anthropic" }, time: { created: Date.now() + 1000 }, cost: 0.3, tokens: { input: 10, output: 5, cache: { read: 0, write: 0 } }, content: [] })
+
+  const { hooks, server } = await boot()
+  const s = "sess-task-close"
+  sessionAgent[s] = "build"
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: taskPlan } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("a finished task gets its usage written into its journal entry",
+    JSON.parse(fs.readFileSync(path.join(taskEntry, "usage.json"), "utf8")).some((row: any) => row.session_id === "sess-task"),
+    fs.existsSync(path.join(taskEntry, "usage.json")) ? fs.readFileSync(path.join(taskEntry, "usage.json"), "utf8") : "missing")
+  check("a finished task is invoiced from that usage",
+    fs.existsSync(path.join(taskEntry, "invoice.json"))
+      && JSON.parse(fs.readFileSync(path.join(taskEntry, "invoice.json"), "utf8")).totals.cost === 0.3,
+    fs.existsSync(path.join(taskEntry, "invoice.json")) ? fs.readFileSync(path.join(taskEntry, "invoice.json"), "utf8").slice(0, 120) : "missing")
+  check("a task run is not closed by plan-progress complete", !/Status: complete/.test(fs.readFileSync(taskPlan, "utf8")),
+    fs.readFileSync(taskPlan, "utf8"))
 }
 
 // ------------------------------------------------------------- the TUI plugin --

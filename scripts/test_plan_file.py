@@ -7,6 +7,7 @@ throwaway journal and analytics roots, so the real journal is never touched.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,12 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
 def plan_text(title="Ship a dry-run flag"):
     return f"# {title}\n\n## Goal\n{title}.\n\n## Steps\n### 1. Do it\n- Files: cli.py\n"
+
+
+def journal_plan(filed):
+    """The `plan-NN.md` a filed plan's own `Journal:` line names."""
+    match = re.search(r"^Journal:\s*(.+)$", Path(filed).read_text(encoding="utf-8"), re.M)
+    return Path(match.group(1)) if match else None
 
 
 class TestPlanFile(unittest.TestCase):
@@ -76,7 +83,8 @@ class TestPlanFile(unittest.TestCase):
 
         result = self.run_file(plan, session="s1", repo=repo)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip())
+        filed = Path(result.stdout.strip())
+        entry = journal_plan(filed)
         self.assertEqual(entry.name, "plan-01.md", entry.name)
         self.assertEqual(entry.parent.parent, self.journal / "case-repo")
         self.assertTrue((entry.parent / "prompt.md").is_file())
@@ -87,6 +95,20 @@ class TestPlanFile(unittest.TestCase):
         self.assertIn("Project: case-repo", text)
         self.assertIn(f"Journal: {entry}", text)
         self.assertLess(text.index("Project: case-repo"), text.index(f"Journal: {entry}"))
+
+    def test_the_filer_prints_the_repository_copy_the_run_works_from(self):
+        repo = self.repo()
+        plan = self.tmp / "auto-generated-slug.md"
+        plan.write_text(plan_text())
+
+        result = self.run_file(plan, session="s1", repo=repo)
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        filed = Path(result.stdout.strip())
+        self.assertEqual(filed.parent, (repo / ".ai" / "plans").resolve())
+        self.assertRegex(filed.name, r"^\d{8}-\d{4}-ship-a-dry-run-flag\.md$")
+        self.assertTrue(filed.is_file())
+        self.assertIn("## Progress", filed.read_text())
+        self.assertNotEqual(filed, plan.resolve())
 
     def test_approval_renames_the_plan_into_the_repository_plans_directory(self):
         repo = self.repo()
@@ -131,7 +153,7 @@ class TestPlanFile(unittest.TestCase):
 
         result = self.run_file(plan, session="s1", repo=repo, analytics=analytics)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip()).parent
+        entry = journal_plan(Path(result.stdout.strip())).parent
         folder = analytics / "case-repo" / entry.name
         rows = json.loads((folder / "sessions.json").read_text())
         self.assertEqual([(row["session_id"], row["role"], row["round"]) for row in rows],
@@ -152,7 +174,7 @@ class TestPlanFile(unittest.TestCase):
 
         result = self.run_file(plan, session="s1", repo=repo)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip())
+        entry = journal_plan(Path(result.stdout.strip()))
         self.assertIn("add a --dry-run flag", (entry.parent / "prompt.md").read_text())
         self.assertFalse(anchor.exists(), "the write should retire the session anchor")
         self.assertTrue(anchor.with_name(anchor.name + ".used").exists())
@@ -168,7 +190,7 @@ class TestPlanFile(unittest.TestCase):
 
         result = self.run_file(plan, session="s1", repo=repo)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip()).parent
+        entry = journal_plan(Path(result.stdout.strip())).parent
         self.assertIn("the project's own first prompt", (entry / "prompt.md").read_text())
         self.assertEqual(anchor.read_text(), "the project's own first prompt")
 
@@ -180,8 +202,8 @@ class TestPlanFile(unittest.TestCase):
 
         result = self.run_file(plan, session="s1", repo=repo, since=captured)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip())
-        rows = json.loads((entry.parent / "sessions.json").read_text())
+        entry = journal_plan(Path(result.stdout.strip())).parent
+        rows = json.loads((entry / "sessions.json").read_text())
         self.assertEqual(rows[0]["since"], captured)
 
     def test_a_plan_whose_journal_line_names_an_existing_file_is_not_refiled(self):
@@ -199,7 +221,7 @@ class TestPlanFile(unittest.TestCase):
 
         rounds = list((self.journal / "case-repo").glob("*"))
         self.assertEqual(len(rounds), 1, str(rounds))
-        rows = json.loads((filed.parent / "sessions.json").read_text())
+        rows = json.loads((journal_plan(filed).parent / "sessions.json").read_text())
         self.assertEqual(len(rows), 1, str(rows))
         self.assertEqual(len(list((repo / ".ai" / "plans").glob("*.md"))), 1)
 
@@ -210,8 +232,8 @@ class TestPlanFile(unittest.TestCase):
 
         result = self.run_file(plan, session="s1", repo=repo)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip())
-        self.assertEqual(entry.parent.parent, self.journal / "explicit-project")
+        entry = journal_plan(Path(result.stdout.strip())).parent
+        self.assertEqual(entry.parent, self.journal / "explicit-project")
 
     def test_with_journaling_off_only_the_project_line_is_added(self):
         repo = self.repo()
@@ -220,8 +242,9 @@ class TestPlanFile(unittest.TestCase):
 
         result = self.run_file(plan, session="s1", repo=repo, journal=None)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        self.assertEqual(Path(result.stdout.strip()), plan.resolve())
-        text = plan.read_text()
+        filed = Path(result.stdout.strip())
+        self.assertEqual(filed.parent, (repo / ".ai" / "plans").resolve())
+        text = filed.read_text()
         self.assertIn("Project: case-repo", text)
         self.assertNotIn("Journal:", text)
         self.assertFalse(self.journal.exists(), str(sorted(self.journal.rglob("*"))))

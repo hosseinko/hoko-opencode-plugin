@@ -14,7 +14,8 @@ Ships with the `hoko` opencode plugin. Three modes:
 
   report  Reads the `Journal:` line of the given plan and writes `report-NN.md`
           next to the `plan-NN.md` it names, overwriting an earlier report of the
-          same round.
+          same round. A plan run reaches it through `plan-progress.py complete`,
+          which closes the run with the report and the invoice in one command.
 
   register  Records a session against a journal entry, once per (session, round,
           role), so the invoice can find its usage later. The row goes into the

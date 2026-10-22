@@ -46,7 +46,9 @@ import { fileURLToPath } from "node:url"
 import { activeRun, guardVerdict } from "./guard.ts"
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const CONFIG_DIR = path.join(os.homedir(), ".config", "opencode")
+// The home this process was given: os.homedir() is cached at process start by some
+// runtimes, so it can name a different home than the session actually runs under.
+const CONFIG_DIR = path.join(process.env.HOME || os.homedir(), ".config", "opencode")
 const AGENTS_DIR = path.join(CONFIG_DIR, "agents")
 const JOURNAL_SCRIPT = path.join(ROOT, "scripts", "journal.py")
 const PLAN_FILE_SCRIPT = path.join(ROOT, "scripts", "plan-file.py")
@@ -175,8 +177,24 @@ function readEnvFile(file: string): Record<string, string> {
   return env
 }
 
-/** Repo defaults, overridden by the machine-local file, overridden by the real environment. */
+/** `hoko.json`'s own values, the plugin's file first and the machine's last, so the
+ *  machine's wins — the layer scripts/settings.py reads beneath the environment. A file
+ *  that is missing or malformed contributes nothing, which leaves the defaults in place. */
+function fileSettings(): Record<string, any> {
+  const merged: Record<string, any> = {}
+  for (const file of [path.join(ROOT, "hoko.json"), path.join(CONFIG_DIR, "hoko.json")]) {
+    try {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"))
+      if (data && typeof data === "object" && !Array.isArray(data)) Object.assign(merged, data)
+    } catch {}
+  }
+  return merged
+}
+
+/** Repo defaults, then `hoko.json`, then hoko.env, then the real environment — the same
+ *  precedence scripts/settings.py applies, so a setting means one thing on either side. */
 function settings(): Record<string, string> {
+  const fromFile = fileSettings()
   const merged = {
     ...readEnvFile(path.join(ROOT, "hoko.env")),
     ...readEnvFile(path.join(CONFIG_DIR, "hoko.env")),
@@ -188,6 +206,12 @@ function settings(): Record<string, string> {
     if (!key.startsWith("HOKO_")) continue
     if (value) merged[key] = value
     else delete merged[key]
+  }
+  // The two settings the guard reads are the two the config file can name, and the
+  // environment wins over both: a configured plans directory cannot silently disarm it.
+  if (!merged.HOKO_PLANS_DIR && typeof fromFile.plansDir === "string") merged.HOKO_PLANS_DIR = fromFile.plansDir
+  if (!merged.HOKO_LOOP_GUARD && typeof fromFile.loopGuard === "boolean") {
+    merged.HOKO_LOOP_GUARD = fromFile.loopGuard ? "true" : "false"
   }
   // No built-in journal root: an unset HOKO_JOURNAL_PATH means journaling is off, not
   // that entries land in somebody else's notes directory.

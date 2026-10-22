@@ -16,6 +16,12 @@ const check = (name: string, ok: boolean, detail = "") => {
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
+// The plugin reads $HOME/.config/opencode/hoko.json as well, so this machine's own file
+// must not decide what these tests assert: every read lands in a scratch home instead.
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-home-"))
+process.env.HOME = HOME
+const CONFIG = path.join(HOME, ".config", "opencode")
+
 const STATE = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-state-"))
 process.env.HOKO_STATE_DIR = STATE
 const { createHash } = await import("node:crypto")
@@ -29,6 +35,8 @@ process.env.HOKO_JOURNAL_PATH = journalRoot
 // only covers the exported one.
 process.env.HOKO_PLAN_MODEL = ""
 process.env.HOKO_COVERAGE_MIN = ""
+process.env.HOKO_PLANS_DIR = ""
+process.env.HOKO_LOOP_GUARD = ""
 process.env.HOKO_BUILD_MODEL = "anthropic/claude-test"
 process.env.HOKO_FINAL_REVIEW = "anthropic/claude-deep-test"
 // The main body below predates fresh sessions, so it runs the off path. The fresh
@@ -652,6 +660,83 @@ async function boot(overrides: any = {}) {
   if (sidecarBefore) fs.writeFileSync(sidecar, sidecarBefore)
   else fs.rmSync(sidecar, { force: true })
   fs.rmSync(path.join(proj, ".ai", "plans", "20261022-1200-guarded"), { recursive: true, force: true })
+}
+
+// ---------------------------------------------------- settings from hoko.json --
+
+{
+  const before = { ...process.env }
+  const source = path.join(proj, "src", "main.ts")
+  const configFile = path.join(CONFIG, "hoko.json")
+  const writeConfig = (data: any) => {
+    fs.mkdirSync(CONFIG, { recursive: true })
+    fs.writeFileSync(configFile, JSON.stringify(data))
+  }
+  /** A run folder with an `in_progress` progress.json under `dir`, returned for cleanup. */
+  const armed = (dir: string, name: string) => {
+    const folder = path.join(proj, ...dir.split("/"), name)
+    fs.mkdirSync(folder, { recursive: true })
+    fs.writeFileSync(path.join(folder, "progress.json"), JSON.stringify({ version: 1, status: "in_progress" }))
+    return folder
+  }
+  /** The guard's answer to a conductor read: its message, or "" when it let the read by. */
+  const refusal = async (hooks: any) => {
+    sessionAgent["sess-config"] = "build"
+    try {
+      await hooks["tool.execute.before"]({ tool: "read", sessionID: "sess-config", input: { path: source } })
+      return ""
+    } catch (error: any) {
+      return String(error.message)
+    }
+  }
+  const exported = async (hooks: any) => {
+    const shell = { env: {} as Record<string, string> }
+    await hooks["shell.create.before"]({ command: "ls", cwd: proj, timeout: 0, shell: "/bin/zsh", env: shell.env })
+    return shell.env
+  }
+
+  writeConfig({ plansDir: "docs/plans" })
+  const configured = await boot()
+  const configuredFolder = armed("docs/plans", "20261022-1200-configured")
+  const armedThere = await refusal(configured.hooks)
+  check("a hoko.json plans directory arms the guard from that directory",
+    /hoko-plan-executor/.test(armedThere), armedThere || "allowed")
+  const configuredEnv = await exported(configured.hooks)
+  check("the shell is told the plans directory hoko.json names",
+    configuredEnv.HOKO_PLANS_DIR === "docs/plans", configuredEnv.HOKO_PLANS_DIR)
+  fs.rmSync(configuredFolder, { recursive: true, force: true })
+
+  process.env.HOKO_PLANS_DIR = "specs/plans"
+  const fromEnv = await boot()
+  const envDir = await exported(fromEnv.hooks)
+  check("the environment wins over hoko.json for the plans directory",
+    envDir.HOKO_PLANS_DIR === "specs/plans", envDir.HOKO_PLANS_DIR)
+  process.env.HOKO_PLANS_DIR = before.HOKO_PLANS_DIR
+
+  writeConfig({ loopGuard: false })
+  const unguardedFolder = armed(".ai/plans", "20261022-1200-unguarded")
+  const off = await boot()
+  const offRefusal = await refusal(off.hooks)
+  check("a false loopGuard in hoko.json leaves the conductor its own reads", offRefusal === "", offRefusal)
+
+  process.env.HOKO_LOOP_GUARD = "1"
+  const on = await boot()
+  const onRefusal = await refusal(on.hooks)
+  check("the environment still overrides a false loopGuard in hoko.json",
+    /hoko-plan-executor/.test(onRefusal), onRefusal || "allowed")
+  process.env.HOKO_LOOP_GUARD = before.HOKO_LOOP_GUARD
+
+  fs.writeFileSync(configFile, "{ not json")
+  const broken = await boot()
+  const brokenEnv = await exported(broken.hooks)
+  const brokenRefusal = await refusal(broken.hooks)
+  check("a malformed hoko.json falls back to the defaults",
+    brokenEnv.HOKO_PLANS_DIR === ".ai/plans" && /hoko-plan-executor/.test(brokenRefusal),
+    `${brokenEnv.HOKO_PLANS_DIR} / ${brokenRefusal || "allowed"}`)
+
+  fs.rmSync(unguardedFolder, { recursive: true, force: true })
+  fs.rmSync(configFile, { force: true })
+  process.env = before
 }
 
 // ---------------------------------------------------------------- no journaling --

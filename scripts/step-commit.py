@@ -240,15 +240,15 @@ def run(args):
         sha = run_git(root, "rev-parse", "--short", "HEAD").stdout.strip()
         run_tick(args.plan, args.step, commit=sha)
         emit_event(root, args.plan, "stage.completed",
-                   {"model": progress.stage_model("Implement"), "outcome": "done",
-                    "step": args.step, "commit": sha, "no_op": False})
+                   progress.with_model({"outcome": "done", "step": args.step,
+                                        "commit": sha, "no_op": False}, "Implement"))
         subject = run_git(root, "log", "-1", "--pretty=%s").stdout.strip()
         print(f"commit: {sha} {subject}")
     else:
         run_tick(args.plan, args.step, note=args.no_op)
         emit_event(root, args.plan, "stage.completed",
-                   {"model": progress.stage_model("Implement"), "outcome": "done",
-                    "step": args.step, "commit": None, "no_op": True})
+                   progress.with_model({"outcome": "done", "step": args.step,
+                                        "commit": None, "no_op": True}, "Implement"))
         print(f"no-op: {args.no_op}")
 
     print(f"tick: step {args.step}")

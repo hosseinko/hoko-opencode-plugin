@@ -101,6 +101,7 @@ class StepCommitTestCase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
+        self.isolate_models()
         self.env = dict(os.environ)
         self.env["TMPDIR"] = self.tmpdir.name
         self.env["HOME"] = self.tmpdir.name
@@ -108,6 +109,14 @@ class StepCommitTestCase(unittest.TestCase):
         self.env["GIT_AUTHOR_EMAIL"] = "test@example.com"
         self.env["GIT_COMMITTER_NAME"] = "Test"
         self.env["GIT_COMMITTER_EMAIL"] = "test@example.com"
+
+    def isolate_models(self):
+        """No developer's own `HOKO_*_MODEL` decides a case that runs in this process."""
+        patch = mock.patch.dict(os.environ)
+        patch.start()
+        self.addCleanup(patch.stop)
+        for name in ("HOKO_EXECUTOR_MODEL", "HOKO_QA_MODEL", "HOKO_FINAL_REVIEW"):
+            os.environ.pop(name, None)
 
     def git(self, root, *args):
         result = subprocess.run(
@@ -356,6 +365,19 @@ class TestEvents(StepCommitTestCase):
         self.run_in_process(root, plan, 1, no_op="nothing needed")
         payload = self.recorder.payloads("stage.completed")[-1]
         self.assertEqual((payload["no_op"], payload["commit"]), (True, None))
+
+    def test_a_stage_completed_names_the_executor_model_hoko_env_sets(self):
+        root = self.repo()
+        self.makefile(root)
+        plan = self.plan()
+        self.open_run(plan)
+        self.write(root, "a.py", "changed content\n")
+        os.environ["HOKO_EXECUTOR_MODEL"] = "opencode-go/deepseek-v4-flash"
+
+        self.run_in_process(root, plan, 1, message=VALID_MESSAGE)
+
+        self.assertEqual(self.recorder.payloads("stage.completed")[-1]["model"],
+                         "opencode-go/deepseek-v4-flash")
 
     def test_a_plan_without_a_run_writes_no_events(self):
         root = self.repo()

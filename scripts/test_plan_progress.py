@@ -203,11 +203,20 @@ class PlanProgressTestCase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
+        self.isolate_models()
         self.env = {name: value for name, value in os.environ.items()
                     if not name.startswith("HOKO_")}
         self.env["TMPDIR"] = self.tmpdir.name
         self.env["HOME"] = self.tmpdir.name
         self.configure_journal(None)
+
+    def isolate_models(self):
+        """No developer's own `HOKO_*_MODEL` decides a case that runs in this process."""
+        patch = mock.patch.dict(os.environ)
+        patch.start()
+        self.addCleanup(patch.stop)
+        for name in ("HOKO_EXECUTOR_MODEL", "HOKO_QA_MODEL", "HOKO_FINAL_REVIEW"):
+            os.environ.pop(name, None)
 
     def write_plan(self, text, name="plan.md"):
         path = os.path.join(self.tmpdir.name, name)
@@ -506,6 +515,33 @@ class TestComplete(PlanProgressTestCase):
         self.assertEqual(self.read_progress_json(plan)["status"], "done")
 
 
+class TestAnalyticsFolder(PlanProgressTestCase):
+    """Where `analyticsPath` is configured, the run's events copy and the link back land
+    in `<analyticsPath>/<project>/<entry>/`, not in the journal entry."""
+
+    def test_complete_copies_the_events_into_the_analytics_folder_and_links_the_entry(self):
+        journal_root = os.path.join(self.tmpdir.name, "journal")
+        round_dir = os.path.join(journal_root, "some-project", "20260105-0000-thing")
+        os.makedirs(round_dir)
+        analytics_root = os.path.join(self.tmpdir.name, "analytics")
+        self.configure_journal(journal_root, analytics_root)
+        plan = self.write_plan(f"Journal: {os.path.join(round_dir, 'plan-01.md')}\n\n" + NO_PROGRESS)
+        report = self.write_report("report-analytics.md", "Done.\n")
+
+        self.run_progress("init", "--plan", plan)
+        self.run_progress("start", "--plan", plan, "--step", "1")
+        proc = self.run_progress("complete", "--plan", plan, "--report-file", report)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+        folder = os.path.join(analytics_root, "some-project", "20260105-0000-thing")
+        self.assertTrue(os.path.isfile(os.path.join(folder, "events-01.jsonl")), folder)
+        with open(os.path.join(folder, "entry.json"), encoding="utf-8") as f:
+            link = json.load(f)
+        self.assertEqual(link["journal_entry"], os.path.abspath(round_dir))
+        self.assertEqual(link["run_ids"], [self.read_progress_json(plan)["run_id"]])
+        self.assertEqual(os.listdir(round_dir).count("events-01.jsonl"), 0)
+
+
 class TestProgressJson(PlanProgressTestCase):
     def test_init_writes_a_progress_json_with_one_pending_entry_per_step(self):
         plan = self.write_plan(NO_PROGRESS)
@@ -619,7 +655,6 @@ class TestRunEvents(PlanProgressTestCase):
         self.recorder = RecordingEvents()
         for patcher in (mock.patch.object(progress, "events", self.recorder),
                         mock.patch.object(self.module, "events", self.recorder),
-                        mock.patch.object(self.module, "analytics", mock.Mock()),
                         mock.patch.object(settings, "get", StubSettings().get)):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -647,6 +682,34 @@ class TestRunEvents(PlanProgressTestCase):
             self.module.cmd_start(argparse.Namespace(plan=plan, step=step))
         self.assertEqual(self.recorder.types(),
                          ["run.started", "stage.started", "stage.started", "stage.started"])
+
+    def test_start_names_the_executor_model_hoko_env_sets(self):
+        os.environ["HOKO_EXECUTOR_MODEL"] = "opencode-go/deepseek-v4-flash"
+        plan = self.started_plan()
+        self.recorder.forget()
+        self.module.cmd_start(argparse.Namespace(plan=plan, step=1))
+
+        started = [event for event in self.recorder.events if event["type"] == "stage.started"][0]
+        self.assertEqual(started["payload"]["model"], "opencode-go/deepseek-v4-flash")
+
+    def test_start_leaves_the_model_key_out_when_hoko_env_names_no_model(self):
+        plan = self.started_plan()
+        self.recorder.forget()
+        self.module.cmd_start(argparse.Namespace(plan=plan, step=1))
+
+        started = [event for event in self.recorder.events if event["type"] == "stage.started"][0]
+        self.assertNotIn("model", started["payload"])
+
+    def test_run_started_lists_only_the_models_hoko_env_names(self):
+        os.environ["HOKO_EXECUTOR_MODEL"] = "opencode-go/deepseek-v4-flash"
+        os.environ["HOKO_FINAL_REVIEW"] = "opencode-go/glm-5.3-flash"
+        plan = self.started_plan()
+        self.module.cmd_start(argparse.Namespace(plan=plan, step=1))
+
+        self.assertEqual(self.recorder.events[0]["type"], "run.started")
+        self.assertEqual(self.recorder.events[0]["payload"]["models"],
+                         {"Implement": "opencode-go/deepseek-v4-flash",
+                          "Review": "opencode-go/glm-5.3-flash"})
 
     def test_complete_appends_files_changed_then_run_finished_done(self):
         plan = self.started_plan()
@@ -680,6 +743,16 @@ class TestRunEvents(PlanProgressTestCase):
                                                  reason="the project was red"))
         self.assertEqual(self.recorder.types(),
                          ["run.started", "stage.failed", "run.finished"])
+
+    def test_abort_names_the_stopping_stages_model_when_hoko_env_sets_one(self):
+        plan = self.started_plan()
+        self.module.cmd_start(argparse.Namespace(plan=plan, step=1))
+        self.recorder.forget()
+        os.environ["HOKO_QA_MODEL"] = "opencode-go/glm-5.3-flash"
+
+        self.module.cmd_abort(argparse.Namespace(plan=plan, stage="QA", reason="gate not ready"))
+
+        self.assertEqual(self.recorder.events[0]["payload"]["model"], "opencode-go/glm-5.3-flash")
 
 
 if __name__ == "__main__":

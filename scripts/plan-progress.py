@@ -54,21 +54,13 @@ import shutil
 import sys
 from pathlib import Path
 
+import analytics
+import events
 import invoice
 import journal
 import plan_format
 import progress
 import settings
-
-try:
-    import analytics
-except ImportError:  # the analytics folder lands with the event writer
-    analytics = None
-
-try:
-    import events
-except ImportError:  # the event writer lands after this step
-    events = None
 
 LEGACY_STATUS = re.compile(r"^[ \t]*-?\s*Status:\s*done\s*$\n?", re.M | re.I)
 
@@ -193,9 +185,10 @@ def cmd_start(args):
     root = progress.events_root(plan)
     progress.ensure_run_started(plan, text, document, root)
     progress.emit(plan, document, "stage.started",
-                  {"stage": "Implement", "cycle": progress.document_cycle(document),
-                   "model": progress.stage_model("Implement"),
-                   **progress.step_context(document, plan, args.step)}, root)
+                  progress.with_model({"stage": "Implement",
+                                       "cycle": progress.document_cycle(document),
+                                       **progress.step_context(document, plan, args.step)},
+                                      "Implement"), root)
     return 0
 
 
@@ -247,8 +240,8 @@ def cmd_abort(args):
     root = progress.events_root(plan)
     progress.ensure_run_started(plan, text, document, root)
     progress.emit(plan, document, "stage.failed",
-                  {"stage": args.stage, "cycle": 1, "model": progress.stage_model(args.stage),
-                   "reason": reason}, root)
+                  progress.with_model({"stage": args.stage, "cycle": 1, "reason": reason},
+                                      args.stage), root)
     progress.emit(plan, document, "run.finished", {"status": "failed", "reason": reason}, root)
     return 0
 
@@ -257,8 +250,6 @@ def write_closing_events(plan, text, document):
     """`files.changed`, then `usage.reported` per subagent call, then `run.finished`,
     the events file copied into the plan's journal entry's analytics folder and the run's id
     listed in its `entry.json`."""
-    if events is None or analytics is None:
-        return
     root = progress.events_root(plan)
     progress.ensure_run_started(plan, text, document, root)
     base = document.get("base") or plan_format.read_base(text)

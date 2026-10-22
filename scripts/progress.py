@@ -15,23 +15,26 @@ rebuilt from the plan.
 
 import datetime
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
 
+import events
 import invoice
 import plan_format
 import settings
-
-try:
-    import events
-except ImportError:  # the event writer lands after this step
-    events = None
 
 VERSION = 1
 ROUND_SUFFIX = re.compile(r"^(.*)--r(\d+)$")
 TASK_PLAN = re.compile(r"^plan-(\d+)\.md$")
 TASK_FILE = "progress.json"
+
+STAGE_MODEL_ENV = {
+    "Implement": "HOKO_EXECUTOR_MODEL",
+    "QA": "HOKO_QA_MODEL",
+    "Review": "HOKO_FINAL_REVIEW",
+}
 
 
 def now():
@@ -237,23 +240,34 @@ def abort(plan, plan_text):
 def ensure_run_id(document):
     """The run's ULID, generated on first need and kept from then on, so a plan
     forwarded with an id keeps it."""
-    if not document.get("run_id") and events is not None:
+    if not document.get("run_id"):
         document["run_id"] = events.ulid()
     return document.get("run_id")
 
 
 def stage_model(stage):
-    return settings.get("models." + stage.lower())
+    """The model the stage's own `HOKO_*_MODEL` names, or None when it is unset. Models
+    are not settings here: `hoko.env` exports them and the plugin picks the agent, so an
+    unset model is left off the event rather than written as null."""
+    name = STAGE_MODEL_ENV.get(stage)
+    if name is None:
+        return None
+    return os.environ.get(name) or None
+
+
+def with_model(payload, stage):
+    """`payload` plus the stage's model when one is configured: the event schema types
+    `model` as a string, so an unset model is omitted rather than written as null."""
+    model = stage_model(stage)
+    return {**payload, "model": model} if model else payload
 
 
 def events_root(plan):
-    return events.repo_root(Path(plan).resolve().parent) if events is not None else None
+    return events.repo_root(Path(plan).resolve().parent)
 
 
 def emit(plan, document, type_, payload, root=None):
     """Writes one event for the run `document` names; None when it has no run yet."""
-    if events is None:
-        return None
     return events.emit(root or events_root(plan), document.get("run_id"), type_, payload)
 
 
@@ -271,13 +285,12 @@ def run_started_payload(plan, plan_text, document, root):
     except ValueError:
         path = None
     loop_limit = document.get("loop_limit")
+    models = {stage: stage_model(stage) for stage in STAGE_MODEL_ENV}
     payload = {
         "source": "plan",
         "text": plan_text,
         "backend": events.BACKEND,
-        "models": {"Implement": settings.get("models.implement"),
-                   "QA": settings.get("models.qa"),
-                   "Review": settings.get("models.review")},
+        "models": {stage: model for stage, model in models.items() if model},
         "presets": [],
         "loop_limit": loop_limit if isinstance(loop_limit, int) else settings.get("loopLimit"),
         "engine": "hoko-plugin",
@@ -292,8 +305,6 @@ def run_started_payload(plan, plan_text, document, root):
 def ensure_run_started(plan, plan_text, document, root=None):
     """Writes `run.started` unless the run's events file already holds events: the run
     starts once, whichever command reaches it first."""
-    if events is None:
-        return
     root = root or events_root(plan)
     run_id = document.get("run_id")
     if not run_id or events.has_events(root, run_id):

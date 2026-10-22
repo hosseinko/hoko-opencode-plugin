@@ -18,6 +18,8 @@
  *   - refuses git commands that break the branching rules: a commit on a protected
  *     branch, a branch name off the convention, a branch cut from an explicitly wrong
  *     base (a bare create off the wrong branch only warns)
+ *   - denies the conductor's own reads and edits while a run's newest progress.json
+ *     reports `in_progress`, so the step work stays with the subagents (plugin/guard.ts)
  *   - exposes the resolved settings and HOKO_ROOT to every shell
  *
  * V2 removals this port has to work around (see README, "Migration from V1"):
@@ -29,8 +31,8 @@
  *   - shell.env has no session id, so HOKO_PROMPT_FILE is no longer exported
  *
  * The entrypoint is a plain default export rather than Plugin.define so the file keeps
- * the original zero-dependency property: node's standard library only, nothing to
- * resolve at load time.
+ * the original zero-dependency property: node's standard library and its own sibling
+ * modules, nothing to resolve from a package at load time.
  */
 
 import fs from "node:fs"
@@ -39,6 +41,8 @@ import path from "node:path"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
+
+import { activeRun, guardVerdict } from "./guard.ts"
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const CONFIG_DIR = path.join(os.homedir(), ".config", "opencode")
@@ -343,6 +347,7 @@ export default {
     const plansDir = env.HOKO_PLANS_DIR
     const journaling = Boolean(env.HOKO_JOURNAL_PATH)
     const fresh = !/^(0|false|no|off)$/i.test(env.HOKO_FRESH_SESSION ?? "")
+    const loopGuard = !/^(0|false|no|off)$/i.test(env.HOKO_LOOP_GUARD ?? "")
 
     const gitAt = (cwd: string, ...args: string[]) => {
       try {
@@ -789,14 +794,29 @@ export default {
     })
 
     await ctx.tool.hook("execute.before", async (event: any) => {
-      if (!["shell", "bash"].includes(event.tool)) return
-      const command = String(event.input?.command ?? "")
-      if (!/\bgit\b/.test(command)) return
+      const tool = String(event.tool ?? "")
       const cwd = event.sessionID ? await sessionDir(event.sessionID) : project
-      const verdict = gitVerdict(command, gitAt(cwd, "rev-parse", "--abbrev-ref", "HEAD"), baseBranches(cwd))
-      if (!verdict) return
-      if (verdict.level === "refuse") throw new Error(verdict.message)
-      notify(event.sessionID, verdict.message)
+
+      if (["shell", "bash"].includes(tool)) {
+        const command = String(event.input?.command ?? "")
+        if (/\bgit\b/.test(command)) {
+          const verdict = gitVerdict(command, gitAt(cwd, "rev-parse", "--abbrev-ref", "HEAD"), baseBranches(cwd))
+          if (verdict?.level === "refuse") throw new Error(verdict.message)
+          if (verdict) notify(event.sessionID, verdict.message)
+        }
+      }
+
+      if (!loopGuard) return
+      const run = activeRun(cwd, plansDir)
+      if (!run) return
+      let agent = ""
+      if (event.sessionID) {
+        try {
+          agent = (await ctx.session.get({ sessionID: event.sessionID }))?.agent ?? ""
+        } catch {}
+      }
+      const verdict = guardVerdict({ tool, path: event.input?.path ?? event.input?.filePath, agent, run })
+      if (verdict !== "allow") throw new Error(verdict)
     })
 
     await ctx.tool.hook("execute.after", (event: any) => {

@@ -37,6 +37,7 @@ process.env.HOKO_FRESH_SESSION = "0"
 
 const hoko: any = (await import("./hoko.ts")).default
 const { gitVerdict } = await import("./hoko.ts")
+const { guardVerdict } = await import("./guard.ts")
 
 const proj = fs.mkdtempSync(path.join(os.tmpdir(), "proj-"))
 fs.mkdirSync(path.join(proj, ".ai", "plans"), { recursive: true })
@@ -533,6 +534,93 @@ async function boot(overrides: any = {}) {
   await guard["tool.execute.before"]({ tool: "bash", sessionID: "sess-1", input: { command: "ls -la" } })
   await guard["tool.execute.before"]({ tool: "write", sessionID: "sess-1", input: { command: "git commit" } })
   check("the hook lets everything else through", true)
+}
+
+// ------------------------------------------------------------------ loop guard --
+
+{
+  const armed = { status: "in_progress", root: proj, plansDir: ".ai/plans" }
+  const verdict = (input: any) => guardVerdict({ agent: "build", run: armed, ...input })
+  const source = path.join(proj, "src", "main.ts")
+
+  check("an armed run denies the main session a source write", verdict({ tool: "write", path: source }) !== "allow",
+    verdict({ tool: "write", path: source }))
+  check("an armed run denies the main session a source read", verdict({ tool: "read", path: source }) !== "allow",
+    verdict({ tool: "read", path: source }))
+  check("a refusal names the subagent route", /hoko-plan-executor/.test(verdict({ tool: "edit", path: source })),
+    verdict({ tool: "edit", path: source }))
+  check("an armed run allows a plan write",
+    verdict({ tool: "write", path: path.join(proj, ".ai", "plans", "draft.md") }) === "allow",
+    verdict({ tool: "write", path: path.join(proj, ".ai", "plans", "draft.md") }))
+  check("an armed run allows the plugin's own scripts", guardVerdict({
+    tool: "write", path: path.join(ROOT, "scripts", "plan-progress.py"), agent: "build",
+    run: { status: "in_progress", root: ROOT, plansDir: ".ai/plans" },
+  }) === "allow", "scripts/")
+  check("an armed run allows a hoko-* subagent",
+    verdict({ tool: "write", path: source, agent: "hoko-plan-executor" }) === "allow",
+    verdict({ tool: "write", path: source, agent: "hoko-plan-executor" }))
+  check("an armed run allows a shell call", verdict({ tool: "shell", path: source }) === "allow",
+    verdict({ tool: "shell", path: source }))
+  check("an armed run allows a path outside the repository",
+    verdict({ tool: "write", path: path.join(os.tmpdir(), "outside.txt") }) === "allow",
+    verdict({ tool: "write", path: path.join(os.tmpdir(), "outside.txt") }))
+  check("no run in progress allows everything", guardVerdict({ tool: "write", path: source, agent: "build" }) === "allow",
+    guardVerdict({ tool: "write", path: source, agent: "build" }))
+  check("a finished run allows everything",
+    verdict({ tool: "write", path: source, run: { ...armed, status: "done" } }) === "allow",
+    verdict({ tool: "write", path: source, run: { ...armed, status: "done" } }))
+
+  // The hook itself, against a real progress.json: the guard is only registered if a
+  // write that the verdict refuses actually throws.
+  const folder = path.join(proj, ".ai", "plans", "20261022-1200-guarded")
+  const { hooks } = await boot()
+  sessionAgent["sess-guard"] = "build"
+  await hooks["tool.execute.before"]({ tool: "write", sessionID: "sess-guard", input: { path: source } })
+  check("with no progress.json the hook lets a source write through", true)
+
+  fs.mkdirSync(folder, { recursive: true })
+  fs.writeFileSync(path.join(folder, "progress.json"), JSON.stringify({
+    version: 1, status: "in_progress", task: "20261022-1200-guarded", cycle: 1, stages: {}, rounds: [],
+  }))
+  let threw = ""
+  try {
+    await hooks["tool.execute.before"]({ tool: "write", sessionID: "sess-guard", input: { path: source } })
+  } catch (error: any) {
+    threw = String(error.message)
+  }
+  check("an in_progress progress.json makes the hook deny a source write", /hoko-plan-executor/.test(threw), threw)
+  await hooks["tool.execute.before"]({ tool: "write", sessionID: "sess-guard", input: { path: path.join(proj, ".ai", "plans", "draft.md") } })
+  check("the hook still allows a plan write while armed", true)
+  sessionAgent["sess-guard-exec"] = "hoko-plan-executor"
+  await hooks["tool.execute.before"]({ tool: "write", sessionID: "sess-guard-exec", input: { path: source } })
+  check("the hook allows a hoko-* subagent's write while armed", true)
+
+  fs.writeFileSync(path.join(folder, "progress.json"), JSON.stringify({ version: 1, status: "done" }))
+  const finished = await (async () => {
+    try {
+      await hooks["tool.execute.before"]({ tool: "write", sessionID: "sess-guard", input: { path: source } })
+      return true
+    } catch {
+      return false
+    }
+  })()
+  check("a finished newest progress.json disarms the hook", finished)
+
+  // A flat plan keeps its run state in `<stem>.progress.json` beside the plan, and that
+  // file arms the guard the same way a task folder's does.
+  const sidecar = path.join(proj, ".ai", "plans", "20260908120000-ship-it.progress.json")
+  const sidecarBefore = fs.existsSync(sidecar) ? fs.readFileSync(sidecar, "utf8") : ""
+  fs.writeFileSync(sidecar, JSON.stringify({ version: 1, status: "in_progress" }))
+  let sideThrew = ""
+  try {
+    await hooks["tool.execute.before"]({ tool: "read", sessionID: "sess-guard", input: { filePath: source } })
+  } catch (error: any) {
+    sideThrew = String(error.message)
+  }
+  check("a flat plan's sidecar progress.json arms the hook too", /hoko-plan-executor/.test(sideThrew), sideThrew)
+  if (sidecarBefore) fs.writeFileSync(sidecar, sidecarBefore)
+  else fs.rmSync(sidecar, { force: true })
+  fs.rmSync(path.join(proj, ".ai", "plans", "20261022-1200-guarded"), { recursive: true, force: true })
 }
 
 // ---------------------------------------------------------------- no journaling --

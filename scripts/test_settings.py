@@ -279,65 +279,27 @@ class TestPricing(KeyCase):
             self.assertEqual(proc.stdout.strip(), "{}", bad)
 
 
-class TestEfforts(KeyCase):
-    def test_efforts_default_per_stage(self):
-        expected = {"refine": "high", "spec": "high", "plan": "high",
-                    "implement": "high", "qa": "medium", "review": "high"}
-        for stage, effort in expected.items():
-            proc = self.value("efforts." + stage)
-            self.assertEqual(proc.stdout.strip(), effort, stage)
-            self.assertEqual(proc.stderr, "")
+class TestEffortsAreGone(KeyCase):
+    def test_r2_the_efforts_setting_is_refused(self):
+        proc = self.value("efforts")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.stdout.strip(), "")
 
-    def test_efforts_takes_a_config_override(self):
-        self.assertEqual(
-            self.value("efforts.implement", {"efforts": {"implement": "low"}}).stdout.strip(),
-            "low",
-        )
-
-    def test_efforts_prints_the_default_for_a_stage_another_stage_overrides_around(self):
-        config = {"efforts": {"implement": "low"}}
-        self.assertEqual(self.value("efforts.qa", config).stdout.strip(), "medium")
-        self.assertEqual(self.value("efforts.review", config).stdout.strip(), "high")
-
-    def test_efforts_merge_across_sources_per_key(self):
-        env = {"HOKO_EFFORTS": json.dumps({"plan": "medium"})}
-        results = {stage: self.layered("efforts." + stage,
-                                       {"efforts": {"implement": "low"}},
-                                       {"efforts": {"qa": "high"}},
-                                       env=env).stdout.strip()
-                   for stage in ("implement", "qa", "plan", "review")}
-        self.assertEqual(results, {"implement": "low", "qa": "high",
-                                   "plan": "medium", "review": "high"})
-
-    def test_efforts_accept_every_documented_level(self):
-        for level in ("low", "medium", "high", "xhigh", "max"):
-            proc = self.value("efforts.qa", {"efforts": {"qa": level}})
-            self.assertEqual(proc.stdout.strip(), level)
-            self.assertEqual(proc.stderr, "")
-
-    def test_an_unknown_effort_prints_that_stages_default_with_a_note(self):
-        config = {"efforts": {"qa": "extreme", "plan": "low"}}
-        proc = self.value("efforts.qa", config)
-        self.assertEqual(proc.stdout.strip(), "medium")
-        self.assertIn("efforts.qa", proc.stderr)
-        self.assertEqual(self.value("efforts.plan", config).stdout.strip(), "low")
-        env = {"HOKO_EFFORTS": json.dumps({"review": "ultra"})}
-        self.assertEqual(self.value("efforts.review", env=env).stdout.strip(), "high")
-
-    def test_a_per_stage_override_that_is_not_json_is_ignored(self):
-        env = {"HOKO_EFFORTS": "[1]"}
-        self.assertEqual(self.value("efforts.plan", env=env).stdout.strip(), "high")
-
-    def test_efforts_prints_the_whole_object_without_a_stage(self):
-        merged = json.loads(self.value("efforts", {"efforts": {"plan": "low"}}).stdout)
-        self.assertEqual(merged["plan"], "low")
-        self.assertEqual(merged["qa"], "medium")
-
-    def test_a_stage_that_does_not_exist_is_refused(self):
-        for key in ("efforts.nonsense", "coverageMin.qa"):
+    def test_r2_a_per_stage_effort_key_is_refused(self):
+        for key in ("efforts.qa", "efforts.nonsense"):
             proc = self.value(key)
             self.assertEqual(proc.returncode, 2, key)
             self.assertEqual(proc.stdout.strip(), "", key)
+
+    def test_r2_the_settings_list_names_no_effort_key(self):
+        proc = self.value("nonsense")
+        self.assertEqual(proc.returncode, 2)
+        self.assertNotIn("effort", proc.stderr)
+
+    def test_r2_a_config_carrying_efforts_changes_no_setting(self):
+        config = {"efforts": {"qa": "max"}, "coverageMin": 70}
+        self.assertEqual(self.value("coverageMin", config).stdout.strip(), "70")
+        self.assertEqual(self.value("efforts.qa", config).returncode, 2)
 
 
 class TestFinalReview(KeyCase):

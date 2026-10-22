@@ -213,7 +213,7 @@ change in an existing install:
    `HOKO_FINAL_REVIEW` names the model for `hoko-final-reviewer` and is a model reference
    like the others, so `provider/model` or `provider/model#variant`.
 5. **New settings.** `analyticsPath`, `events`, `eventsDir`, `loopLimit`, `planGate`,
-   `crap`, `mutation`, `crapMax`, `mutationMin`, `pricing` and `efforts` are read from
+   `crap`, `mutation`, `crapMax`, `mutationMin` and `pricing` are read from
    `hoko.json` and from `HOKO_*` variables; existing files need no edit, because every one
    has a working default. See [Configuration](#configuration).
 
@@ -314,7 +314,6 @@ one key per setting:
 | `HOKO_EVENTS_DIR` (`eventsDir`) | run event folders, relative to the repo root | `.ai/runs` |
 | `HOKO_LOOP_LIMIT` (`loopLimit`) | fix cycles a `/hoko/task` run may take, 0 to 10; 0 accepts the open findings unasked | `3` |
 | `HOKO_PLAN_GATE` (`planGate`) | ask Approve / Revise / Stop before a task's steps start | on |
-| `HOKO_EFFORTS` (`efforts`) | per-stage effort as a JSON object over refine, spec, plan, implement, qa and review; a task stage's model ref carries it as its `#variant` | `high`, `qa` at `medium` |
 | `HOKO_SPECS` (`specs`) | the plan run's spec pass, and the task pipeline writing `specs/` instead of a local `spec.md` | off |
 | `HOKO_CRAP` (`crap`) | the CRAP index in the full gate | on |
 | `HOKO_CRAP_MAX` (`crapMax`) | the CRAP index's ceiling | `30` |
@@ -341,16 +340,10 @@ you set yourself in `opencode.json` or in the agent file; an unset variable leav
 agent alone. Every other setting is read by the scripts and never touches an agent's
 frontmatter.
 
-`efforts` is applied as the `#variant` of the stage's model, by whichever side resolves that
-model. The plugin resolves each agent's model from its `HOKO_*_MODEL` and appends the
-stage's effort — `plan` for `plan`, `implement` for `build` and `hoko-plan-executor`, `qa`
-for `hoko-quality-assurance`, `review` for the two reviewers — unless the ref already names
-a variant, which wins. That is what puts `efforts.implement` on a plan run's executor,
-whose command passes no model. The task pipeline embeds the same suffix in the model ref on
-a spawn or step action; that explicit ref wins over the agent's because the conductor
-passes it, so the effort lands once. A stage whose agent has no model variable (the
-specifier, spec writer and planner) or no stage (`hoko-researcher`) gets no suffix; the
-run's `run.started` event still records every stage's effort.
+The reference reaches its agent exactly as written. A `#variant` on it is your choice about
+the ref, so it is passed through unchanged on both sides: the plugin resolves each agent's
+model from its `HOKO_*_MODEL`, and the task pipeline names the stage's model on a spawn or
+step action.
 
 ## The workflow
 

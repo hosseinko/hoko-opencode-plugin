@@ -118,10 +118,8 @@ Launch the agent the action names with the `subagent` tool:
   `hoko-quality-assurance`, `hoko-final-reviewer` or, for a blocked step, `hoko-researcher`)
 - `description`: the action's `name`, so the child session is findable in the UI
 - `prompt`: the action's `prompt`, verbatim. It names the hand-off file the agent writes.
-- `model`: the action's `model`, when it carries one, so it wins over the agent file. Its
-  `#variant` already carries the stage's effort, written by `task.py`; the plugin appends the
-  same effort to the agent's own model for a launch that passes none. Pass the reference
-  through unchanged.
+- `model`: the action's `model`, when it carries one, so it wins over the agent file. It is
+  the stage's model setting exactly as configured, so pass the reference through unchanged.
 
 It returns the child session's `sessionID`. Record the stage with that id, so a later
 answer can resume the same child:
@@ -230,9 +228,8 @@ python3 "${HOKO_ROOT}/scripts/plan-progress.py" start --plan "<the action's plan
 ```
 
 Launch `hoko-plan-executor` with the `subagent` tool: `description` `<action's
-title>`, `model` from the action when it carries one (its `#variant` carries the implement
-effort, written by `task.py`; the plugin applies the same effort to the agent's model when
-none is passed), and this prompt:
+title>`, `model` from the action when it carries one (the stage's model setting exactly as
+configured), and this prompt:
 
 > Implement step `<step>` of the plan. Everything you need is in `<the action's slice>`
 > — read it first, then implement and test only that step. Do not commit and do not edit

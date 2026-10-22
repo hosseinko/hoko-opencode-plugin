@@ -113,53 +113,6 @@ const MODEL_ENV: Record<string, string> = {
   "hoko-researcher": "HOKO_RESEARCH_MODEL",
 }
 
-// Which `efforts` stage each agent runs at. The task pipeline embeds the effort in the
-// model ref it hands the conductor; a plan run passes no model, so this is what puts the
-// effort on the model the plugin resolves for the agent. `hoko-researcher` has no stage.
-const EFFORT_STAGE: Record<string, string> = {
-  "hoko-specifier": "refine",
-  "hoko-spec-writer": "spec",
-  "hoko-planner": "plan",
-  plan: "plan",
-  "hoko-plan-executor": "implement",
-  build: "implement",
-  "hoko-quality-assurance": "qa",
-  "hoko-code-reviewer": "review",
-  "hoko-final-reviewer": "review",
-}
-
-const DEFAULT_EFFORTS: Record<string, string> = {
-  refine: "high",
-  spec: "high",
-  plan: "high",
-  implement: "high",
-  qa: "medium",
-  review: "high",
-}
-
-/** The same defaults, hoko.json and HOKO_EFFORTS precedence the Python settings loader
- *  applies, so an effort means the same thing on either side of the run. */
-function stageEfforts(env: Record<string, string>): Record<string, string> {
-  const levels = { ...DEFAULT_EFFORTS }
-  const apply = (layer: any) => {
-    if (!layer || typeof layer !== "object" || Array.isArray(layer)) return
-    for (const [stage, level] of Object.entries(layer)) {
-      if (stage in levels && typeof level === "string") levels[stage] = level
-    }
-  }
-  for (const file of [path.join(repoRoot(), "hoko.json"), path.join(CONFIG_DIR, "hoko.json")]) {
-    try {
-      apply(JSON.parse(fs.readFileSync(file, "utf8")).efforts)
-    } catch {}
-  }
-  if (env.HOKO_EFFORTS) {
-    try {
-      apply(JSON.parse(env.HOKO_EFFORTS))
-    } catch {}
-  }
-  return levels
-}
-
 function readEnvFile(file: string): Record<string, string> {
   let text: string
   try {
@@ -317,16 +270,6 @@ function parseModel(ref: string): { providerID: string; id: string; variant?: st
   const slash = name.indexOf("/")
   if (slash < 1 || slash === name.length - 1) return undefined
   return { providerID: name.slice(0, slash), id: name.slice(slash + 1), ...(variant ? { variant } : {}) }
-}
-
-/** `model` carrying `effort` as its variant. A variant already on the ref is an explicit
- *  choice and wins; an empty effort leaves the model bare. */
-function modelWithEffort(
-  model: { providerID: string; id: string; variant?: string },
-  effort: string,
-): { providerID: string; id: string; variant?: string } {
-  if (!effort || model.variant) return model
-  return { ...model, variant: effort }
 }
 
 /**
@@ -794,7 +737,6 @@ export default {
     })()
 
     await ctx.agent.transform((editor: any) => {
-      const efforts = stageEfforts(env)
       editor.update(PLAN_AGENT, (agent: any) => {
         if (!agent.system) {
           if (planSource.system) agent.system = planSource.system
@@ -813,17 +755,15 @@ export default {
         ]
       })
       // A HOKO_*_MODEL is an explicit choice for that agent, so it wins over an inherited
-      // model instead of only filling a gap. The stage's effort rides on the same ref as its
-      // variant, which is how a plan run — whose command names no model — still runs the
-      // implementer at `efforts.implement`.
+      // model instead of only filling a gap. The ref reaches the agent as written; a
+      // `#variant` it names is the user's choice and stays.
       for (const [name, key] of Object.entries(MODEL_ENV)) {
         const ref = env[key]
         if (!ref) continue
         const model = parseModel(ref)
         if (!model) continue
-        const effort = efforts[EFFORT_STAGE[name] ?? ""] ?? ""
         editor.update(name, (agent: any) => {
-          agent.model = modelWithEffort(model, effort)
+          agent.model = model
         })
       }
     })

@@ -458,37 +458,26 @@ async function boot(overrides: any = {}) {
     return kept?.id === "should-win" && kept?.providerID === "anthropic"
   })())
   check("an unset model leaves the agent alone", !agentEditor.get("plan")?.model, JSON.stringify(agentEditor.get("plan")?.model))
-  check("the plugin appends the stage's effort to the model it resolves", await (async () => {
+  check("a configured model runs without an invented variant", await (async () => {
     const prior = { ...process.env }
     process.env.HOKO_EXECUTOR_MODEL = "anthropic/claude-exec-test"
-    process.env.HOKO_EFFORTS = JSON.stringify({ implement: "low" })
+    process.env.HOKO_RESEARCH_MODEL = "anthropic/claude-research-test"
     const { agentEditor: resolved } = await boot()
     const executor = resolved.get("hoko-plan-executor")?.model
     const build = resolved.get("build")?.model
+    const researcher = resolved.get("hoko-researcher")?.model
     process.env = prior
-    return executor?.id === "claude-exec-test" && executor?.variant === "low"
-      && build?.id === "claude-test" && build?.variant === "low"
+    return executor?.id === "claude-exec-test" && executor?.variant === undefined
+      && build?.id === "claude-test" && build?.variant === undefined
+      && researcher?.id === "claude-research-test" && researcher?.variant === undefined
   })())
-  check("a model ref that already names a variant keeps it", await (async () => {
+  check("a configured model ref keeps the variant it names", await (async () => {
     const prior = { ...process.env }
     process.env.HOKO_FINAL_REVIEW = "anthropic/claude-deep-test#max"
-    process.env.HOKO_EFFORTS = JSON.stringify({ review: "high" })
     const { agentEditor: explicit } = await boot()
     const model = explicit.get("hoko-final-reviewer")?.model
     process.env = prior
     return model?.id === "claude-deep-test" && model?.variant === "max"
-  })())
-  check("a stage with no effort configured leaves the model bare", await (async () => {
-    const prior = { ...process.env }
-    process.env.HOKO_EXECUTOR_MODEL = "anthropic/claude-exec-test"
-    process.env.HOKO_RESEARCH_MODEL = "anthropic/claude-research-test"
-    process.env.HOKO_EFFORTS = JSON.stringify({ implement: "" })
-    const { agentEditor: bare } = await boot()
-    const executor = bare.get("hoko-plan-executor")?.model
-    const researcher = bare.get("hoko-researcher")?.model
-    process.env = prior
-    return executor?.id === "claude-exec-test" && executor?.variant === undefined
-      && researcher?.id === "claude-research-test" && researcher?.variant === undefined
   })())
 
   const names = skills.map((skill: any) => skill.id)

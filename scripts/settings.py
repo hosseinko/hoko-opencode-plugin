@@ -7,7 +7,7 @@ Read, in increasing order of precedence: the plugin's own hoko.json,
 HOKO_<UPPER_SNAKE> variable in the environment.
 
 Used as a module by the other scripts, and as a command by the skills (a boolean setting
-prints `true` or `false`, a per-stage setting takes a dotted key such as `efforts.qa`):
+prints `true` or `false`):
 
     python3 "${HOKO_ROOT}/scripts/settings.py" coverageMin
 """
@@ -37,22 +37,12 @@ DEFAULTS = {
     "mutationMin": 70,
     "pricing": {},
     "loopLimit": 3,
-    "efforts": {
-        "refine": "high",
-        "spec": "high",
-        "plan": "high",
-        "implement": "high",
-        "qa": "medium",
-        "review": "high",
-    },
     "events": True,
     "eventsDir": ".ai/runs",
     "planGate": True,
 }
 
-PER_STAGE = ("efforts",)
 LOOP_LIMIT_RANGE = range(0, 11)
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 TRUE_WORDS = {"true", "yes", "on", "1"}
@@ -93,14 +83,6 @@ def note(message):
     print("hoko settings: " + message, file=sys.stderr)
 
 
-def parse_object(raw):
-    try:
-        value = json.loads(raw)
-    except ValueError:
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def check_loop_limit(value):
     if isinstance(value, int) and not isinstance(value, bool) and value in LOOP_LIMIT_RANGE:
         return value
@@ -108,62 +90,28 @@ def check_loop_limit(value):
     return DEFAULTS["loopLimit"]
 
 
-def check_efforts(efforts):
-    for stage, level in list(efforts.items()):
-        if level not in EFFORT_LEVELS:
-            note("efforts.%s must be one of %s; using %s"
-                 % (stage, "/".join(EFFORT_LEVELS), DEFAULTS["efforts"][stage]))
-            efforts[stage] = DEFAULTS["efforts"][stage]
-    return efforts
-
-
 def load():
     settings = dict(DEFAULTS)
-    sources = []
     for path in CONFIGS:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if isinstance(data, dict):
-            sources.append(data)
-    for data in sources:
-        settings.update({k: v for k, v in data.items() if k in DEFAULTS and k not in PER_STAGE})
-    overrides = {}
+            settings.update({k: v for k, v in data.items() if k in DEFAULTS})
     for key in DEFAULTS:
         override = os.environ.get(env_name(key))
-        if not override:
-            continue
-        if key in PER_STAGE:
-            overrides[key] = parse_object(override)
-        else:
+        if override:
             settings[key] = coerce(DEFAULTS[key], override)
-    sources.append(overrides)
-    for key in PER_STAGE:
-        merged = dict(DEFAULTS[key])
-        for data in sources:
-            layer = data.get(key)
-            if isinstance(layer, dict):
-                merged.update({s: v for s, v in layer.items() if s in DEFAULTS[key]})
-        settings[key] = merged
-    settings["efforts"] = check_efforts(settings["efforts"])
     settings["loopLimit"] = check_loop_limit(settings["loopLimit"])
     return settings
 
 
 def get(key):
-    """`key`, or `efforts.<stage>` for one stage's entry."""
-    settings = load()
-    name, _, stage = key.partition(".")
-    if stage and name in PER_STAGE:
-        return settings[name].get(stage, DEFAULTS[name].get(stage))
-    return settings.get(key, DEFAULTS.get(key))
+    return load().get(key)
 
 
 def known(key):
-    name, _, stage = key.partition(".")
-    if stage:
-        return name in PER_STAGE and stage in DEFAULTS[name]
     return key in DEFAULTS
 
 
@@ -177,7 +125,7 @@ def render(value):
 
 def main():
     if len(sys.argv) != 2 or not known(sys.argv[1]):
-        usage = "|".join(DEFAULTS) + "|efforts.<stage>"
+        usage = "|".join(DEFAULTS)
         print("usage: settings.py " + usage, file=sys.stderr)
         return 2
     print(render(get(sys.argv[1])))

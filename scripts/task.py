@@ -52,14 +52,14 @@ transition that already happened — asking twice writes nothing twice:
 
     branch      on a protected branch: create the branch (ticket key in `ticket`), then ask again
     preflight   run `command` (the fast gate) and `record --stage Preflight --exit-code N`
-    spawn       launch `agent` named `name` on `model` (its ref already carries the stage's
-                effort as the `#variant`) with `prompt`, then
+    spawn       launch `agent` named `name` on `model` (the stage's configured reference,
+                exactly as written) with `prompt`, then
                 `record --stage <stage> --agent-session <id>` with the child session the
                 `subagent` tool returned
     resume      continue the child session `session_id` that asked, with `message`
     ask         put `questions` (1–4) to the user, then `answer`
     step        the next unticked step: `slice` for `hoko-plan-executor` (its `model`, when
-                present, likewise carries the implement effort), then `step-commit.py`;
+                present, likewise the stage's configured reference), then `step-commit.py`;
                 `context` (when present) goes into the executor's prompt
     finish      every cycle is green: `finish --report-file -`
     stop        the run ended (`status`); report `reason` and end
@@ -226,21 +226,10 @@ def on_protected_branch(root):
     return current_branch(root) in script("step-commit").PROTECTED_BRANCHES
 
 
-def stage_effort(stage):
-    return settings.get(f"efforts.{stage.lower()}")
-
-
-def model_with_effort(model, effort):
-    """The model reference the conductor passes: the stage's model with its effort as the
-    `#variant`. A ref that already names a variant keeps it, because that is an explicit
-    choice and the stage default does not override it. No model, no effort, no suffix."""
-    if not model or not effort or "#" in model:
-        return model
-    return f"{model}#{effort}"
-
-
 def stage_model_ref(stage):
-    return model_with_effort(progress.stage_model(stage), stage_effort(stage))
+    """The model reference the conductor passes: the stage's configured model, untouched,
+    so a `#variant` the setting names stays on it."""
+    return progress.stage_model(stage)
 
 
 def project_slug(root):
@@ -741,7 +730,6 @@ def run_started_payload(task, source, text, plan_path):
         "text": text,
         "backend": events.BACKEND,
         "models": {stage: model for stage in STAGES if (model := progress.stage_model(stage))},
-        "efforts": {stage: stage_effort(stage) for stage in STAGES},
         "presets": [],
         "loop_limit": task.doc["loop_limit"],
         "engine": "hoko-plugin",
@@ -871,13 +859,12 @@ def spawn(task, stage, lines, **extra):
         name += f"-b{backs}"
     if flow["attempt"]:
         name += f"-a{flow['attempt']}"
-    effort = stage_effort(stage)
     if flow.get("announced") != key:
         flow["announced"] = key
         flow["spawned"] = name
         task.doc["stage"] = stage
         task.doc["stages"][stage] = "in_progress"
-        task.stage_event("stage.started", stage, effort=effort)
+        task.stage_event("stage.started", stage)
         task.commit()
     answers = task.path("answers.json")
     if answers.is_file():

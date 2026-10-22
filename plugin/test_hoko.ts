@@ -1410,24 +1410,48 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   const priorPlansDir = process.env.HOKO_PLANS_DIR
   const priorConfig = fs.existsSync(configFile) ? fs.readFileSync(configFile, "utf8") : undefined
   const hadRepoConfig = fs.existsSync(repoConfig)
-  // A checkout without a live config has nothing to lose, so this case seeds one to keep
-  // the backup it asserts real; the seed is removed again at the end of the block.
-  if (!hadRepoConfig) fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: ".ai/plans" }))
-  const originalRepoConfig = fs.readFileSync(repoConfig, "utf8")
   const restore = (file: string, text: string | undefined) => {
     if (text === undefined) fs.rmSync(file, { force: true })
     else fs.writeFileSync(file, text)
   }
-  // The fixture replaces the repository's own config, so the original is copied beside it
-  // first: a kill before the restore must leave it recoverable on disk, not only in memory.
-  fs.copyFileSync(repoConfig, repoBackup)
-  try {
-    fs.mkdirSync(CONFIG, { recursive: true })
-    fs.writeFileSync(configFile, JSON.stringify({ plansDir: "machine/plans" }))
-    fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: "repo/plans" }))
-    process.env.HOKO_PLANS_DIR = ""
+  /**
+   * One pass of the reader test with a fixture config in the checkout, put back afterwards.
+   *
+   * The fixture replaces the repository's own config, so the original is copied beside it
+   * first: a kill before the restore must leave it recoverable on disk, not only in memory.
+   * A backup already on disk is that original from an interrupted pass, so it wins over the
+   * file currently in place and is never copied over.
+   */
+  const withRepoConfigFixture = async (body: (original: string) => Promise<void>) => {
+    // A checkout without a live config has nothing to lose, so this case seeds one to keep
+    // the backup it asserts real; the seed is removed again at the end of the block.
+    if (!hadRepoConfig) fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: ".ai/plans" }))
+    if (fs.existsSync(repoBackup)) fs.copyFileSync(repoBackup, repoConfig)
+    else fs.copyFileSync(repoConfig, repoBackup)
+    const original = fs.readFileSync(repoBackup, "utf8")
+    try {
+      fs.mkdirSync(CONFIG, { recursive: true })
+      fs.writeFileSync(configFile, JSON.stringify({ plansDir: "machine/plans" }))
+      fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: "repo/plans" }))
+      process.env.HOKO_PLANS_DIR = ""
+      await body(original)
+    } finally {
+      restore(configFile, priorConfig)
+      if (fs.existsSync(repoBackup)) {
+        fs.copyFileSync(repoBackup, repoConfig)
+        fs.rmSync(repoBackup, { force: true })
+      } else {
+        fs.rmSync(repoConfig, { force: true })
+      }
+      if (priorPlansDir === undefined) delete process.env.HOKO_PLANS_DIR
+      else process.env.HOKO_PLANS_DIR = priorPlansDir
+    }
+    return original
+  }
+
+  const originalRepoConfig = await withRepoConfigFixture(async (original) => {
     check("the repository's own hoko.json stays recoverable on disk while its fixture is in place",
-      fs.existsSync(repoBackup) && fs.readFileSync(repoBackup, "utf8") === originalRepoConfig,
+      fs.existsSync(repoBackup) && fs.readFileSync(repoBackup, "utf8") === original,
       fs.existsSync(repoBackup) ? fs.readFileSync(repoBackup, "utf8") : "no backup")
 
     const shared = display(theme)
@@ -1451,23 +1475,31 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
       `${sharedLine} / ${armedThere || "allowed"}`)
     check("the machine hoko.json is read from the home the process was given",
       sharedPane.includes("Machine run"), sharedPane)
-  } finally {
-    restore(configFile, priorConfig)
-    if (fs.existsSync(repoBackup)) {
-      fs.copyFileSync(repoBackup, repoConfig)
-      fs.rmSync(repoBackup, { force: true })
-    } else {
-      fs.rmSync(repoConfig, { force: true })
-    }
-    if (priorPlansDir === undefined) delete process.env.HOKO_PLANS_DIR
-    else process.env.HOKO_PLANS_DIR = priorPlansDir
-  }
+  })
   check("the reader test leaves the repository's own hoko.json byte-identical and its backup gone",
     !fs.existsSync(repoBackup) && fs.existsSync(repoConfig) && fs.readFileSync(repoConfig, "utf8") === originalRepoConfig,
     fs.existsSync(repoBackup) ? "backup left behind" : "config differs")
   check("the reader test restores only HOKO_PLANS_DIR without replacing process.env",
     process.env === envObject && process.env.HOKO_PLANS_DIR === priorPlansDir,
     `${process.env === envObject} / ${process.env.HOKO_PLANS_DIR}`)
+
+  // A pass killed after its fixture was written leaves the true original only in the backup
+  // beside it: the next pass must recover that, not copy its own file over it.
+  {
+    const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
+    const planted = JSON.stringify({ plansDir: "recovered/plans" })
+    fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: "interrupted/plans" }))
+    fs.writeFileSync(repoBackup, planted)
+    await withRepoConfigFixture(async () => {
+      check("the reader test never overwrites a backup it found with the file currently in place",
+        fs.readFileSync(repoBackup, "utf8") === planted, fs.readFileSync(repoBackup, "utf8"))
+    })
+    check("the reader test restores the hoko.json held by a backup found on entry",
+      fs.existsSync(repoConfig) && fs.readFileSync(repoConfig, "utf8") === planted,
+      fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "no config")
+    restore(repoConfig, kept)
+  }
+
   if (!hadRepoConfig) fs.rmSync(repoConfig, { force: true })
 }
 

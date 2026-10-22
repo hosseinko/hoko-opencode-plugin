@@ -1427,7 +1427,8 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     // the backup it asserts real; the seed is removed again in the finally.
     const seeded = !fs.existsSync(repoConfig)
     if (seeded) fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: ".ai/plans" }))
-    if (fs.existsSync(repoBackup)) fs.copyFileSync(repoBackup, repoConfig)
+    const foundBackup = fs.existsSync(repoBackup)
+    if (foundBackup) fs.copyFileSync(repoBackup, repoConfig)
     else fs.copyFileSync(repoConfig, repoBackup)
     const original = fs.readFileSync(repoBackup, "utf8")
     try {
@@ -1441,11 +1442,10 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
       if (fs.existsSync(repoBackup)) {
         fs.copyFileSync(repoBackup, repoConfig)
         fs.rmSync(repoBackup, { force: true })
-      } else {
-        fs.rmSync(repoConfig, { force: true })
       }
-      // What the restore put back is this pass's own seed, so it belongs to no checkout.
-      if (seeded) fs.rmSync(repoConfig, { force: true })
+      // Only a backup this pass wrote itself holds its own seed. One found on entry holds the
+      // checkout's original, which stays even though the pass seeded a file to work with.
+      if (seeded && !foundBackup) fs.rmSync(repoConfig, { force: true })
       if (priorPlansDir === undefined) delete process.env.HOKO_PLANS_DIR
       else process.env.HOKO_PLANS_DIR = priorPlansDir
     }
@@ -1528,6 +1528,20 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
       (fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined) === kept,
       `${fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "absent"} vs ${kept ?? "absent"}`)
     check("a throwing case leaves no backup behind", !fs.existsSync(repoBackup))
+    restore(repoConfig, kept)
+  }
+
+  // A checkout with no live config but a backup left by an interrupted pass: the pass seeds a
+  // file to work with, and must not take the backup's original for that seed.
+  {
+    const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
+    const planted = JSON.stringify({ plansDir: "recovered/plans" })
+    fs.rmSync(repoConfig, { force: true })
+    fs.writeFileSync(repoBackup, planted)
+    await withRepoConfigFixture(async () => {})
+    check("the reader test never deletes a hoko.json it did not write",
+      fs.existsSync(repoConfig) && fs.readFileSync(repoConfig, "utf8") === planted,
+      fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "deleted")
     restore(repoConfig, kept)
   }
 }

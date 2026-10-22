@@ -1424,8 +1424,9 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
    */
   const withRepoConfigFixture = async (body: (original: string) => Promise<void>) => {
     // A checkout without a live config has nothing to lose, so this case seeds one to keep
-    // the backup it asserts real; the seed is removed again at the end of the block.
-    if (!hadRepoConfig) fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: ".ai/plans" }))
+    // the backup it asserts real; the seed is removed again in the finally.
+    const seeded = !fs.existsSync(repoConfig)
+    if (seeded) fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: ".ai/plans" }))
     if (fs.existsSync(repoBackup)) fs.copyFileSync(repoBackup, repoConfig)
     else fs.copyFileSync(repoConfig, repoBackup)
     const original = fs.readFileSync(repoBackup, "utf8")
@@ -1443,6 +1444,8 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
       } else {
         fs.rmSync(repoConfig, { force: true })
       }
+      // What the restore put back is this pass's own seed, so it belongs to no checkout.
+      if (seeded) fs.rmSync(repoConfig, { force: true })
       if (priorPlansDir === undefined) delete process.env.HOKO_PLANS_DIR
       else process.env.HOKO_PLANS_DIR = priorPlansDir
     }
@@ -1476,8 +1479,13 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     check("the machine hoko.json is read from the home the process was given",
       sharedPane.includes("Machine run"), sharedPane)
   })
-  check("the reader test leaves the repository's own hoko.json byte-identical and its backup gone",
-    !fs.existsSync(repoBackup) && fs.existsSync(repoConfig) && fs.readFileSync(repoConfig, "utf8") === originalRepoConfig,
+  check("the reader test removes a config it seeded itself when the case completes",
+    hadRepoConfig || !fs.existsSync(repoConfig),
+    fs.existsSync(repoConfig) ? "seed left behind" : "removed")
+  check("the reader test leaves the checkout's hoko.json as it found it and its backup gone",
+    !fs.existsSync(repoBackup)
+      && (fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined)
+        === (hadRepoConfig ? originalRepoConfig : undefined),
     fs.existsSync(repoBackup) ? "backup left behind" : "config differs")
   check("the reader test restores only HOKO_PLANS_DIR without replacing process.env",
     process.env === envObject && process.env.HOKO_PLANS_DIR === priorPlansDir,
@@ -1500,7 +1508,28 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     restore(repoConfig, kept)
   }
 
-  if (!hadRepoConfig) fs.rmSync(repoConfig, { force: true })
+  // A pass that throws after writing its fixture must still remove the seed it wrote.
+  {
+    const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
+    let threw = ""
+    try {
+      await withRepoConfigFixture(async () => {
+        throw new Error("the case threw")
+      })
+    } catch (error: any) {
+      threw = String(error.message)
+    }
+    check("a throwing case still reaches its caller", threw === "the case threw", threw)
+    if (!hadRepoConfig) {
+      check("the reader test removes a config it seeded itself when the case throws",
+        !fs.existsSync(repoConfig), fs.existsSync(repoConfig) ? "seed left behind" : "removed")
+    }
+    check("the reader test leaves the checkout's hoko.json as it found it when the case throws",
+      (fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined) === kept,
+      `${fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "absent"} vs ${kept ?? "absent"}`)
+    check("a throwing case leaves no backup behind", !fs.existsSync(repoBackup))
+    restore(repoConfig, kept)
+  }
 }
 
 // ------------------------------------------------------ the suite's own dependency --

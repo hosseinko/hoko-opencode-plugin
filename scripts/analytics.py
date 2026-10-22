@@ -32,9 +32,9 @@ def expand(path):
 
 
 def analytics_root():
-    """The analytics root from settings (`analyticsPath`, `hoko.json` /
-    `~/.config/opencode/hoko.json` / `HOKO_ANALYTICS_PATH`), or None when it is unset —
-    the analytics then stay in the journal entry."""
+    """The analytics root from settings (`analyticsPath` in either hoko.json, either
+    hoko.env, or `HOKO_ANALYTICS_PATH`), or None when it is unset — the analytics then
+    stay in the journal entry."""
     path = settings.get("analyticsPath")
     return expand(path) if path else None
 

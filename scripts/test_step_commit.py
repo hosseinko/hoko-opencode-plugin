@@ -89,11 +89,15 @@ class RecordingEvents:
 
 class StubSettings:
     """The settings a step reads, pinned so a developer's own hoko.json cannot decide an
-    in-process case."""
+    in-process case. The model keys still follow the environment, which is the layer a
+    case sets to name a stage's model."""
 
     VALUES = {"loopLimit": 3, "journalPath": "", "analyticsPath": ""}
+    MODEL_KEYS = ("executorModel", "qaModel", "finalReview")
 
     def get(self, key):
+        if key in self.MODEL_KEYS:
+            return os.environ.get(settings.env_name(key)) or None
         return self.VALUES.get(key)
 
 

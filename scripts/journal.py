@@ -73,9 +73,9 @@ def project_anchor(root):
 
 
 def journal_root():
-    """The journal root from settings (`journalPath`, `hoko.json` /
-    `~/.config/opencode/hoko.json` / `HOKO_JOURNAL_PATH`), or None when it is unset —
-    journaling is off, and that is a normal, silent state, not an error."""
+    """The journal root from settings (`journalPath` in either hoko.json, either hoko.env,
+    or `HOKO_JOURNAL_PATH`), or None when it is unset — journaling is off, and that is a
+    normal, silent state, not an error."""
     path = settings.get("journalPath")
     if not path:
         return None

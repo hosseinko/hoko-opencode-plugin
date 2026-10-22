@@ -9,11 +9,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import settings
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = PLUGIN_ROOT / "scripts" / "settings.py"
 
 
-def plugin_copy(tmp, config):
+def env_file(directory, lines):
+    (Path(directory) / "hoko.env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def plugin_copy(tmp, config, env_lines=None):
     """A throwaway copy of the plugin, so the real hoko.json is never read."""
     plugin = Path(tmp) / "plugin"
     (plugin / "scripts").mkdir(parents=True)
@@ -22,16 +28,19 @@ def plugin_copy(tmp, config):
     )
     if config is not None:
         (plugin / "hoko.json").write_text(json.dumps(config), encoding="utf-8")
+    if env_lines is not None:
+        env_file(plugin, env_lines)
     return plugin
 
 
-def home_copy(tmp, config):
+def home_copy(tmp, config, env_lines=None):
     home = Path(tmp) / "home"
-    (home / ".config" / "opencode").mkdir(parents=True, exist_ok=True)
+    config_dir = home / ".config" / "opencode"
+    config_dir.mkdir(parents=True, exist_ok=True)
     if config is not None:
-        (home / ".config" / "opencode" / "hoko.json").write_text(
-            json.dumps(config), encoding="utf-8"
-        )
+        (config_dir / "hoko.json").write_text(json.dumps(config), encoding="utf-8")
+    if env_lines is not None:
+        env_file(config_dir, env_lines)
     return home
 
 
@@ -58,14 +67,15 @@ class KeyCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
-    def value(self, key, config=None, env=None):
+    def value(self, key, config=None, env=None, repo_env=None):
         root = tempfile.mkdtemp(dir=self.tmp.name)
-        return read(plugin_copy(root, config), key, env=env)
+        return read(plugin_copy(root, config, repo_env), key, env=env)
 
-    def layered(self, key, plugin_config=None, home_config=None, env=None):
+    def layered(self, key, plugin_config=None, home_config=None, env=None,
+                repo_env=None, home_env=None):
         root = tempfile.mkdtemp(dir=self.tmp.name)
-        home = home_copy(tempfile.mkdtemp(dir=self.tmp.name), home_config)
-        return read(plugin_copy(root, plugin_config), key, home=home, env=env)
+        home = home_copy(tempfile.mkdtemp(dir=self.tmp.name), home_config, home_env)
+        return read(plugin_copy(root, plugin_config, repo_env), key, home=home, env=env)
 
 
 class TestSettings(KeyCase):
@@ -120,9 +130,95 @@ class TestSettings(KeyCase):
         (Path(plugin) / "hoko.json").write_text("{not json", encoding="utf-8")
         self.assertEqual(read(plugin, "coverageMin").stdout.strip(), "85")
 
-    def test_review_model_is_still_a_setting(self):
-        self.assertEqual(self.value("reviewModel").stdout.strip(), "")
-        self.assertEqual(self.value("reviewModel", {"reviewModel": "haiku"}).stdout.strip(), "haiku")
+    def test_reviewer_model_is_the_key_the_reviewer_reads(self):
+        self.assertEqual(self.value("reviewerModel").stdout.strip(), "")
+        self.assertEqual(self.value("reviewerModel", {"reviewerModel": "haiku"}).stdout.strip(), "haiku")
+
+    def test_the_stale_review_model_key_is_refused(self):
+        proc = self.value("reviewModel")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.stdout.strip(), "")
+
+
+class TestModelKeys(KeyCase):
+    """R4 — a model is a hoko.json key, read from the same file as the rest."""
+
+    MODEL_KEYS = ("planModel", "buildModel", "executorModel", "reviewerModel",
+                  "finalReview", "qaModel", "researchModel")
+
+    def test_r4_every_model_key_reads_from_the_repository_hoko_json(self):
+        for key in self.MODEL_KEYS:
+            with self.subTest(key=key):
+                self.assertEqual(self.value(key).stdout.strip(), "")
+                proc = self.value(key, {key: "provider/model"})
+                self.assertEqual(proc.stdout.strip(), "provider/model")
+
+    def test_r4_every_model_key_reads_from_the_machine_hoko_json(self):
+        for key in self.MODEL_KEYS:
+            with self.subTest(key=key):
+                proc = self.layered(key, home_config={key: "provider/machine"})
+                self.assertEqual(proc.stdout.strip(), "provider/machine")
+
+
+class TestFileLayers(KeyCase):
+    """R5 — the two hoko.json files, the two hoko.env files, then the environment."""
+
+    def test_r5_the_settings_resolve_repository_json_then_machine_json_then_repository_env_then_machine_env_then_the_environment(self):
+        repo_json = {"coverageMin": 60}
+        machine_json = {"coverageMin": 65}
+        repo_env = ["HOKO_COVERAGE_MIN=70"]
+        machine_env = ["HOKO_COVERAGE_MIN=75"]
+        self.assertEqual(self.layered("coverageMin", repo_json).stdout.strip(), "60")
+        self.assertEqual(self.layered("coverageMin", repo_json, machine_json).stdout.strip(), "65")
+        self.assertEqual(self.layered("coverageMin", repo_json, machine_json,
+                                      repo_env=repo_env).stdout.strip(), "70")
+        self.assertEqual(self.layered("coverageMin", repo_json, machine_json,
+                                      repo_env=repo_env, home_env=machine_env).stdout.strip(), "75")
+        self.assertEqual(self.layered("coverageMin", repo_json, machine_json,
+                                      env={"HOKO_COVERAGE_MIN": "80"},
+                                      repo_env=repo_env, home_env=machine_env).stdout.strip(), "80")
+
+    def test_r5_a_repository_hoko_env_line_overrides_the_machine_hoko_json(self):
+        proc = self.layered("plansDir", home_config={"plansDir": "machine/plans"},
+                            repo_env=["HOKO_PLANS_DIR=repo/plans"])
+        self.assertEqual(proc.stdout.strip(), "repo/plans")
+
+    def test_r5_a_machine_hoko_env_line_overrides_the_repository_one(self):
+        proc = self.layered("plansDir", repo_env=["HOKO_PLANS_DIR=repo/plans"],
+                            home_env=["HOKO_PLANS_DIR=machine/plans"])
+        self.assertEqual(proc.stdout.strip(), "machine/plans")
+
+    def test_an_empty_string_in_a_file_never_overrides(self):
+        for home in ({"plansDir": ""}, None):
+            with self.subTest(home=home):
+                proc = self.layered("plansDir", {"plansDir": "docs/plans"}, home)
+                self.assertEqual(proc.stdout.strip(), "docs/plans")
+
+    def test_an_empty_hoko_env_value_never_overrides(self):
+        proc = self.layered("plansDir", {"plansDir": "docs/plans"},
+                            repo_env=["HOKO_PLANS_DIR="])
+        self.assertEqual(proc.stdout.strip(), "docs/plans")
+
+    def test_only_the_environment_clears_a_configured_value(self):
+        proc = self.layered("plansDir", {"plansDir": "docs/plans"},
+                            env={"HOKO_PLANS_DIR": ""})
+        self.assertEqual(proc.stdout.strip(), ".ai/plans")
+
+    def test_an_unknown_key_in_a_hoko_env_line_is_ignored(self):
+        proc = self.layered("plansDir", repo_env=["HOKO_NONSENSE=x", "HOKO_PLANS_DIR=docs/plans"])
+        self.assertEqual(proc.stdout.strip(), "docs/plans")
+
+    def test_a_malformed_hoko_env_contributes_nothing(self):
+        root = tempfile.mkdtemp(dir=self.tmp.name)
+        plugin = plugin_copy(root, {"plansDir": "docs/plans"})
+        (plugin / "hoko.env").write_bytes(b"\xff\xfe not utf-8")
+        self.assertEqual(read(plugin, "plansDir").stdout.strip(), "docs/plans")
+
+
+class TestExampleFile(unittest.TestCase):
+    def test_r7_hoko_json_example_names_every_supported_key_with_its_default(self):
+        example = json.loads((PLUGIN_ROOT / "hoko.json.example").read_text(encoding="utf-8"))
+        self.assertEqual(example, settings.DEFAULTS)
 
 
 class TestAnalyticsPath(KeyCase):

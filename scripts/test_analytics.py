@@ -23,7 +23,7 @@ class AnalyticsTestCase(unittest.TestCase):
         self.entry.mkdir(parents=True)
         self.root = self.tmp / "analytics"
         self.folder = self.root / "shop" / "20261022-0950-speed"
-        patches = [mock.patch.object(settings, "CONFIGS", ()), mock.patch.dict(os.environ)]
+        patches = [mock.patch.object(settings, "CONFIG_DIRS", ()), mock.patch.dict(os.environ)]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
@@ -63,6 +63,11 @@ class TestRoot(AnalyticsTestCase):
 
 
 class TestFolder(AnalyticsTestCase):
+    def test_r8_an_unset_analytics_path_keeps_the_analytics_in_the_journal_entry(self):
+        analytics.link(self.entry, "run-1")
+        self.assertEqual(analytics.folder_for(self.entry), self.entry)
+        self.assertEqual(os.listdir(self.entry), [])
+
     def test_an_empty_analytics_path_maps_the_entry_to_itself(self):
         self.assertEqual(analytics.folder_for(self.entry), self.entry)
 

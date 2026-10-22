@@ -80,6 +80,10 @@ class DocLinksTestCase(unittest.TestCase):
                     broken.append(f"{path.relative_to(ROOT)} -> {target}")
         self.assertEqual([], broken, "broken markdown links:\n" + "\n".join(broken))
 
+    def test_the_readme_links_the_hoko_json_example(self):
+        self.assertIn("hoko.json.example", link_targets(ROOT / "README.md"))
+        self.assertTrue((ROOT / "hoko.json.example").is_file())
+
     def test_every_named_agent_skill_and_script_resolves_to_a_file_in_this_repo(self):
         dangling = []
         for path in markdown_files():

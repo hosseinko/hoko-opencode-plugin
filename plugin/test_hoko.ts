@@ -1441,11 +1441,16 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     process.env.HOKO_PLANS_DIR = ""
     return () => {
       restore(configFile, priorConfig)
-      if (fs.existsSync(parkedConfig)) {
+      const restored = fs.existsSync(parkedConfig)
+      if (restored) {
         fs.copyFileSync(parkedConfig, repoConfig)
         fs.rmSync(parkedConfig, { force: true })
       }
-      fs.rmSync(repoBackup, { force: true })
+      // The backup is the last copy of a config found on entry unless the parked copy put it
+      // back, so a restore that could not do that leaves it for the next pass rather than
+      // leaving the checkout with only the fixture. A backup written from the pass's own seed
+      // holds nothing found on entry.
+      if (restored || (seeded && !foundBackup)) fs.rmSync(repoBackup, { force: true })
       // Only a backup this pass wrote itself holds its own seed. One found on entry holds the
       // checkout's original, which stays even though the pass seeded a file to work with.
       if (seeded && !foundBackup) fs.rmSync(repoConfig, { force: true })
@@ -1590,6 +1595,24 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     check("the reader test removes the parked config once the plant is restored",
       !fs.existsSync(parkedConfig) && fs.readFileSync(repoConfig, "utf8") === original,
       fs.existsSync(parkedConfig) ? "parked config left behind" : "config differs")
+    restore(repoConfig, kept)
+  }
+
+  // A restore that cannot find its parked copy has put nothing back, so the backup is the only
+  // copy of the config found on entry and must survive.
+  {
+    const kept = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
+    const original = JSON.stringify({ plansDir: "orphaned/original" })
+    fs.writeFileSync(repoConfig, original)
+    fs.rmSync(repoBackup, { force: true })
+    const undo = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
+    fs.rmSync(parkedConfig, { force: true })
+    undo()
+    check("the reader test keeps a backup holding a config found on entry when the restore cannot put it back",
+      fs.existsSync(repoBackup) && fs.readFileSync(repoBackup, "utf8") === original,
+      fs.existsSync(repoBackup) ? fs.readFileSync(repoBackup, "utf8") : "backup deleted")
+    if (fs.existsSync(repoBackup)) restore(repoConfig, fs.readFileSync(repoBackup, "utf8"))
+    fs.rmSync(repoBackup, { force: true })
     restore(repoConfig, kept)
   }
 

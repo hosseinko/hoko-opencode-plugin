@@ -68,6 +68,9 @@ const sessionMessages = (id: string) => (messages[id] ??= [])
 const sessionAgent: Record<string, string> = {}
 /** Session → directory, so a session in another worktree resolves its own cwd. */
 const sessionDirs: Record<string, string> = {}
+/** Sessions whose `session.context` should fail, to exercise a usage read that cannot be
+ *  fetched. */
+const failMessages = new Set<string>()
 let createdSeq = 0
 
 const listedAgents = [
@@ -95,7 +98,10 @@ function makeServer() {
     drain: () => new Promise((resolve) => setTimeout(resolve, 25)),
     session: {
       command: async (input: any) => void commands.push(input),
-      context: async (input: any) => sessionMessages(input.sessionID),
+      context: async (input: any) => {
+        if (failMessages.has(input.sessionID)) throw new Error(`no messages for ${input.sessionID}`)
+        return sessionMessages(input.sessionID)
+      },
       // The plugin tracks descendants from `session.created` events rather than listing
       // every session, so the fake only needs the calls the plugin makes.
       get: async (input: any) => ({
@@ -929,6 +935,72 @@ async function boot(overrides: any = {}) {
     fs.existsSync(path.join(taskEntry, "invoice.json")) ? fs.readFileSync(path.join(taskEntry, "invoice.json"), "utf8").slice(0, 120) : "missing")
   check("a task run is not closed by plan-progress complete", !/Status: complete/.test(fs.readFileSync(taskPlan, "utf8")),
     fs.readFileSync(taskPlan, "utf8"))
+}
+
+// ---------------------------------- a close survives what it cannot read or price --
+
+/** A finished task run: its journal entry, its plan and its done progress.json. */
+function finishedTask(folderName: string, sessionIDs: string[]) {
+  const entry = fs.mkdtempSync(path.join(journalRoot, `${folderName}-`))
+  fs.writeFileSync(path.join(entry, "sessions.json"), JSON.stringify(
+    sessionIDs.map((id) => ({ session_id: id, round: 1, role: "execute", since: "2020-01-01T00:00:00.000Z" })),
+  ))
+  const folder = path.join(proj, ".ai", "plans", folderName)
+  fs.mkdirSync(folder, { recursive: true })
+  const plan = path.join(folder, "plan-01.md")
+  fs.writeFileSync(plan, "# Task plan\n\n## Goal\nDone.\n")
+  fs.writeFileSync(path.join(folder, "progress.json"), JSON.stringify({
+    version: 1, task: folderName, status: "done", flow: { journal: entry, phase: "finish" }, rounds: [],
+  }))
+  return { entry, plan }
+}
+
+{
+  const { entry, plan } = finishedTask("20261022-1400-ghost", ["sess-ghost"])
+  failMessages.add("sess-ghost")
+  const { hooks, server } = await boot()
+  const s = "sess-ghost-close"
+  sessionAgent[s] = "build"
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: plan } })
+  const before = notices.length
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  const said = notices.slice(before)
+  check("a session whose usage cannot be read is named in a notice",
+    said.some((message) => message.includes("sess-ghost") && message.includes("could not read usage")),
+    said.join(" | "))
+  check("a session that cannot be read does not stop the close",
+    fs.existsSync(path.join(entry, "usage.json")) && fs.existsSync(path.join(entry, "invoice.json")),
+    said.join(" | "))
+  failMessages.delete("sess-ghost")
+}
+
+{
+  const { entry, plan } = finishedTask("20261022-1500-unpriceable", ["sess-unpriceable"])
+  // invoice.py cannot price an entry that lost its sessions.json; the plugin has to
+  // announce that rather than let it end the run.
+  fs.rmSync(path.join(entry, "sessions.json"))
+  const { hooks, server } = await boot()
+  const s = "sess-invoice-close"
+  sessionAgent[s] = "build"
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: plan } })
+  const before = notices.length
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  const said = notices.slice(before)
+  check("a failed task invoice is announced without throwing",
+    said.some((message) => message.includes("could not invoice")) && fs.existsSync(path.join(entry, "usage.json")),
+    said.join(" | "))
+  check("a failed invoice leaves no invoice behind", !fs.existsSync(path.join(entry, "invoice.json")))
+
+  // Usable means the session's next finished run still closes.
+  const next = finishedTask("20261022-1600-after-failure", ["sess-after"])
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: next.plan } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("a session stays usable after a failed invoice",
+    fs.existsSync(path.join(next.entry, "invoice.json")),
+    fs.existsSync(path.join(next.entry, "usage.json")) ? "usage written, no invoice" : "no usage written")
 }
 
 // ------------------------------------------------------------- the TUI plugin --

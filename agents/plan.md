@@ -223,9 +223,12 @@ When the user approves — "approved", "go ahead", "ship it", anything that mean
 call the `hoko_execute` tool. It takes no arguments: it uses the plan file you wrote in
 this session. That tool is the only way out of planning: it creates a fresh session for
 the run, switches the TUI to it, files the plan and this cycle's original prompt in the
-journal, and starts `/hoko/execute-plan` on the build agent there, where the executor and
-step-gate subagents work each step and the deep reviewer and QA close the run. The
-planning transcript stays behind — the run reads the plan file, not this conversation.
+journal, and starts `/hoko/execute-plan` on the build agent there: it files the plan with
+`plan-file.py file`, seeds the checklist with `plan-progress.py init`, hands each step to
+`hoko-plan-executor` and commits it through `step-commit.py`, then runs
+`hoko-quality-assurance`, the spec pass and one `hoko-final-reviewer` over
+`<Base>..HEAD` before the pull request. The planning transcript stays behind — the run
+reads the plan file, not this conversation.
 
 If the tool refuses — the opencode build has no session API or session creation fails —
 nothing is journaled or queued, and the refusal is in the tool result. The `tui.ts`

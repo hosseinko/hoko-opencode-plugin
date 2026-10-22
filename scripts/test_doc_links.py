@@ -20,10 +20,16 @@ FRONT_MATTER_NAME = re.compile(r"^name:\s*(\S+)\s*$", re.M)
 
 CLAUDE_ONLY = ("CLAUDE_PLUGIN_ROOT", "SendMessage", "AskUserQuestion", "ExitPlanMode", "~/.claude")
 
+RETIRED_ROLES = ("step-gate", "deep reviewer")
 
-def markdown_files():
+
+def directory_docs():
     for base in DOC_DIRS:
         yield from sorted((ROOT / base).rglob("*.md"))
+
+
+def markdown_files():
+    yield from directory_docs()
     for name in DOC_FILES:
         yield ROOT / name
 
@@ -93,6 +99,28 @@ class DocLinksTestCase(unittest.TestCase):
                 if token in text:
                     found.append(f"{path.relative_to(ROOT)} -> {token}")
         self.assertEqual([], found, "Claude-only tokens:\n" + "\n".join(found))
+
+    def test_no_document_names_a_retired_role_in_prose(self):
+        found = []
+        for path in directory_docs():
+            prose = without_code(read(path)).lower()
+            for role in RETIRED_ROLES:
+                if role in prose:
+                    found.append(f"{path.relative_to(ROOT)} -> {role}")
+        self.assertEqual([], found, "retired roles in prose:\n" + "\n".join(found))
+
+
+class PlanAgentPromptTestCase(unittest.TestCase):
+    """R1 — the plan agent describes the loop the engine runs, not the one it replaced."""
+
+    def setUp(self):
+        self.prompt = read(ROOT / "agents" / "plan.md")
+
+    def test_the_plan_agent_describes_one_executor_per_step_then_quality_assurance_then_one_final_reviewer(self):
+        for name in ("`plan-file.py file`", "`plan-progress.py init`", "`hoko-plan-executor`",
+                     "`step-commit.py`", "`hoko-quality-assurance`", "`hoko-final-reviewer`",
+                     "`<Base>..HEAD`", "pull request"):
+            self.assertIn(name, self.prompt)
 
 
 class TaskPipelineTestCase(unittest.TestCase):

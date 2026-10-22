@@ -14,12 +14,10 @@ LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 NAME = re.compile(r"`(hoko-[a-z0-9-]+)`")
 SCRIPT = re.compile(r"(?<![\w.-])([a-z][a-z0-9_-]*\.py)\b")
 COMMENT = re.compile(r"<!--.*?-->", re.S)
+FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---", re.S)
+FRONT_MATTER_NAME = re.compile(r"^name:\s*(\S+)\s*$", re.M)
 
 CLAUDE_ONLY = ("CLAUDE_PLUGIN_ROOT", "SendMessage", "AskUserQuestion", "ExitPlanMode", "~/.claude")
-
-# Step 10 of the port adds the `hoko-research` skill these agents already name; until it
-# lands this is the one forward reference the docs carry, and step 10 empties the set.
-FORWARD = {"hoko-research"}
 
 
 def markdown_files():
@@ -77,7 +75,7 @@ class DocLinksTestCase(unittest.TestCase):
         dangling = []
         for path in markdown_files():
             for name in named(path):
-                if not resolves(name) and name not in FORWARD:
+                if not resolves(name):
                     dangling.append(f"{path.relative_to(ROOT)} -> {name}")
             for name in scripts_in(path):
                 if not script_exists(name):
@@ -134,6 +132,21 @@ class TaskPipelineTestCase(unittest.TestCase):
     def test_the_conductor_writes_no_implementation_code(self):
         self.assertIn("You write no implementation code", self.flat)
         self.assertIn("The conductor does not modify or open a source or spec file", self.flat)
+
+
+class SkillFrontMatterTestCase(unittest.TestCase):
+    """Every skill names itself after the directory opencode keys it by."""
+
+    def test_each_skill_front_matter_name_matches_its_directory(self):
+        mismatched = []
+        for path in sorted((ROOT / "skills").glob("*/SKILL.md")):
+            match = FRONT_MATTER.match(read(path))
+            self.assertIsNotNone(match, f"{path.relative_to(ROOT)} has no front matter")
+            name = FRONT_MATTER_NAME.search(match.group(1))
+            self.assertIsNotNone(name, f"{path.relative_to(ROOT)} declares no name")
+            if name.group(1) != path.parent.name:
+                mismatched.append(f"{path.parent.name} -> {name.group(1)}")
+        self.assertEqual([], mismatched, "skill names that do not match their directory:\n" + "\n".join(mismatched))
 
 
 if __name__ == "__main__":

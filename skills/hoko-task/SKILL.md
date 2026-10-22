@@ -1,4 +1,5 @@
 ---
+name: hoko-task
 description: Run a task through the whole pipeline — specifier, spec writer, planner, implementer, QA, reviewer — with automatic fix loops, interrupting the user only for product decisions. Use when handed a task to do end to end, a plan file to run, or a task folder to resume.
 ---
 

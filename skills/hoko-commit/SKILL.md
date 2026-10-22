@@ -8,26 +8,30 @@ description: Format git commit messages to this workflow's convention - a plain 
 Apply these when creating commits. Never commit or push without an explicit request
 from the user.
 
-**The commit is where this skill stops.** Committing is not integrating: never merge the
-branch into `main`, `master`, `staging` or `develop`, never fast-forward one of them onto
-your work, never `git push`, and never delete the branch afterwards. A finished branch
-reaches the integration branch one way only — a pull request, through
-`hoko-pull-request`. That holds whether the commit came from a plan run or from a plain
-build-mode request, and "the change is done" is not permission to integrate it.
+The commit is where this skill stops. Merging, pushing and branch handling follow
+the standing rules in `instructions/hoko.md`, whether this commit came from a
+plan run or a plain request.
 
 ## Auto-commit
 
-Check `HOKO_COMMIT_AUTO` (the plugin exports `hoko.env` into every shell, so
-`printf '%s' "$HOKO_COMMIT_AUTO"` reads it):
+A quality-assurance fix commit never asks. Approving the plan was the consent, so
+`commitAuto` does not apply to it: once the gate that applies to it (step 4) is green,
+commit and report the subject line and the short SHA. Nothing below in this section
+concerns that commit. A plan-run step commit never reaches this skill at all —
+`step-commit.py` makes it directly from the conductor's message.
 
-- **Unset, empty, or `0`** — confirm the message with the user before committing, as in
-  step 6 below.
-- **`1`** — commit without asking once the checks pass, then report the subject line and
-  the short SHA so the user can see what landed.
+Everywhere else, read the setting — unless the caller already gave you its value, in
+which case use that and run nothing:
 
-Two things auto mode never waives: the protected-branch check (step 2 — a protected
-branch still stops and confirms the new branch) and the quality gate (step 4 — a red gate
-is never committed through). `HOKO_COMMIT_AUTO` never authorises a push.
+```bash
+python3 "${HOKO_ROOT}/scripts/settings.py" commitAuto
+```
+
+- **`false`** — confirm the message with the user before committing, as in step 6 below.
+- **`true`** — commit without asking once the checks pass, then report the subject line
+  and the short SHA so the user can see what landed.
+
+Auto mode neither waives the quality gate (step 4) nor authorises a push.
 
 ## Commit messages
 
@@ -71,38 +75,28 @@ ABC-123
 
 1. Run `git status` and `git diff` (staged + unstaged) to see exactly what changed.
 2. **Check the current branch.** If it is a protected branch (`main`, `master`,
-   `staging`, or `develop`), never commit directly to it — create a new branch first,
-   under the branching rules in the standing instructions. Propose the name rather than
-   asking for one:
-   - **Type** from what the change is: a defect in released code → `hotfix/`, any other
-     defect → `bugfix/`, cutting a release → `release/`, anything else → `feature/`.
-   - **Ticket key** — the plan's `Ticket:` line, or the key in the user's request when
-     there is no plan. Uppercase and verbatim. Neither carries one, the branch has no
-     key — never invent one, and never lift one from an unrelated file or an old branch.
-   - **Slug** of at most five words from the diff, lowercase and hyphenated, naming the
-     change rather than the files.
-   - Show the full name and the base it will be cut from (`develop` for everything but
-     `hotfix/`, which is cut from `main`) and get a yes before creating it. The user can
-     hand you a complete name instead, and it is used as-is. `HOKO_COMMIT_AUTO=1` does
-     not waive this confirmation.
-   - Create it with `git fetch origin && git checkout -b <name> origin/<base>`, then
-     continue.
+   `staging`, or `develop`), never commit directly to it. Follow the branching rules in
+   `instructions/hoko.md`: `feature/`, `bugfix/` and `release/` are cut from `develop`,
+   `hotfix/` from `main`, every branch named `<type>/<TICKET-><slug>` from a freshly
+   fetched base. Show the name and the base, and get a yes before creating it.
+   - **Inside a plan run** — a quality-assurance fix commit — this is a blocker to
+     report, not a question to ask: a subagent cannot ask the user, and the conductor
+     already checked the branch before step 1. Stop and say the branch changed under
+     the run rather than creating one or guessing a name.
 3. Group unrelated changes into separate commits — don't bundle a refactor with a fix.
 4. **Run the quality gate.** Invoke the `hoko-quality-assurance` skill and follow it:
    find the project's own commands, then lint, then static analysis, then tests with
    coverage. Do not commit while any gate is red — report the failure instead.
 
-   **One exception: a step commit inside a plan run.** When the caller says this commit
-   is one step of `/hoko/execute-plan`, the fast gate — the analyser clean and the unit
-   tests green — has already run in `hoko-step-gate`, and that is the gate for this
-   commit. Do not re-run it, and do not start the full one: linting, the whole suite and
-   coverage run once at the end of the run, in the `hoko-quality-assurance` subagent. If
-   the fast gate was red, there is no commit to make — that is a finding to
-   fix first. Every other commit, this command included, runs the full gate.
+   One exception, inside a plan run: when the caller says this commit fixes what
+   `hoko-quality-assurance` itself found, that subagent has just run the full gate before
+   handing you the fix, so do not run it again for the commit that lands it. Linting, the
+   whole suite and coverage otherwise run once at the end of the run, in the
+   `hoko-quality-assurance` subagent. Every other commit runs the full gate.
 5. Draft the message from the actual diff, not from assumptions.
-6. Show the user the message and get confirmation before committing — unless
-   `HOKO_COMMIT_AUTO=1`, in which case commit and report the subject and short SHA.
+6. Not for a plan-run commit: see Auto-commit above, it never reaches this step.
+   Show the user the message and get confirmation before committing — unless
+   `commitAuto` is `true`, in which case commit and report the subject and short SHA.
 7. **Stop.** Report the commit and, if the branch now holds finished work, say it is
-   ready for a pull request and offer `hoko-pull-request` — one line. Do not switch
-   branches, merge, push or open the PR off your own bat. An approved commit message
-   approves the commit and nothing beyond it.
+   ready for a pull request — one line. Do not switch branches, merge, push or open
+   the PR.

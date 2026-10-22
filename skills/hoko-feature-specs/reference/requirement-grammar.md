@@ -67,7 +67,7 @@ For build flags, tiers, per-tenant features. Not for runtime state — that is p
 - If the scoring service does not respond within 2 s, then the matcher shall retry once
   and, on a second timeout, leave the record unclustered.
 
-**This is the bucket that is empty when it should not be.** A spec with no `if` lines
+This bucket is the one most often empty when it should not be. A spec with no `if` lines
 has almost certainly not been asked what happens when things go wrong.
 
 ### 6. Complex — a precondition and a trigger together
@@ -104,7 +104,7 @@ joining two objects of the same behaviour is fine.
 
 ### No implementation
 
-A requirement says *what is observable*, never *how*. A class name, a library, a table, a
+A requirement says what is observable, not how. A class name, a library, a table, a
 query, a file path in a `REQ` line means the sentence belongs in Design notes.
 
 - Wrong: "The matcher shall use an OpenSearch `terms` query to fetch the block."
@@ -116,7 +116,7 @@ describing the current implementation.
 
 ### Verifiable, or cut it
 
-Every requirement must name an observation that could prove it false. These words never
+Every requirement must name an observation that could prove it false. These words do not
 survive that test:
 
 > efficient, robust, flexible, adequate, user-friendly, fast, scalable, reliable,
@@ -144,6 +144,13 @@ by someone who has not read the line before it.
 A requirement that cannot be stated goes in `## Open questions`, not in the requirements
 list with a placeholder. A `REQ` line is a commitment.
 
+### One list item per requirement
+
+A requirement is written as a markdown list item — `- **REQ-4** If a record is missing
+both coordinates and a postal address, then the ingester shall reject it.` Plain lines
+one after another render as a single paragraph, so the numbering stops being visible
+exactly where it matters most.
+
 ### Ids are permanent
 
 `REQ-7` means one thing forever. Deleting a requirement retires its id; it is never
@@ -167,7 +174,7 @@ messages cite these ids.
 
 ## Gherkin — for the cases worth executing
 
-A scenario is one concrete example of one requirement. Write them **only** where the case
+A scenario is one concrete example of one requirement. Write them only where the case
 is worth running as a test; prose in the `REQ` line covers the rest.
 
 ```gherkin
@@ -200,15 +207,15 @@ them; `Rule` groups scenarios under one business rule when a feature has several
 selective runs. Steps run in order and chain with `And` and `But`. A step takes a data
 table (pipe-delimited rows) or a doc string (triple quotes) when one value is not enough.
 
-Four rules that keep scenarios readable:
+Four rules keep scenarios readable:
 
-- **One `When` per scenario.** Two actions is two scenarios, or the first one is setup and
+- One `When` per scenario. Two actions is two scenarios, or the first one is setup and
   belongs in `Given`.
-- **Declarative, not imperative.** `When the record is scored against its block`, never
+- Declarative, not imperative. `When the record is scored against its block`, not
   `When I call scorer.run(record, block)`. The scenario must survive a refactor.
-- **The domain's words.** Use the vocabulary the team and the suppliers use — the same
-  terms the spec's Context section defines.
-- **`Then` asserts something observable.** A database row is observable; an internal call
+- The domain's words: the vocabulary the team and the suppliers use, the same terms the
+  spec's Context section defines.
+- `Then` asserts something observable. A database row is observable; an internal call
   is not.
 
 Name each scenario after the case, not the mechanics: "a record at the merge threshold

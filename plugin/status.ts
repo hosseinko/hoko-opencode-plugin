@@ -10,15 +10,10 @@
  */
 
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
 
 import { newestProgressFile } from "./guard.ts"
 
-const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const DEFAULT_PLANS_DIR = ".ai/plans"
-const HOME_CONFIG = path.join(os.homedir(), ".config", "opencode", "hoko.json")
 const SHORT_SHA = 7
 const HEAD_REF = /^ref:\s*refs\/heads\/(.+)$/
 
@@ -106,21 +101,6 @@ function readJson(file: string): Record<string, any> | undefined {
   } catch {
     return undefined
   }
-}
-
-/** `HOKO_PLANS_DIR`, then the machine's `hoko.json`, then the plugin's, then the default. */
-export function plansDirSetting(): string {
-  const configured = process.env.HOKO_PLANS_DIR
-  if (configured) return normalizeDir(configured)
-  for (const file of [HOME_CONFIG, path.join(ROOT, "hoko.json")]) {
-    const value = readJson(file)?.plansDir
-    if (typeof value === "string" && value) return normalizeDir(value)
-  }
-  return DEFAULT_PLANS_DIR
-}
-
-function normalizeDir(value: string): string {
-  return value.replace(/^\.\//, "").replace(/\/+$/, "") || DEFAULT_PLANS_DIR
 }
 
 /**
@@ -247,7 +227,8 @@ export function runningAgents(sessionID: string, source: AgentSource): AgentView
 export type StatusInput = {
   /** The repository root, not the session's cwd. */
   root: string
-  plansDir?: string
+  /** The plans directory the guard arms from, resolved by the plugin's settings reader. */
+  plansDir: string
   agents?: readonly AgentView[]
 }
 
@@ -255,7 +236,7 @@ export type StatusInput = {
 export function statusView({ root, plansDir, agents = [] }: StatusInput): StatusSnapshot {
   const repo = repoOf(root)
   const fallback = `hoko · ${tag(repo)}`
-  const file = newestProgressFile(root, plansDir ?? plansDirSetting())
+  const file = newestProgressFile(root, plansDir)
   const document = file === undefined ? undefined : readJson(file)
   if (document === undefined) return { line: fallback }
   const run = runView(document, repo)

@@ -192,8 +192,10 @@ function fileSettings(): Record<string, any> {
 }
 
 /** Repo defaults, then `hoko.json`, then hoko.env, then the real environment — the same
- *  precedence scripts/settings.py applies, so a setting means one thing on either side. */
-function settings(): Record<string, string> {
+ *  precedence scripts/settings.py applies, so a setting means one thing on either side.
+ *  Exported for the terminal half: the guard and the display resolve the plans directory
+ *  from this one reader, so a configured value names one directory for both. */
+export function settings(): Record<string, string> {
   const fromFile = fileSettings()
   const merged = {
     ...readEnvFile(path.join(ROOT, "hoko.env")),

@@ -9,8 +9,8 @@
 
 import { For, Show, createSignal } from "solid-js"
 
+import { settings } from "./hoko.ts"
 import {
-  plansDirSetting,
   runningAgents,
   statusView,
   type AgentView,
@@ -107,7 +107,9 @@ export type RunSlots = {
 
 export function runSlots(context: any, root: string): RunSlots {
   const [snapshot, setSnapshot] = createSignal<StatusSnapshot>({ line: "" })
-  const plansDir = plansDirSetting()
+  // The guard's own reader, so a configured plans directory cannot put the display and the
+  // guard in two different directories.
+  const plansDir = settings().HOKO_PLANS_DIR
   const disposers: (() => void)[] = []
 
   const register = (slot: any) => {

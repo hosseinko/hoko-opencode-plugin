@@ -1367,6 +1367,65 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   runSlots(closing.context, shop).dispose()
   check("disposing the display disposes every slot it registered",
     closing.disposed.length === 3, JSON.stringify(closing.disposed))
+
+  // One reader for the plans directory: the display asks the plugin's settings reader, so
+  // a value configured in both hoko.json files names the directory the guard arms from.
+  const one = path.join(base, "one")
+  fs.mkdirSync(path.join(one, ".git"), { recursive: true })
+  fs.writeFileSync(path.join(one, ".git", "HEAD"), "ref: refs/heads/main\n")
+  const runIn = (dir: string, title: string, stage: string) => {
+    const folder = path.join(one, ...dir.split("/"), `20261022-1200-${stage.toLowerCase()}`)
+    fs.mkdirSync(folder, { recursive: true })
+    fs.writeFileSync(path.join(folder, "progress.json"), JSON.stringify({
+      version: 1, task: title, title, status: "in_progress", stage, cycle: 1, loop_limit: 1,
+      stages: { [stage]: "in_progress" },
+      rounds: [{ round: 1, plan: "plan-01.md", steps: [{ n: 1, title: "One", status: "pending" }] }],
+    }))
+  }
+  runIn("repo/plans", "Repo run", "QA")
+  runIn("machine/plans", "Machine run", "Implement")
+
+  const configFile = path.join(CONFIG, "hoko.json")
+  const repoConfig = path.join(ROOT, "hoko.json")
+  const priorConfig = fs.existsSync(configFile) ? fs.readFileSync(configFile, "utf8") : undefined
+  const priorRepoConfig = fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : undefined
+  const restore = (file: string, text: string | undefined) => {
+    if (text === undefined) fs.rmSync(file, { force: true })
+    else fs.writeFileSync(file, text)
+  }
+  const priorEnv = { ...process.env }
+  try {
+    fs.mkdirSync(CONFIG, { recursive: true })
+    fs.writeFileSync(configFile, JSON.stringify({ plansDir: "machine/plans" }))
+    fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: "repo/plans" }))
+    process.env.HOKO_PLANS_DIR = ""
+
+    const shared = display(theme)
+    runSlots(shared.context, one)
+    const sharedLine = render(slotOf(shared.slots, "prompt.footer.status").render())
+    const sharedPane = render(slotOf(shared.slots, "sidebar.content").render({ sessionID: "root" }))
+
+    sessionAgent["sess-one-plans"] = "build"
+    sessionDirs["sess-one-plans"] = one
+    const { hooks: onePlans } = await boot()
+    let armedThere = ""
+    try {
+      await onePlans["tool.execute.before"]({
+        tool: "read", sessionID: "sess-one-plans", input: { path: path.join(one, "src", "main.ts") },
+      })
+    } catch (error: any) {
+      armedThere = String(error.message)
+    }
+    check("plansDir in both hoko.json files gives the status line the run the guard arms from",
+      sharedLine === "hoko · one@main · Implement 1/1 · cycle 1" && /hoko-plan-executor/.test(armedThere),
+      `${sharedLine} / ${armedThere || "allowed"}`)
+    check("the machine hoko.json is read from the home the process was given",
+      sharedPane.includes("Machine run"), sharedPane)
+  } finally {
+    restore(configFile, priorConfig)
+    restore(repoConfig, priorRepoConfig)
+    process.env = priorEnv
+  }
 }
 
 console.log()

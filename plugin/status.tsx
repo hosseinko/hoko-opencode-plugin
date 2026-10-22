@@ -40,13 +40,20 @@ function repoRow(repo: Repo): string {
   return repo.branch === undefined ? repo.project : `${repo.project} · ${repo.branch}`
 }
 
+/** A theme missing a role borrows the other one, then the terminal's own colour. */
+function colour(context: any, role: "base" | "muted"): string | undefined {
+  const text = context?.theme?.text
+  const value = text?.[role] ?? text?.[role === "base" ? "muted" : "base"]
+  return typeof value === "string" ? value : undefined
+}
+
 export function StatusLine(props: { context: any; snapshot: StatusSnapshot }) {
-  return <text fg={props.context.theme.text.base}>{props.snapshot.line}</text>
+  return <text fg={colour(props.context, "base")}>{props.snapshot.line}</text>
 }
 
 export function RunPane(props: { context: any; run: RunView; agents: AgentView[] }) {
-  const base = () => props.context.theme.text.base
-  const muted = () => props.context.theme.text.muted
+  const base = () => colour(props.context, "base")
+  const muted = () => colour(props.context, "muted")
   return (
     <box flexDirection="column">
       <text fg={base()}>{props.run.title}</text>

@@ -1140,6 +1140,131 @@ async function boot(overrides: any = {}) {
     agents.some((agent: any) => agent.status === "running"), JSON.stringify(agents))
 }
 
+// --------------------------------------------------------------- the run display --
+
+{
+  const { runSlots } = await import("./status.tsx")
+  // opencode compiles status.tsx through its Solid plugin, which turns <For> and <Show>
+  // into reactive branches. Under the test runner the same JSX is a plain element tree,
+  // so the test walks it with the runtime's own For and Show.
+  const { For, Show } = await import("solid-js")
+
+  const render = (node: any): string => {
+    if (node === undefined || node === null || node === false || node === true) return ""
+    if (typeof node === "string" || typeof node === "number") return String(node)
+    if (Array.isArray(node)) return node.map(render).join("\n")
+    const { type, props = {} } = node
+    if (typeof type === "string") return render(props.children)
+    if (type === For) return (props.each ?? []).map((item: any) => render(props.children(item))).join("\n")
+    if (type === Show) {
+      if (!props.when) return ""
+      return render(typeof props.children === "function" ? props.children(() => props.when) : props.children)
+    }
+    return render(type(props))
+  }
+
+  const display = (theme: any) => {
+    const slots: any[] = []
+    const disposed: string[] = []
+    const context = {
+      theme,
+      data: {
+        session: {
+          family: (id: string) => (id === "root" ? ["child"] : []),
+          get: (id: string) => ({ agent: id === "root" ? "build" : "hoko-plan-executor" }),
+          status: (id: string) => (id === "root" ? "idle" : "busy"),
+        },
+      },
+      ui: {
+        slot: (slot: any) => {
+          slots.push(slot)
+          return () => void disposed.push(slot.append)
+        },
+      },
+    }
+    return { context, slots, disposed }
+  }
+  const slotOf = (slots: any[], name: string) => slots.find((slot) => slot.append === name)
+
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-display-"))
+  const shop = path.join(base, "shop")
+  fs.mkdirSync(path.join(shop, ".git"), { recursive: true })
+  fs.writeFileSync(path.join(shop, ".git", "HEAD"), "ref: refs/heads/main\n")
+  const folder = path.join(shop, ".ai", "plans", "20261022-1200-speed-tests")
+  fs.mkdirSync(folder, { recursive: true })
+  fs.writeFileSync(path.join(folder, "progress.json"), JSON.stringify({
+    version: 1,
+    task: "20261022-1200-speed-tests",
+    title: "Speed tests",
+    status: "in_progress",
+    stage: "Implement",
+    cycle: 1,
+    loop_limit: 3,
+    stages: { Implement: "in_progress", QA: "pending" },
+    rounds: [{
+      round: 2,
+      plan: "2026-10-22-1200-speed-tests.md",
+      steps: [
+        { n: 1, title: "Add the index", status: "done", commit: "abcdef1234567", blocker: null },
+        { n: 2, title: "Measure it", status: "in_progress", commit: null, blocker: null },
+        { n: 3, title: "Tune it", status: "pending", commit: null, blocker: null },
+      ],
+    }],
+  }))
+
+  const theme = { text: { base: "#ffffff", muted: "#808080" } }
+  const active = display(theme)
+  runSlots(active.context, shop)
+  check("the display registers the status line and pane slots the TUI provides",
+    active.slots.map((slot) => slot.append).join(",") === "prompt.footer.status,home.footer.status,sidebar.content",
+    JSON.stringify(active.slots.map((slot) => slot.append)))
+
+  const line = render(slotOf(active.slots, "prompt.footer.status").render())
+  check("an active run's status line renders the exact line",
+    line === "hoko · shop@main · Implement 2/3 · cycle 1", line)
+
+  const pane = render(slotOf(active.slots, "sidebar.content").render({ sessionID: "root" }))
+  const expectedPane = [
+    "Speed tests",
+    "shop · main",
+    "Implement · cycle 1/4",
+    " ",
+    "▶ Implement",
+    "· QA",
+    " ",
+    "Round 2",
+    "✓ 1. Add the index abcdef1",
+    "▶ 2. Measure it",
+    "· 3. Tune it",
+    " ",
+    "Agents",
+    "busy hoko-plan-executor",
+  ].join("\n")
+  check("an active run's pane renders its stages, round and agents", pane === expectedPane, pane)
+
+  const idleRoot = path.join(base, "bare")
+  fs.mkdirSync(path.join(idleRoot, ".git"), { recursive: true })
+  fs.writeFileSync(path.join(idleRoot, ".git", "HEAD"), "ref: refs/heads/main\n")
+  const idle = display(theme)
+  runSlots(idle.context, idleRoot)
+  const idleLine = render(slotOf(idle.slots, "prompt.footer.status").render())
+  check("with no run the status line renders the plain line", idleLine === "hoko · bare@main", idleLine)
+  const idlePane = render(slotOf(idle.slots, "sidebar.content").render({ sessionID: "root" }))
+  check("with no run the pane renders nothing", idlePane === "", idlePane)
+
+  const plain = display({})
+  runSlots(plain.context, shop)
+  const plainLine = render(slotOf(plain.slots, "prompt.footer.status").render())
+  const plainPane = render(slotOf(plain.slots, "sidebar.content").render({ sessionID: "root" }))
+  check("a theme with no text.base or text.muted still renders the line and the pane",
+    plainLine === line && plainPane === expectedPane, JSON.stringify({ plainLine, plainPane }))
+
+  const closing = display(theme)
+  runSlots(closing.context, shop).dispose()
+  check("disposing the display disposes every slot it registered",
+    closing.disposed.length === 3, JSON.stringify(closing.disposed))
+}
+
 console.log()
 if (fails.length) { console.log(`${fails.length} failed: ${fails.join(", ")}`); process.exit(1) }
 console.log("all passed")

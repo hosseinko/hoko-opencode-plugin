@@ -1043,6 +1043,7 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   const navigated: any[] = []
   const synced: string[] = []
   const toasts: any[] = []
+  const focused: string[] = []
   const cleanup = await tui.setup({
     data: {
       on: (name: string, callback: (event: any) => void) => {
@@ -1052,7 +1053,7 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
       session: { sync: async (sessionID: string) => void synced.push(sessionID) },
     },
     ui: {
-      tabs: { focus: () => false },
+      tabs: { focus: (sessionID: string) => void focused.push(sessionID) },
       router: { navigate: (route: any) => void navigated.push(route) },
       toast: { show: (toast: any) => void toasts.push(toast) },
     },
@@ -1063,10 +1064,22 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   check("an ordinary session does not steal the screen", navigated.length === 0)
   listeners["session.created"]({ type: "session.created", data: { sessionID: "sess-run", metadata: { hoko: "run" } } })
   await new Promise((resolve) => setTimeout(resolve, 5))
-  check("a hoko run syncs and navigates to its session",
+  check("approving a plan navigates the current view to the run's session",
     synced.includes("sess-run") && navigated.at(-1)?.type === "session" && navigated.at(-1)?.sessionID === "sess-run",
     JSON.stringify({ synced, navigated }))
+  check("approving a plan never calls tabs.focus, which opens a tab",
+    focused.length === 0, JSON.stringify(focused))
   check("a hoko run is announced", toasts.at(-1)?.message === "Run started", JSON.stringify(toasts))
+
+  const beforeChild = { synced: synced.length, navigated: navigated.length, toasts: toasts.length }
+  listeners["session.created"]({
+    type: "session.created",
+    data: { sessionID: "sess-child", parentID: "sess-run", metadata: { hoko: "run" } },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  check("a descendant session that inherits the run marker is not synced, navigated to or announced",
+    synced.length === beforeChild.synced && navigated.length === beforeChild.navigated && toasts.length === beforeChild.toasts,
+    JSON.stringify({ synced, navigated, toasts }))
   cleanup?.()
   check("the TUI listener is removed on cleanup", !listeners["session.created"])
 }

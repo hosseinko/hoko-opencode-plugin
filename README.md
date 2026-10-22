@@ -264,7 +264,7 @@ Behavior the V2 API forced to change:
 | The plugin registered the agents | Agents are files under `~/.config/opencode/agents/`, installed by `scripts/install-agents.sh` |
 | The plugin appended `instructions/*.md` to the config | The plugin adds them to every model request from the `context` hook — same effect, they are in context on every turn of every agent |
 | `tui.showToast` announced the handoff, the journaled report and the invoice | The server plugin has no TUI API; `plugin/tui.ts` announces the run, and the git guard's warning still arrives as a synthetic notice in the session |
-| Approving switched the TUI to the run's fresh session | `plugin/tui.ts` listens for the run session's `hoko: run` marker, syncs it and navigates to it |
+| Approving switched the TUI to the run's fresh session | `plugin/tui.ts` navigates the current view to the run's root session and syncs it, so the run appears in the approval's own tab; a child session that inherits the marker is ignored |
 | `HOKO_PROMPT_FILE` was exported into every shell | The V2 shell hook carries no session id, so it is gone. Nothing read it |
 | The plugin detected a hand-written `plan` block and left its prompt alone | A plan agent that already carries a system prompt is the user's own and is left alone; an empty one receives this repo's protocol. `HOKO_*_MODEL` is now authoritative when set |
 | `/hoko/research` ran as a subtask because a command could name a subagent | A command cannot name an agent, and a session cannot run on a subagent-only agent, so the command asks the current agent to delegate to `hoko-researcher` |
@@ -431,8 +431,11 @@ the `hoko_execute` tool. That tool, not the model, does the switching:
 The run's context is the plan file and nothing else — none of the planning transcript
 rides along. So there is no Tab-to-build step and no command to remember, and build never
 starts from a blank slate: it starts inside the execute-plan protocol with the plan path
-in hand. The server plugin cannot move the screen itself, so `plugin/tui.ts` follows the
-new session's marker and brings the prompt box with the run.
+in hand. The server plugin cannot move the screen itself, so `plugin/tui.ts` navigates
+the current view to the new session's `hoko: run` marker. The run appears in the tab the
+approval already occupies, and only the run's root session is followed: a descendant
+inherits the marker, and a `parentID` check keeps each executor, reviewer and QA
+subagent out of the tab bar.
 
 `HOKO_FRESH_SESSION=0` — or `false`, `no`, `off` — skips the new session and queues the
 handoff on the approval session, so the plan runs there as before. When creating the

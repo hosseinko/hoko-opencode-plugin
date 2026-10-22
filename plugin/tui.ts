@@ -30,13 +30,14 @@ export default {
     const stopCreated = context?.data?.on?.("session.created", (event: any) => {
       const data = event?.data ?? {}
       const sessionID = data.sessionID
-      if (!sessionID || data.metadata?.hoko !== RUN_MARKER) return
+      // A descendant inherits the run marker, so without this check every executor,
+      // reviewer and QA subagent would become a tab of its own.
+      if (!sessionID || data.parentID || data.metadata?.hoko !== RUN_MARKER) return
       void (async () => {
         try {
           if (typeof context.data?.session?.sync === "function") await context.data.session.sync(sessionID)
         } catch {}
-        const focused = context.ui?.tabs?.focus?.(sessionID)
-        if (!focused) context.ui?.router?.navigate?.({ type: "session", sessionID })
+        context.ui?.router?.navigate?.({ type: "session", sessionID })
         context.ui?.toast?.show?.({
           title: "hoko",
           message: "Run started",

@@ -1,34 +1,33 @@
 #!/usr/bin/env python3
 """Tests for plan-file.py.
 
-Copies the plugin's scripts to a temp dir and points HOKO_JOURNAL_PATH and HOME at
-throwaway roots, so the real journal and config are never touched.
+Copies the plugin's scripts to a temp dir and points the plugin's own `hoko.json` at
+throwaway journal and analytics roots, so the real journal is never touched.
 """
 
-import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from test_plan_format import FENCED_LINES, plan_with_fenced_header_lines
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-SCRIPTS = ("plan-file.py", "journal.py", "settings.py")
-
-
-def plugin_copy(tmp):
-    plugin = tmp / "plugin"
-    (plugin / "scripts").mkdir(parents=True)
-    for name in SCRIPTS:
-        (plugin / "scripts" / name).write_text(
-            (PLUGIN_ROOT / "scripts" / name).read_text(encoding="utf-8"), encoding="utf-8")
-    return plugin
 
 
 def plan_text(title="Ship a dry-run flag"):
     return f"# {title}\n\n## Goal\n{title}.\n\n## Steps\n### 1. Do it\n- Files: cli.py\n"
+
+
+def journal_plan(filed):
+    """The `plan-NN.md` a filed plan's own `Journal:` line names."""
+    match = re.search(r"^Journal:\s*(.+)$", Path(filed).read_text(encoding="utf-8"), re.M)
+    return Path(match.group(1)) if match else None
 
 
 class TestPlanFile(unittest.TestCase):
@@ -36,7 +35,9 @@ class TestPlanFile(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
         self.tmp = Path(self.tmpdir.name).resolve()
-        self.plugin = plugin_copy(self.tmp)
+        self.plugin = self.tmp / "plugin"
+        shutil.copytree(PLUGIN_ROOT / "scripts", self.plugin / "scripts",
+                        ignore=shutil.ignore_patterns("__pycache__", "test_*.py"))
         self.script = self.plugin / "scripts" / "plan-file.py"
         self.home = self.tmp / "home"
         self.state = self.tmp / "state"
@@ -50,23 +51,21 @@ class TestPlanFile(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         return repo
 
-    def anchor(self, session_id, text):
-        digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
-        path = self.state / f"{digest}.prompt"
-        path.write_text(text, encoding="utf-8")
-        return path
+    def configure(self, journal="default", analytics=""):
+        config = {"analyticsPath": str(analytics)}
+        if journal == "default":
+            config["journalPath"] = str(self.journal)
+        elif journal is not None:
+            config["journalPath"] = str(journal)
+        (self.plugin / "hoko.json").write_text(json.dumps(config))
+        return config
 
-    def run_file(self, plan, session=None, project=None, repo=None, journal="default", since=None):
-        env = dict(os.environ)
-        for name in list(env):
-            if name.startswith("HOKO_"):
-                del env[name]
+    def run_file(self, plan, session=None, project=None, repo=None, journal="default",
+                 analytics="", since=None):
+        self.configure(journal, analytics)
+        env = {name: value for name, value in os.environ.items() if not name.startswith("HOKO_")}
         env["HOME"] = str(self.home)
         env["HOKO_STATE_DIR"] = str(self.state)
-        if journal == "default":
-            env["HOKO_JOURNAL_PATH"] = str(self.journal)
-        elif journal is not None:
-            env["HOKO_JOURNAL_PATH"] = str(journal)
         args = [sys.executable, str(self.script), "file", "--plan", str(plan)]
         if session:
             args += ["--session", session]
@@ -77,17 +76,17 @@ class TestPlanFile(unittest.TestCase):
         return subprocess.run(args, capture_output=True, text=True, env=env,
                               cwd=str(repo) if repo else str(self.home))
 
-    def test_file_records_the_project_and_journal_lines(self):
+    def test_approval_stamps_the_project_and_journal_lines(self):
         repo = self.repo()
         plan = self.tmp / "auto-generated-slug.md"
         plan.write_text(plan_text())
 
         result = self.run_file(plan, session="s1", repo=repo)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip())
+        filed = Path(result.stdout.strip())
+        entry = journal_plan(filed)
         self.assertEqual(entry.name, "plan-01.md", entry.name)
         self.assertEqual(entry.parent.parent, self.journal / "case-repo")
-
         self.assertTrue((entry.parent / "prompt.md").is_file())
         self.assertIn("_Prompt not captured._", (entry.parent / "prompt.md").read_text())
         self.assertIn("Project: case-repo", entry.read_text())
@@ -97,33 +96,103 @@ class TestPlanFile(unittest.TestCase):
         self.assertIn(f"Journal: {entry}", text)
         self.assertLess(text.index("Project: case-repo"), text.index(f"Journal: {entry}"))
 
+    def test_the_filer_prints_the_repository_copy_the_run_works_from(self):
+        repo = self.repo()
+        plan = self.tmp / "auto-generated-slug.md"
+        plan.write_text(plan_text())
+
+        result = self.run_file(plan, session="s1", repo=repo)
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        filed = Path(result.stdout.strip())
+        self.assertEqual(filed.parent, (repo / ".ai" / "plans").resolve())
+        self.assertRegex(filed.name, r"^\d{8}-\d{4}-ship-a-dry-run-flag\.md$")
+        self.assertTrue(filed.is_file())
+        self.assertIn("## Progress", filed.read_text())
+        self.assertNotEqual(filed, plan.resolve())
+
+    def test_approval_renames_the_plan_into_the_repository_plans_directory(self):
+        repo = self.repo()
+        plan = self.tmp / "auto-generated-slug.md"
+        plan.write_text(plan_text())
+
+        result = self.run_file(plan, session="s1", repo=repo)
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        copies = list((repo / ".ai" / "plans").glob("*.md"))
+        self.assertEqual(len(copies), 1, str(copies))
+        self.assertRegex(copies[0].name, r"^\d{8}-\d{4}-ship-a-dry-run-flag\.md$")
+        self.assertIn("/.ai/", (repo / ".gitignore").read_text().splitlines())
+
+    def test_a_plan_already_in_the_plans_directory_keeps_its_name(self):
+        repo = self.repo()
+        plans = repo / ".ai" / "plans"
+        plans.mkdir(parents=True)
+        plan = plans / "20260101-0000-existing.md"
+        plan.write_text(plan_text("Keep the name"))
+
+        result = self.run_file(plan, session="s1", repo=repo)
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        self.assertEqual(sorted(p.name for p in plans.glob("*.md")), ["20260101-0000-existing.md"])
+        self.assertIn("Journal:", plan.read_text())
+
+    def test_approval_generates_the_progress_checklist(self):
+        repo = self.repo()
+        plan = self.tmp / "auto-generated-slug.md"
+        plan.write_text(plan_text())
+
+        result = self.run_file(plan, session="s1", repo=repo)
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        repo_copy = next((repo / ".ai" / "plans").glob("*.md"))
+        self.assertIn("## Progress", repo_copy.read_text())
+        self.assertIn("- [ ] 1. Do it", repo_copy.read_text())
+
+    def test_approval_registers_the_planning_session_in_the_entrys_analytics_folder(self):
+        repo = self.repo()
+        plan = self.tmp / "auto-generated-slug.md"
+        plan.write_text(plan_text())
+        analytics = self.tmp / "analytics"
+
+        result = self.run_file(plan, session="s1", repo=repo, analytics=analytics)
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        entry = journal_plan(Path(result.stdout.strip())).parent
+        folder = analytics / "case-repo" / entry.name
+        rows = json.loads((folder / "sessions.json").read_text())
+        self.assertEqual([(row["session_id"], row["role"], row["round"]) for row in rows],
+                         [("s1", "plan", 1)])
+        self.assertFalse((entry / "sessions.json").exists())
+        link = json.loads((folder / "entry.json").read_text())
+        self.assertEqual((link["journal_entry"], link["session_ids"]), (str(entry), ["s1"]))
+        self.assertEqual(link["project"], "case-repo")
+
     def test_the_session_prompt_anchor_fills_prompt_md(self):
         repo = self.repo()
         plan = self.tmp / "plan.md"
         plan.write_text(plan_text("Anchor the prompt"))
-        anchor = self.anchor("s1", "add a --dry-run flag")
+        import hashlib
+        digest = hashlib.sha256(b"s1").hexdigest()[:16]
+        anchor = self.state / f"{digest}.prompt"
+        anchor.write_text("add a --dry-run flag")
 
         result = self.run_file(plan, session="s1", repo=repo)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip())
+        entry = journal_plan(Path(result.stdout.strip()))
         self.assertIn("add a --dry-run flag", (entry.parent / "prompt.md").read_text())
         self.assertFalse(anchor.exists(), "the write should retire the session anchor")
         self.assertTrue(anchor.with_name(anchor.name + ".used").exists())
 
-    def test_file_registers_the_planning_session_as_round_one_plan(self):
+    def test_the_project_anchor_fills_prompt_md_and_survives_filing(self):
         repo = self.repo()
         plan = self.tmp / "plan.md"
-        plan.write_text(plan_text("Register the session"))
+        plan.write_text(plan_text("Anchor the cycle"))
+        import hashlib
+        digest = hashlib.sha256(str(repo).encode("utf-8")).hexdigest()[:16]
+        anchor = self.state / f"project-{digest}.prompt"
+        anchor.write_text("the project's own first prompt")
 
         result = self.run_file(plan, session="s1", repo=repo)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip())
-
-        rows = json.loads((entry.parent / "sessions.json").read_text())
-        self.assertEqual(len(rows), 1, str(rows))
-        self.assertIn("since", rows[0])
-        self.assertEqual({k: v for k, v in rows[0].items() if k != "since"},
-                         {"session_id": "s1", "round": 1, "role": "plan"})
+        entry = journal_plan(Path(result.stdout.strip())).parent
+        self.assertIn("the project's own first prompt", (entry / "prompt.md").read_text())
+        self.assertEqual(anchor.read_text(), "the project's own first prompt")
 
     def test_the_plan_row_records_the_capture_time_not_the_filing_time(self):
         repo = self.repo()
@@ -133,10 +202,8 @@ class TestPlanFile(unittest.TestCase):
 
         result = self.run_file(plan, session="s1", repo=repo, since=captured)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip())
-
-        rows = json.loads((entry.parent / "sessions.json").read_text())
-        self.assertEqual(len(rows), 1, str(rows))
+        entry = journal_plan(Path(result.stdout.strip())).parent
+        rows = json.loads((entry / "sessions.json").read_text())
         self.assertEqual(rows[0]["since"], captured)
 
     def test_a_plan_whose_journal_line_names_an_existing_file_is_not_refiled(self):
@@ -154,8 +221,9 @@ class TestPlanFile(unittest.TestCase):
 
         rounds = list((self.journal / "case-repo").glob("*"))
         self.assertEqual(len(rounds), 1, str(rounds))
-        rows = json.loads((filed.parent / "sessions.json").read_text())
+        rows = json.loads((journal_plan(filed).parent / "sessions.json").read_text())
         self.assertEqual(len(rows), 1, str(rows))
+        self.assertEqual(len(list((repo / ".ai" / "plans").glob("*.md"))), 1)
 
     def test_a_plans_own_project_line_resolves_the_entry(self):
         repo = self.repo()
@@ -164,8 +232,8 @@ class TestPlanFile(unittest.TestCase):
 
         result = self.run_file(plan, session="s1", repo=repo)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        entry = Path(result.stdout.strip())
-        self.assertEqual(entry.parent.parent, self.journal / "explicit-project")
+        entry = journal_plan(Path(result.stdout.strip())).parent
+        self.assertEqual(entry.parent, self.journal / "explicit-project")
 
     def test_with_journaling_off_only_the_project_line_is_added(self):
         repo = self.repo()
@@ -174,12 +242,26 @@ class TestPlanFile(unittest.TestCase):
 
         result = self.run_file(plan, session="s1", repo=repo, journal=None)
         self.assertEqual(result.returncode, 0, result.stderr.strip())
-        self.assertEqual(Path(result.stdout.strip()), plan.resolve())
-
-        text = plan.read_text()
+        filed = Path(result.stdout.strip())
+        self.assertEqual(filed.parent, (repo / ".ai" / "plans").resolve())
+        text = filed.read_text()
         self.assertIn("Project: case-repo", text)
         self.assertNotIn("Journal:", text)
         self.assertFalse(self.journal.exists(), str(sorted(self.journal.rglob("*"))))
+        self.assertEqual(len(list((repo / ".ai" / "plans").glob("*.md"))), 1)
+
+    def test_a_journal_line_quoted_in_a_fence_does_not_stop_the_header_gaining_its_own(self):
+        repo = self.repo()
+        plan = self.tmp / "plan.md"
+        plan.write_text(plan_with_fenced_header_lines())
+
+        result = self.run_file(plan, session="s1", repo=repo)
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        text = plan.read_text()
+        header = text.split("\n## ", 1)[0]
+        self.assertRegex(header, r"(?m)^Project: case-repo$")
+        self.assertRegex(header, r"(?m)^Journal: .*plan-01\.md$")
+        self.assertEqual(text.count(FENCED_LINES), 1)
 
 
 if __name__ == "__main__":

@@ -50,10 +50,12 @@ land it.
 
 ## Delegation inside a plan run is already approved
 
-A plan run's subagents — `hoko-plan-executor`, `hoko-step-gate`,
-`hoko-code-reviewer-deep`, `hoko-quality-assurance`, `hoko-researcher` — are not ad-hoc
-delegation. Approving the plan approved them, and `/hoko/execute-plan` requires every one
-of them: the fast gate runs on every step, including a two-line diff; the code review runs
-once, at the end. So a general rule against spawning subagents, or against delegating code
-the user will review, does not reach them. It still holds everywhere else: outside a plan
-run, ask before launching one.
+A plan run's subagents — `hoko-plan-executor`, `hoko-quality-assurance`,
+`hoko-final-reviewer`, `hoko-spec-writer`, `hoko-researcher` — are not ad-hoc delegation.
+Approving the plan approved them, and `/hoko/execute-plan` requires every one of them:
+`step-commit.py` runs the fast gate on every step, including a two-line diff; the code
+review runs once, at the end. A `/hoko/task` run's stages — `hoko-specifier`,
+`hoko-spec-writer`, `hoko-planner`, `hoko-plan-executor`, `hoko-quality-assurance`,
+`hoko-final-reviewer` — are the same kind of delegation. So a general rule against
+spawning subagents, or against delegating code the user will review, does not reach them.
+It still holds everywhere else: outside a run, ask before launching one.

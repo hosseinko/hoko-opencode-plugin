@@ -1,18 +1,30 @@
 # hoko — a plan-and-execute workflow for opencode
 
 Plan mode grills you, writes the plan to a file, and hands it to a build run that
-implements it one gated, committed step at a time. Every step gets a fast gate; once the
-whole run passes the full quality gate, one deep code review covers the branch, and only
-a clean verdict opens a pull request. Nothing merges.
+implements it one gated, committed step at a time. The loop is deterministic: a Python
+engine owns the plan's checklist, the fast gate, the commit and the run's event log, so
+"gate before commit, tick after commit" is enforced in code instead of in a model's
+memory. Once every step is committed the full quality gate runs once, the specs are
+updated, one strict review covers the whole branch, and only a clean verdict opens a pull
+request. Nothing merges.
+
+There is a second front door: `/hoko/task` runs a whole task through the pipeline —
+refine, spec, plan, implement, QA, review — with automatic fix cycles, stopping only for
+product decisions. It shares the same engine, the same commits and the same review.
+
+While a run is under way the terminal shows what it is doing: a status line under the
+prompt and a pane in the sidebar, both read from the run's own `progress.json`. A loop
+guard keeps the conductor out of the repository, so the implementation stays in the
+subagents it launched.
 
 Everything lives under the **`hoko`** namespace — commands are `/hoko/…`, agents and
 skills are `hoko-…` — except `grill-me`, which keeps its bare name, and `plan`, which
 deliberately replaces opencode's own plan agent.
 
 It is stack-agnostic: the gates are expressed as *lint → static analysis → tests with
-coverage* and each agent finds the project's own commands rather than assuming tool
-names. Optional skills carry stack conventions — PHP, TypeScript/React, and Go — and
-trigger only on a diff in that stack.
+coverage* and each project's own commands are resolved from its manifests, CI and build
+files rather than assumed. Optional skills carry stack conventions — PHP, TypeScript/React
+and Go — and trigger only on a diff in that stack.
 
 ## Install
 
@@ -21,19 +33,23 @@ trigger only on a diff in that stack.
 | | |
 | --- | --- |
 | opencode | 2.0 or newer — `opencode --version`. On V1 see [Migration from V1](#migration-from-v1) |
-| python3 | only for the journal and its token invoice, and only if you enable it — `python3 --version` |
-| git | plan runs commit each step |
-| node modules | **none.** `plugin/hoko.ts` uses node's standard library only |
+| python3 | 3.9 or newer — the engine every run calls: the plan lint and filing, the checklist, the gates, the task pipeline, the invoice |
+| git | runs commit each step, and the gates diff against a base |
+| node modules | **none at runtime.** `plugin/hoko.ts` uses node's standard library only; the test suite needs `solid-js` |
 
-There is nothing to build and no dependency to install. The plugin has no dependencies on
-purpose — that is why its tool takes no arguments, since declaring arguments would mean
-importing zod, and importing zod would mean an install step.
+There is nothing to build, and the plugin itself has no runtime dependencies: that is why
+its tool takes no arguments, since declaring arguments would mean importing zod, and
+importing zod would mean an install step. `bun` is needed only to run the plugin's own
+tests, never at runtime, and that suite has one dependency — `solid-js`, pinned in
+`package.json`, because `plugin/status.tsx` is the renderer half and needs a JSX runtime in
+a plain process. Bun fetches the pinned version on the suite's first run, or `bun install`
+does it up front.
 
 One thing V2 changed: a plugin can no longer register agents, so this repo's
 `agents/*.md` are installed as files (step 3). The server plugin also has no TUI API, so
-the jump to the run's session lives in `plugin/tui.ts`, the terminal entrypoint V2 loads
-beside the server one. Everything else — commands, skills, the standing instructions —
-is registered by the plugin as before.
+the run display and the jump to the run's session live in `plugin/tui.ts`, the terminal
+entrypoint V2 loads beside the server one. Everything else — commands, skills, the
+standing instructions — is registered by the plugin as before.
 
 ### 1. Put the repo somewhere stable
 
@@ -50,10 +66,10 @@ Keep that path — step 2 needs it.
 ### 2. Point opencode at the plugin
 
 opencode has no plugin marketplace, and agents and commands are only discovered inside
-`~/.config/opencode/` or a project's `.opencode/`. So the repo registers itself: one
-line in `~/.config/opencode/opencode.json` and the plugin injects its commands, skills
-and standing instructions into the live config at startup. `opencode.json.example` is
-that file:
+`~/.config/opencode/` or a project's `.opencode/`. So the repo registers itself: one line
+in `~/.config/opencode/opencode.json` and the plugin injects its commands, skills and
+standing instructions into the live config at startup. `opencode.json.example` is that
+file:
 
 ```json
 {
@@ -75,9 +91,9 @@ cp opencode.json.example ~/.config/opencode/opencode.json   # only if you have n
 ```
 
 The `plugin` entry names the checkout opencode loads everything from — not just
-`plugin/hoko.ts`, but the commands, skills and instructions it injects. An edit made in a
-different clone, or a copy installed elsewhere, has no effect until this path points at
-that checkout and opencode reloads.
+`plugin/hoko.ts`, but the commands, skills and instructions it injects, and the scripts
+the run calls. An edit made in a different clone, or a copy installed elsewhere, has no
+effect until this path points at that checkout and opencode reloads.
 
 ### 3. Install the agents
 
@@ -101,12 +117,14 @@ cp hoko.env.example ~/.config/opencode/hoko.env
 ```
 
 Uncomment what you want — the table under [Configuration](#configuration) says what each
-variable does. Everything has a working default: leave the file untouched and every
-agent runs on the session's model, plans go to `.ai/plans/`, the coverage floor is 85%, a
+variable does. Everything has a working default: leave the file untouched and every agent
+runs on the session's model, plans go to `.ai/plans/`, runs write their events under
+`.ai/runs/`, the coverage floor is 85%, three fix cycles is the task pipeline's limit, a
 PR targets `develop` where the repository has one, and nothing is journaled.
 
 Keeping the file at `~/.config/opencode/hoko.env` rather than in the repo means a
-`git pull` never touches your settings.
+`git pull` never touches your settings. Engine settings can also live in
+`~/.config/opencode/hoko.json`; see [Configuration](#configuration).
 
 ### 5. Reload opencode
 
@@ -143,9 +161,15 @@ Tab → Plan
 ```
 
 You should get grilled one question at a time, then a plan path under `.ai/plans/`, then
-a request to approve. Say **approved** and the TUI moves to a fresh session where the run
-starts at step 1 with a `hoko-plan-executor` subagent. The `tui.ts` entrypoint announces
-the run and switches to its session.
+a request to approve. Say **approved**: the plan is linted and filed, the TUI moves to a
+fresh session, and the run starts at step 1 with a `hoko-plan-executor` subagent. The
+status line under the prompt reads `hoko · <project>@<branch> · Implement 1/<n> · cycle 1`
+once the first step starts.
+
+The display's slot names — `prompt.footer.status` and `home.footer.status` for the status
+line, `sidebar.content` for the pane — are what a live opencode 2.1.2 run accepted. The
+host publishes no slot contract this repository can read, so `bun plugin/test_hoko.ts`
+pins `plugin/status.tsx` to that observation rather than to a specification.
 
 To undo all of this, delete the plugin entry from `opencode.json`, delete the symlinks
 step 3 made, and reload.
@@ -154,9 +178,50 @@ step 3 made, and reload.
 
 Pull (or edit) and reload opencode. That is the whole procedure: nothing is copied,
 compiled or installed, so the files in this repo *are* the live workflow — the plugin is
-loaded from `plugin/`, and the agents are symlinks into `agents/`. Editing any of them
-changes it everywhere on the next reload. A syntax error in `plugin/hoko.ts` takes the
-whole thing down, so run the tests after touching it.
+loaded from `plugin/`, the agents are symlinks into `agents/`, and every run calls
+`scripts/` in place. Editing any of them changes it everywhere on the next reload. A
+syntax error in `plugin/hoko.ts` takes the whole thing down, so run the tests after
+touching it.
+
+### Upgrading from the conversational loop
+
+This branch replaces the per-step review agents with the deterministic engine. Five things
+change in an existing install:
+
+1. **The plans layout grew a second shape.** A plan run still keeps one flat
+   `<YYYYmmddHHMMSS>-<slug>.md` with its `<stem>.progress.json` sidecar beside it, so
+   existing plans keep working and a half-finished run resumes from its `## Progress`
+   checklist. A `/hoko/task` run now owns a folder, `.ai/plans/<YYYYmmdd-HHMM>-<slug>/`,
+   holding its `progress.json`, `prompt.md`, stage hand-offs, `plan-NN.md` files and
+   `report.md`. Run events go to `.ai/runs/<run_id>/events.jsonl`; both top folders are
+   gitignored for you.
+2. **Two agents retired.** The per-step gate agent and the end-of-run deep reviewer are
+   gone: `step-commit.py` runs the fast gate inside the commit, and `hoko-final-reviewer`
+   is the single review of the whole branch. Their symlinks now point at deleted files, so
+   prune them and re-install the rest:
+
+   ```sh
+   for link in ~/.config/opencode/agents/hoko-*.md; do [ -e "$link" ] || rm "$link"; done
+   scripts/install-agents.sh
+   ```
+
+3. **`python3` is now required by the run.** Before, it was only the journal's token
+   invoice; now the plan lint, the filing, the checklist, the fast gate, the task pipeline
+   and the closing report all run through `scripts/`. A missing `python3` refuses the
+   handoff with its own message instead of failing halfway through a step.
+4. **One model variable was replaced.** `HOKO_REVIEWER_DEEP_MODEL` is gone;
+   `HOKO_FINAL_REVIEW` names the model for `hoko-final-reviewer` and is a model reference
+   like the others, so `provider/model` or `provider/model#variant`.
+5. **New settings.** `analyticsPath`, `events`, `eventsDir`, `loopLimit`, `planGate`,
+   `crap`, `mutation`, `crapMax`, `mutationMin`, `pricing` and `efforts` are read from
+   `hoko.json` and from `HOKO_*` variables; existing files need no edit, because every one
+   has a working default. See [Configuration](#configuration).
+
+The checkout this repo lives in and the checkout opencode loads are not always the same
+one: the live install is a separate clone at
+`/Users/hossein.koozehgar/ai/plugins/hoko-opencode-plugin`, on branch `main`. Changes made
+here reach it only after a `git pull` in that directory, and then only after opencode
+reloads. Pull there before deciding an upgrade did not work.
 
 ### When something is off
 
@@ -166,19 +231,24 @@ whole thing down, so run the tests after touching it.
 | No `/hoko` commands, no `hoko-` agents | The plugin never loaded. Check the entry in `opencode.json` is an absolute `file://` URL to the `plugin` directory, then `opencode service restart`. |
 | Plan mode answers like stock opencode | The plugin's `plan` prompt is not reaching the built-in agent. Reload and check `opencode debug agents`: `plan` must carry a system prompt and the hoko permissions. |
 | The plan arrives in the chat, not as a file | The edit exception is not reaching the plans directory — check the permission list in `opencode debug agents`. The agent says so itself rather than losing the plan. |
+| "approved" is refused and names a finding | `plan-lint.py` found a blocking problem: an unclaimed or undeclared requirement id, a step-number gap, a requirement without ` shall `. Fix the plan and approve again; no run session was made. |
 | "approved" produces a reply but no run | The plan agent did not call `hoko_execute`, or the tool is not permitted. Check the permission list in `opencode debug agents`; if there is no plan *file* in the session, the tool refuses by design. |
 | The handoff produces a session with no run | Run `/hoko/execute-plan <path>` yourself and check the opencode log — a failed handoff is written there and announced as a synthetic notice. |
 | The screen stays on Plan after approval | `plugin/tui.ts` did not load, or the run session was created without its `hoko: run` marker. Check the plugin list and the server log. |
+| No status line, no pane | The terminal entrypoint did not load, or its slots are unavailable in this opencode build. The run is unaffected; the plan file and its `progress.json` still carry the state. |
+| `python3: command not found`, or `python3` older than 3.9 | The engine cannot run. Install python3 (and make sure `python3` is what resolves, not only `python3.11`), then approve the plan again. |
+| A step refuses to commit | `step-commit.py` names the reason: exit 1 a red fast gate, 3 a protected branch, 4 a dirty or unchanged tree, 5 a malformed message, 6 a failed `git commit`. The step stays unticked in every one. |
+| A command is denied mid-run | The loop guard is armed and the conductor tried to read or edit the repository itself. Launch the subagent instead; `HOKO_LOOP_GUARD=0` disables the guard if you really mean to work in the main session. |
 | No journal entry | Expected unless `HOKO_JOURNAL_PATH` is set — journaling is off by default. With it set: `python3` missing, or the root is not writable. `hoko_execute` reports the reason in its output instead of failing silently. |
+| No events | `HOKO_EVENTS=0`, or the write failed once and the run disabled events for itself. The reason is printed once on stderr; commands keep their exit status either way. |
 | Entry has no `report-NN.md` | The run never set `Status: complete` — a blocker or a `not ready` gate — or the closing report was not the last thing posted. |
-| Plans land in `.claude/plans/` | Stale Claude Code skills are being picked up — see [Claude Code interference](#claude-code-interference). |
-| A gate subagent says it could not run a check | Its bash allowlist does not cover your project's command. Add the pattern to `agents/hoko-step-gate.md`, or `agents/hoko-code-reviewer-deep.md` for the end-of-run review. |
+| A gate says it could not run a check | `scripts/commands.py --root <repo>` names what it resolved per gate; a `null` means the project names no command for it. Add the target or script it looks for, or install the tool. |
 
 ## Migration from V1
 
 V2 has three intentional breaking changes, and one of them is the plugin API: **a V1
-plugin does not run in V2.** The plugin here has been ported; the file paths, the agent
-and command frontmatter and the skills are unchanged. What you have to do by hand:
+plugin does not run in V2.** The plugin here has been ported, and its own workflow is the
+one documented in this file. What you have to do by hand:
 
 1. **Re-point the plugin.** The `plugin` key becomes `plugins`, and the value becomes the
    `plugin` *directory* rather than `plugin/hoko.ts`. See [step 2](#2-point-opencode-at-the-plugin).
@@ -187,14 +257,14 @@ and command frontmatter and the skills are unchanged. What you have to do by han
    V1 did not have.
 3. **Reload**, then check `opencode debug agents`.
 
-Behavior that changed, all of it forced by the V2 API:
+Behavior the V2 API forced to change:
 
 | V1 | V2 |
 | --- | --- |
 | The plugin registered the agents | Agents are files under `~/.config/opencode/agents/`, installed by `scripts/install-agents.sh` |
 | The plugin appended `instructions/*.md` to the config | The plugin adds them to every model request from the `context` hook — same effect, they are in context on every turn of every agent |
 | `tui.showToast` announced the handoff, the journaled report and the invoice | The server plugin has no TUI API; `plugin/tui.ts` announces the run, and the git guard's warning still arrives as a synthetic notice in the session |
-| Approving switched the TUI to the run's fresh session | `plugin/tui.ts` listens for the run session's `hoko: run` marker, syncs it and navigates to it |
+| Approving switched the TUI to the run's fresh session | `plugin/tui.ts` navigates the current view to the run's root session and syncs it, so the run appears in the approval's own tab; a child session that inherits the marker is ignored |
 | `HOKO_PROMPT_FILE` was exported into every shell | The V2 shell hook carries no session id, so it is gone. Nothing read it |
 | The plugin detected a hand-written `plan` block and left its prompt alone | A plan agent that already carries a system prompt is the user's own and is left alone; an empty one receives this repo's protocol. `HOKO_*_MODEL` is now authoritative when set |
 | `/hoko/research` ran as a subtask because a command could name a subagent | A command cannot name an agent, and a session cannot run on a subagent-only agent, so the command asks the current agent to delegate to `hoko-researcher` |
@@ -202,50 +272,85 @@ Behavior that changed, all of it forced by the V2 API:
 
 `plugin/hoko.ts` was rewritten for the V2 API: `setup(ctx)` with `ctx.tool.transform`,
 `ctx.tool.hook`, `ctx.shell.hook`, `ctx.session.hook`, `ctx.event.subscribe`,
-`ctx.agent.transform`, `ctx.command.transform` and `ctx.skill.transform`. The journaling
-scripts, the git guard, the settings loader and the frontmatter parser are unchanged. It
-still imports nothing beyond node's standard library.
+`ctx.agent.transform`, `ctx.command.transform` and `ctx.skill.transform`. It still imports
+nothing beyond node's standard library and its own sibling modules. The journaling
+scripts, the settings loader and the frontmatter parser are the V2 versions in
+`scripts/`, and `scripts/` as a whole is now the deterministic engine described under
+[the workflow](#the-workflow). `MIGRATION-V2.md` carries the same list with the details.
 
 ## Configuration
 
-Copy `hoko.env.example` to `~/.config/opencode/hoko.env` and uncomment what you want.
-The plugin reads, in increasing order of precedence: `hoko.env` in this repo,
-`~/.config/opencode/hoko.env`, then any `HOKO_*` variable in the real environment.
+Settings come from two files, because the plugin and the engine read them at different
+times.
+
+- **`hoko.env`** — `hoko.env` in this repo, then `~/.config/opencode/hoko.env`, then the
+  real environment. The plugin reads it at startup for models, journaling, the handoff and
+  the loop guard, and exports every value into each shell an agent runs.
+- **`hoko.json`** — this repo's `hoko.json`, then `~/.config/opencode/hoko.json`. The
+  Python scripts read it for their own keys, then let a `HOKO_*` variable override them.
+
+Put together, lowest precedence first: the repo's `hoko.json`, the machine's `hoko.json`,
+the repo's `hoko.env`, the machine's `hoko.env`, the real environment. Copy
+`hoko.env.example` for the first, and write the second by hand — it is a JSON object with
+one key per setting:
+
+```json
+{ "journalPath": "~/notes/journal", "analyticsPath": "~/ai/analytics/opencode", "loopLimit": 5 }
+```
 
 | Variable | Sets | Default |
 | --- | --- | --- |
 | `HOKO_PLAN_MODEL` | model for the `plan` agent | the session's model |
-| `HOKO_BUILD_MODEL` | model for the `build` agent — the conductor of a plan run | the session's model |
+| `HOKO_BUILD_MODEL` | model for the `build` agent — the conductor of a run | the session's model |
 | `HOKO_EXECUTOR_MODEL` | model for `hoko-plan-executor` | the session's model |
-| `HOKO_REVIEWER_MODEL` | model for `hoko-code-reviewer` | the session's model |
-| `HOKO_REVIEWER_DEEP_MODEL` | model for `hoko-code-reviewer-deep`, the reviewer that runs once at the end of a plan run | the session's model |
+| `HOKO_REVIEWER_MODEL` | model for `hoko-code-reviewer`, on request | the session's model |
+| `HOKO_FINAL_REVIEW` | model for `hoko-final-reviewer`, the run's one review | the session's model |
 | `HOKO_QA_MODEL` | model for `hoko-quality-assurance` | the session's model |
 | `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` | the session's model |
-| `HOKO_JOURNAL_PATH` | journal root | **unset — journaling is off** |
-| `HOKO_PLANS_DIR` | where plans are written, relative to the repo root | `.ai/plans` |
+| `HOKO_JOURNAL_PATH` (`journalPath`) | journal root | **unset — journaling is off** |
+| `HOKO_ANALYTICS_PATH` (`analyticsPath`) | where a run's sessions, invoice and event copies go | **unset — they stay in the journal entry** |
+| `HOKO_PLANS_DIR` (`plansDir`) | plans and task folders, relative to the repo root | `.ai/plans` |
+| `HOKO_EVENTS` (`events`) | append the run's events | on |
+| `HOKO_EVENTS_DIR` (`eventsDir`) | run event folders, relative to the repo root | `.ai/runs` |
+| `HOKO_LOOP_LIMIT` (`loopLimit`) | fix cycles a `/hoko/task` run may take, 0 to 10; 0 accepts the open findings unasked | `3` |
+| `HOKO_PLAN_GATE` (`planGate`) | ask Approve / Revise / Stop before a task's steps start | on |
+| `HOKO_EFFORTS` (`efforts`) | per-stage effort as a JSON object over refine, spec, plan, implement, qa and review; a task stage's model ref carries it as its `#variant` | `high`, `qa` at `medium` |
+| `HOKO_SPECS` (`specs`) | the plan run's spec pass, and the task pipeline writing `specs/` instead of a local `spec.md` | off |
+| `HOKO_CRAP` (`crap`) | the CRAP index in the full gate | on |
+| `HOKO_CRAP_MAX` (`crapMax`) | the CRAP index's ceiling | `30` |
+| `HOKO_MUTATION` (`mutation`) | mutation testing in the full gate | on |
+| `HOKO_MUTATION_MIN` (`mutationMin`) | the mutation score floor | `70` |
+| `HOKO_PRICING` (`pricing`) | rate overrides for the invoice, laid over `scripts/pricing.json` | `{}` |
+| `HOKO_COVERAGE_MIN` (`coverageMin`) | the full gate's coverage floor, in percent | `85` |
 | `HOKO_FRESH_SESSION` | approval starts the run in a fresh session and `tui.ts` moves the screen to it. `0`, `false`, `no` or `off` hand off in the approval session | on |
-| `HOKO_COVERAGE_MIN` | the full gate's coverage floor, in percent | `85` |
-| `HOKO_COMMIT_AUTO` | `1` = `hoko-commit` commits without confirming the message | off |
+| `HOKO_LOOP_GUARD` | deny the conductor its own reads and edits while a run is in progress | on |
+| `HOKO_COMMIT_AUTO` (`commitAuto`) | `1` = `hoko-commit` commits without confirming the message | off |
 | `HOKO_BASE_BRANCH` | branch playing the `develop` role — what features branch from and target | `develop`, else the remote's default branch |
 | `HOKO_PR_AUTO` | `1` = `hoko-pull-request` pushes and opens the PR without confirming | off |
 
-Models are `provider/model-id`; `opencode models` lists them.
+Models are `provider/model-id`, and a model variable may carry an opencode variant as
+`provider/model-id#variant`. `opencode models` lists them.
 
 The plugin exports all of these, plus `HOKO_ROOT`, into every shell the agent runs —
-which is how the skills read the settings that apply to them. V1 also exported
-`HOKO_PROMPT_FILE` (this session's captured prompt); V2's shell hook carries no session
-id, so it is gone. Nothing else read it.
+which is how the skills and the engine read the settings that apply to them. V1 also
+exported `HOKO_PROMPT_FILE` (this session's captured prompt); V2's shell hook carries no
+session id, so it is gone. Nothing else read it.
 
-A model variable only takes effect on an agent that has no model of its own: a `model`
-you set yourself in `opencode.json` wins. In V1 the plugin could tell a hand-written agent
-block apart from a generated one; in V2 it cannot, so an unset model is the only signal.
+A model variable overrides whatever model the agent would otherwise use, including a model
+you set yourself in `opencode.json` or in the agent file; an unset variable leaves the
+agent alone. Every other setting is read by the scripts and never touches an agent's
+frontmatter.
 
-### Claude Code interference
-
-V1 shipped around two opencode behaviours that V2 dropped: V2 does not read
-`~/.claude/CLAUDE.md`, and it does not read `~/.claude/skills/`. So a leftover Claude Code
-copy of a workflow like this one can no longer fight `HOKO_PLANS_DIR` over where plans
-live, and the `OPENCODE_DISABLE_CLAUDE_CODE_*` workaround V1 documented is unnecessary.
+`efforts` is applied as the `#variant` of the stage's model, by whichever side resolves that
+model. The plugin resolves each agent's model from its `HOKO_*_MODEL` and appends the
+stage's effort — `plan` for `plan`, `implement` for `build` and `hoko-plan-executor`, `qa`
+for `hoko-quality-assurance`, `review` for the two reviewers — unless the ref already names
+a variant, which wins. That is what puts `efforts.implement` on a plan run's executor,
+whose command passes no model. The task pipeline embeds the same suffix in the model ref on
+a spawn or step action; that explicit ref wins over the agent's because the conductor
+passes it, so the effort lands once. A stage whose agent has no model variable (the
+specifier, spec writer and planner) or no stage (`hoko-researcher`) gets no suffix; the
+run's `run.started` event still records every stage's effort.
 
 ## The workflow
 
@@ -253,10 +358,10 @@ One cycle, one Tab press:
 
 ```
 Tab → plan                    grill → plan file → "approve?"
-you: approved                 hoko_execute: opens a fresh session, journals, runs execute-plan on build
-build (fresh session)         delegate → verify → step-gate → commit, one step per cycle
-                              → full gate → deep review → PR or follow-up plan
-                              → Status: complete → report + token invoice journaled
+you: approved                 hoko_execute: lint → file → fresh session → hand off
+build (fresh session)         per step: executor → step-commit.py (gate, commit, tick)
+                              → full gate → specs → one review → PR or follow-up plan
+                              → Status: complete → report + invoice
 ```
 
 Commands, all optional entry points:
@@ -264,6 +369,7 @@ Commands, all optional entry points:
 ```
 /hoko/plan <request>          the planning protocol, from a command instead of a message
 /hoko/execute-plan <path>     run a plan by hand — a fresh session, or an older plan
+/hoko/task <request>          run a task through the whole pipeline, refine to review
 /hoko/commit                  commit the working tree to the message conventions
 /hoko/pr                      open the PR for the current branch
 /hoko/research <question>     research an external question, file it under .ai/research/
@@ -287,9 +393,14 @@ one rather than as silence. Each step then claims the ids it delivers on a `Sati
 line, and that line is what the executor builds to, what the end-of-run review checks the
 branch against — a requirement claimed but not delivered is a finding that defers the
 PR, as is behaviour no requirement asks for — and what the final gate reports coverage
-against.
-A change with no observable behaviour, a rename or a pure refactor, states no
+against. A change with no observable behaviour, a rename or a pure refactor, states no
 requirements and says so.
+
+Before posting, the plan agent lints the file with `plan-lint.py --plan`: a numbered
+`## Steps` list is rewritten into `### <N>. <title>` headings in place, and the checks
+that a machine can make are reported — a step-number gap or duplicate, a `Satisfies:` id
+that is undeclared or claimed twice, a requirement without ` shall `. The plan agent has
+that one command pre-allowed so the check never stalls on a prompt.
 
 The plan agent writes that file through one permission exception the plugin adds: `edit`
 is denied except the plans directory (spelled relative, `*/`-prefixed and `**/`-prefixed,
@@ -298,133 +409,227 @@ since opencode does not document which form the matcher sees), and `date`, `mkdi
 a prompt. The prompt comes from `agents/plan.md`, installed into
 `~/.config/opencode/agents/`; the plugin only layers the permissions on.
 
-### 2. Approval hands off by itself
+### 2. Approval is linted, filed, and handed off
 
 Say "approved" — or "go ahead", or anything that means yes — and the plan agent calls
 the `hoko_execute` tool. That tool, not the model, does the switching:
 
-1. creates a new opencode session for the run, titled from the plan's `#` heading (or the
+1. lints the plan with `plan-lint.py --plan --structural` and refuses a blocking finding
+   before anything is filed. `--structural` skips the `## Progress` check because filing
+   generates that section next; everything else that would block approval still does.
+   A refused plan names the finding, creates no session and says nothing was filed;
+2. creates a new opencode session for the run, titled from the plan's `#` heading (or the
    plan's filename when it has none), on the `build` agent — the planning session keeps
    its transcript and is left untouched;
-2. files the plan and this cycle's original prompt in the journal, if journaling is
-   configured, then moves the entry it opened and the cycle's other state onto the run's
-   session, so the closing report is still filed into the entry opened at approval;
-3. queues the plan on the approval session, and when that turn ends runs
+3. files the plan with `scripts/plan-file.py file`: it renames a plan that lives outside
+   the plans directory to `<stamp>-<slug>.md`, stamps `Project:` and, when journaling is
+   on, `Journal:`, copies the plan in, generates its `## Progress` checklist and writes
+   the run's `Base:` sha, and registers the approving session as round 1, role `plan`;
+4. queues the plan on the approval session, and when that turn ends runs
    `/hoko/execute-plan <path>` in the fresh session on the `build` agent.
 
 The run's context is the plan file and nothing else — none of the planning transcript
 rides along. So there is no Tab-to-build step and no command to remember, and build never
 starts from a blank slate: it starts inside the execute-plan protocol with the plan path
-in hand. The server plugin cannot move the screen itself, so `plugin/tui.ts` follows the
-new session's marker and brings the prompt box with the run.
+in hand. The server plugin cannot move the screen itself, so `plugin/tui.ts` navigates
+the current view to the new session's `hoko: run` marker. The run appears in the tab the
+approval already occupies, and only the run's root session is followed: a descendant
+inherits the marker, and a `parentID` check keeps each executor, reviewer and QA
+subagent out of the tab bar.
 
 `HOKO_FRESH_SESSION=0` — or `false`, `no`, `off` — skips the new session and queues the
 handoff on the approval session, so the plan runs there as before. When creating the
-session fails, the tool refuses before anything is journaled or queued, and the failure
+session fails, the tool refuses before anything is filed or queued, and the failure
 comes back in the tool result for the plan agent to report, naming
 `HOKO_FRESH_SESSION=0` and the manual `/hoko/execute-plan <path>` as the ways out.
 
 In fresh mode the run starts in a session the plugin created, not the planning session, so
 it no longer inherits the planning session's model. `HOKO_BUILD_MODEL` is what pins the
 conductor, which is worth doing either way — the model a run otherwise lands on is not
-always the one you want reading every diff. It sets the `build` agent's model like the
-other variables set theirs, so it applies to plain build-mode chat too — the conductor and
-build mode are the same agent.
+always the one you want conducting every step. It sets the `build` agent's model like the
+other variables set theirs, so it applies to plain build-mode chat too.
 
 Ask for changes instead of approving and the plan file is edited in place at the same
-path — nothing is journaled until you approve.
+path — nothing is filed until you approve.
 
 If you run opencode with `OPENCODE_EXPERIMENTAL_PLAN_MODE=1`, ignore its `plan_exit`
 tool: that approves opencode's own plan workflow, which implements inline. The prompt
 says so too.
 
-### 3. Execution delegates every step
+### 3. Execution is one deterministic loop
 
-`/hoko/execute-plan` runs on `build` and works the plan one step per cycle: delegate the
-step to `hoko-plan-executor` (cheaper model, its own context), read the diff yourself,
-run the `hoko-step-gate` subagent over it — every step, unconditionally — then commit
-via the `hoko-commit` skill. A red fast gate goes back to the executor and nothing commits
-until it is green. One commit per step. With `HOKO_COMMIT_AUTO=1` each of those
-commits lands without stopping to confirm the message — the protected-branch check and
-the gate still hold. The plan's `## Progress` checklist tracks how far the run got, so it
-survives a compaction or a restart.
+`/hoko/execute-plan` runs on `build` and is a conductor, not an implementer. The engine
+does the parts a model should not be trusted to remember:
 
-The gate is split so the loop stays cheap. Per step, `hoko-step-gate` runs the **fast
-gate** — the project's static analyser and its unit tests, nothing else — and reports each
-command and result; the conductor re-runs nothing. Once every box is ticked, the
-`hoko-quality-assurance` subagent runs the **full gate** once over the whole run — lint,
-static analysis, the full suite with coverage — fixes what it can, commits those fixes,
-and reports each gate and each fix. A `not ready` verdict means the plan file does not
-turn `Status: complete`. With the full gate green, `hoko-code-reviewer-deep` reviews the
-whole branch once, against the plan's Requirements; only a `clean` verdict opens the pull
-request.
+1. **Init and base.** `plan-progress.py init` reconciles `## Progress` against the
+   `### <N>.` headings — every ticked box from an earlier run stays ticked, a missing box
+   is added — and writes `Base: <HEAD>` into the header once. The linter then runs in
+   `--structural` mode: only an unworkable plan (no steps, gapped or duplicate numbers)
+   stops the run.
+2. **Preflight.** `fast-gate.py` runs once, so a project that was already red is shown to
+   you before the run touches anything. It exits 2 when neither an analyser nor a test
+   command resolves — nothing was checked, and that is reported as `unchecked` rather
+   than passing quietly.
+3. **Per step.** `plan-progress.py start` marks the step `in_progress`, gives the run its
+   id and first event on first use, and appends one `stage.started`. `plan-slice.py` cuts
+   that step out of the plan, and the conductor launches `hoko-plan-executor` on the slice
+   with its own context. On return,
+   `step-commit.py` is the only way the step lands: it runs the fast gate (the project's
+   static analyser and unit tests), validates the commit message's mechanical shape,
+   stages every change, commits, ticks the checklist box with the commit sha or the no-op
+   reason, and appends the gate's `check.result` and the step's `stage.completed` events.
+   It refuses a protected branch, a tree that does not match what the step produced, and a
+   malformed message, and the step stays unticked. When the branch name carries a ticket
+   key, the commit message ends with it.
+4. **The closing pass.** With every box ticked, `hoko-quality-assurance` runs the full
+   gate once — lint, static analysis, the full suite with coverage, then CRAP and mutation
+   — fixes what it can and commits those fixes. With `specs` on, `hoko-spec-writer`
+   reconciles the spec, and one `hoko-final-reviewer` reviews the whole `<Base>..HEAD`
+   range against the plan's requirements. Findings become a follow-up plan through
+   `review-findings.py` and the PR is deferred to that plan's run; a clean review invokes
+   `hoko-pull-request`, which pushes and opens a PR on GitHub and leaves the branch alone
+   on any other remote. Nothing merges: no `git merge`, no `gh pr merge`, no auto-merge.
+5. **Closing.** The conductor sets `Status: complete` and posts the closing report as the
+   last thing it says. On the turn's end the plugin collects the run's usage and the model
+   catalog's rates into `usage.json` and `rates.json`, then calls
+   `plan-progress.py complete`, which sets the status, files the report and renders the
+   invoice in one command. A run that stopped short never sets the status, so nothing is
+   filed and nothing is invoiced.
 
-The gate subagents assume no toolchain. Each reads the project's manifest scripts,
-analyser and test config, and CI workflow to find the commands it actually enforces, and
-says which command it settled on so a wrong one is visible. Each runs under its own bash
-allowlist covering the common runners across PHP, JS/TS, Python, Go, Rust, JVM, Ruby and
-.NET; if yours is missing it says so rather than substituting something else, and each
-list is one file to edit.
+The gate scripts assume no toolchain. `scripts/commands.py --root <repo>` resolves each
+gate from, in order, a `Makefile`/`justfile`/`Taskfile.yml` target, the manifest's script
+block, a CI `run:` line, then the ecosystem default when the tool is present, and says
+which command it settled on. PHP commands are wrapped to run in the project's container,
+never against host PHP. `fast-gate.py` runs the analyser and unit tests; the full gate in
+`hoko-quality-assurance` runs all of it, with CRAP and mutation held to `crapMax` and
+`mutationMin`.
 
-A green gate is not an integration. Only a `clean` deep review reaches the PR: on any
-finding the run writes a follow-up plan instead — the findings restated as Requirements,
-with a `## Progress` box per step — sets the plan complete, and stops, so the PR is
-deferred to that plan's own run, which repeats the whole flow. When the review is clean,
-before the plan file turns complete, the run invokes
-`hoko-pull-request`: if `origin` is GitHub it pushes the branch and opens a pull request
-against the base the branch prefix calls for — `develop` for `feature/` and `bugfix/`,
-the release branch plus a back-merge PR for `hotfix/` and `release/` — with the run's
-closing report as the PR body, so the PR and the journal entry say the same thing. On any other remote, or none, the branch is simply left for you to integrate.
-Nothing in the workflow merges: no `git merge` into the base branch, no `gh pr merge`, no
-auto-merge. Without `HOKO_PR_AUTO=1` the push waits for you to confirm the base, branch
-and title; `/hoko/pr` runs the same skill on its own for a branch outside a plan run.
+While the run is `in_progress` the loop guard denies the conductor any `read`, `edit`,
+`write` or `patch` inside the repository outside the plans directory, and keeps the
+plugin's own `scripts/`, `agents/`, `commands/` and `skills/` reachable so the engine can
+be called. A `hoko-*` subagent is never restricted, and neither is a shell call or a path
+outside the repository. A denied call is not a retry signal: it means a step's work was
+about to be done in the conductor's own context.
 
-Both protocols delegate outward rather than guessing: when a decision turns on something
-outside the repo — what a pinned library version actually does, an API's semantics — they
-launch `hoko-researcher` and cite its findings file instead of assuming or asking you to
-go looking.
+Every run writes its events to `.ai/runs/<run_id>/events.jsonl`: one JSON object per line
+with the schema version, run id, a gap-free `seq` assigned under a file lock, timestamp,
+type and payload. The event directory gitignores itself before the first run, so
+`git add -A` never stages an event. `HOKO_EVENTS=0` writes none; a write that fails
+disables events for that run, prints the reason once, and changes no command's exit
+status.
 
-### 4. The journal is written by the tools, not by a reminder
+### 4. `/hoko/task` runs a whole task
 
-**Off unless you set `HOKO_JOURNAL_PATH`.** With a root configured, each cycle is a folder
-`<journal>/<project>/<stamp>-<slug>/` holding `prompt.md`, `plan-01.md`, `report-NN.md`,
-`sessions.json`, `usage.json`, `rates.json`, `invoice.json` and `invoice.md`.
+`/hoko/task <request>` is the second front door. It runs on `build` and follows the
+`hoko-task` skill, which is a thin conductor around `scripts/task.py`: the state machine
+in the script holds the stage order, the skip rules, the cycle count, the loop limit and
+the spec hand-back, and the conductor does what `task.py next` prints. It never decides
+the flow, and it writes no implementation code.
+
+```
+Refine → Spec → Plan → [plan gate] → Implement → QA → Review → next cycle | finish
+```
+
+- **Stages.** `hoko-specifier` refines the prompt into `scope.json`; `hoko-spec-writer`
+  writes the spec when one is needed; `hoko-planner` writes `plan-01.md` and `plan.json`;
+  `hoko-plan-executor` implements one step at a time through the same `step-commit.py`;
+  `hoko-quality-assurance` gates the cycle; `hoko-final-reviewer` reviews it. Each stage
+  writes one JSON hand-off into the task folder and returns its path, and
+  `task.py record` validates it before changing anything.
+- **The loop.** A QA `not ready` or review findings open the next cycle, with the
+  findings rendered as `plan-<NN>.md`. After `1 + loopLimit` cycles the pipeline stops and
+  asks Continue / Accept / Stop; `loopLimit` 0 accepts the open findings without asking and
+  files them as a follow-up plan that is not run.
+- **The plan gate.** By default a task's plan is put to you as Approve / Revise / Stop
+  before a step runs, after the plan hand-off is recorded. Revise sends the planner back to
+  the same file with your words.
+- **Asks.** Only product decisions interrupt the run: an agent hand-off with
+  `needs_input`, a red preflight gate, the plan gate, a loop limit, or a product blocker.
+  The answers are stored in `answers.json` and the same child session is resumed with
+  `--agent-session` / `resume`; `--resume-failed` returns a fresh spawn instead.
+- **Blockers.** An implementer's blocker is routed by kind: `spec` back to the spec
+  writer and then a replan, `plan` to a replan, `external` to `hoko-researcher`, `product`
+  to you.
+- **The folder.** `task.py start` makes `.ai/plans/<YYYYmmdd-HHMM>-<slug>/`, keeps the
+  prompt as `prompt.md`, writes `progress.json` and the first run event, and prints the
+  folder, run id and journal entry as JSON. `finish` writes `report.md`, closes the events
+  and files the report; `stop` marks the task failed and writes its failure events. A task
+  can start from a prompt, from a spec file, or from an existing plan.
+
+`/hoko/task` is the pipeline to reach for when there is no plan yet, or when one task
+should run through to a reviewed branch on its own.
+
+### 5. The run is visible while it runs
+
+`plugin/tui.ts` registers three slots from `plugin/status.tsx` and keeps them refreshed
+on the session's own events plus a two-second tick:
+
+- the status line, appended to both `prompt.footer.status` and `home.footer.status`, reads
+  `hoko · <project>@<branch> · <stage> <n>/<total> · cycle <c>`. The `<n>/<total>` part is
+  the current round's step progress, so it appears during Implement and is left out while
+  a task is still refining, specifying or planning;
+- the pane, appended to `sidebar.content`, lists the run's title and repo, the stage and
+  `cycle <c>/<1 + loopLimit>`, every stage with its status, the current round's steps with
+  their commit sha and any blocker, and the agents currently working in the session's
+  family (at most eight, so the steps stay in view);
+- with no run in progress the line reads `hoko · <project>@<branch>` and no pane is
+  drawn. A detached `HEAD` shows the short sha instead of a branch name.
+
+The reader (`plugin/status.ts`) takes the newest `progress.json` under `plansDir` — a
+task folder's own file or a flat plan's `<stem>.progress.json` — and only shows it while
+it reports `in_progress`. Nothing in the display writes, and the branch is read out of
+`.git/HEAD` rather than by spawning git, so a refresh is a handful of file reads. The
+status line is worth more than the pane, which the sidebar may be hiding; the plan file
+and its `progress.json` remain the durable record either way.
+
+### 6. The journal, the analytics folder and the invoice
+
+**Journaling is off unless you set `HOKO_JOURNAL_PATH`.** With a root configured, each
+cycle is a folder `<journal>/<project>/<stamp>-<slug>/` holding `prompt.md`, `plan-01.md`,
+`report-NN.md` and, for a task, the round's `plan-NN.md` files.
 
 - The plugin captures the first prompt of each cycle verbatim, before any model sees it,
   and retires it once filed so the next cycle captures its own.
-- `hoko_execute` files the entry at approval. No model composes it — the tool runs
-  `scripts/plan-file.py file`, which writes the prompt and the plan, records `Project:`
-  and `Journal:` in the plan's header, and registers the approving session in
-  `sessions.json` as round 1, role `plan`. When the run starts in a fresh session, the
-  run's session is registered as round 1, role `execute`. Each `(session, round, role)`
-  appears once, stamped with its registration time, so a restart loses nothing.
-- The plan turning `Status: complete` closes it: the plugin takes the last message the
-  run posted — by protocol the closing report — and writes it to `report-NN.md` beside
-  the entry's `plan-NN.md`, and logs that it did. A run that stopped short never
-  sets `Status: complete`, so nothing is filed and the entry stays open. It then
-  collects every registered session's assistant responses and those of its descendant
-  sessions into `usage.json`, snapshots the model catalog's rates into `rates.json`, and
-  renders the token invoice. Descendants are tracked from the `session.created` events
-  the plugin observes while it is loaded.
-- `invoice.json` and `invoice.md` list, per model, the input, output, reasoning,
-  cache-read and cache-write tokens and their cost; per round, role and agent type (a
-  registered session's own loop is `main`), billing each response to the row registered
-  latest at or before its timestamp; and the catalog rates behind them. A registered
-  session whose usage cannot be fetched is named in the notes, and the invoice is still
-  written.
+- `hoko_execute` files the entry at approval through `plan-file.py file`. No model
+  composes it. The approving session is registered as round 1, role `plan`; the run's
+  session, when it is a fresh one, as round 1, role `execute`. Each
+  `(session, round, role)` appears once, stamped with its registration time.
+- A plan run closes through `plan-progress.py complete`: it reads the run's `Journal:`
+  line, writes the last thing the conductor posted as `report-NN.md` beside `plan-NN.md`,
+  and renders the invoice. A `/hoko/task` run closes through `task.py finish`, which files
+  its report the same way; when the task reports `done`, the plugin then writes
+  `usage.json` and re-renders that entry's invoice, because only it can read the run's
+  sessions.
+- `usage.json` is the plugin's job, because only it can read a session's messages: every
+  assistant response of every registered session and its descendants, with its tokens and
+  the cost opencode reported. `rates.json` snapshots the model catalog's rates at
+  completion. Both are written before the run is closed.
 
-The invoice's cost is opencode's own reported per-message cost — the catalog rate applied
-to the tokens — a notional cost for the work done, not your subscription bill.
+**`analyticsPath` moves the numbers out of the notes vault.** Set
+`HOKO_ANALYTICS_PATH` (or `"analyticsPath"` in `hoko.json`) and the run's
+`sessions.json`, `invoice.json`, `invoice.md` and `events-<NN>.jsonl` copies live in
+`<analyticsPath>/<project>/<entry>/`, where `<project>` and `<entry>` are the journal
+entry's own folder names. That folder also gets `entry.json`, the link back: the journal
+entry's absolute path, the run ids that completed against it and its registered session
+ids. With `analyticsPath` empty everything stays in the journal entry; with it set,
+`usage.json` and `rates.json` are the two files that stay behind, beside the report they
+priced.
+
+The invoice lists, per model, the input, output, reasoning, cache-read and cache-write
+tokens and their cost; per round, role and agent type (a registered session's own loop is
+`main`), billing each response to the row registered latest at or before its timestamp;
+and the rates behind them. Cost is opencode's own reported per-message cost
+(`cost_source: reported`) — a notional cost for the work done, not your subscription bill.
+A response with no reported cost is priced from `rates.json`, then `scripts/pricing.json`
+with the `pricing` setting laid over it. The rates a round and model were first priced at
+are stored, so a later price change never reprices a past round; a model with no rate at
+all is named in the footer, as is a registered session that reported no responses.
 
 Entry titles and filenames come from the plan's own `#` heading, or failing that the
 first line of its `## Goal` — never from the plan's auto-generated filename. The project
-is the git root, or the nearest ancestor with a `.git`, `.opencode` or `.claude`; the
-home directory never counts, and an unresolvable project lands in `<journal>/unsorted/`.
-
-The journal root can also come from `~/.config/opencode/hoko.json`
-(`{ "journalPath": "…" }`). Precedence: `HOKO_JOURNAL_PATH` → `hoko.json` → off. The
-Python scripts read a `hoko.json` in this repo too, layered under the machine-local one,
-and share it for `plansDir`, `coverageMin`, `commitAuto` and the rest.
+is the git root, or the nearest ancestor with a `.git`, `.ai`, `.opencode` or `.claude`;
+the home directory never counts, and an unresolvable project lands in
+`<journal>/unsorted/`.
 
 ## Layout
 
@@ -432,23 +637,31 @@ and share it for `plansDir`, `coverageMin`, `commitAuto` and the rest.
 plugin/
   index.ts            the server entry point V2 imports: re-exports hoko.ts's default
   hoko.ts             registers everything; settings from hoko.env; the hoko_execute
-                      tool; prompt capture, the fresh-session handoff to build, and
-                      journaling
-  tui.ts              the terminal entrypoint: follows the run session and announces it
-  test_hoko.ts        tests for both entrypoints, their hooks and the tool
+                      tool — lint, file, fresh session, handoff; prompt capture; usage
+                      collection and the run's close
+  guard.ts            the loop guard: the newest progress.json, and whether a call may
+                      read or edit the repository
+  status.ts           reads the run into the status line and the pane's view
+  status.tsx          the Solid half: footer and sidebar slot contributions
+  tui.ts              the terminal entrypoint: the jump to the run session and the slots
+  test_hoko.ts        tests for the entrypoints, the guard and the display
 Dockerfile            bun + python3, for the test suite only
 docker-compose.yml    the `test` service: `docker compose run --rm test`
+Makefile              `test` (parallel) and `test-serial`
 agents/
   plan.md                 primary; replaces opencode's plan agent with the protocol:
                           grill → plan file → approve → hoko_execute. Installed to
                           ~/.config/opencode/agents/, since a plugin cannot register agents
   hoko-plan-executor.md   subagent; implements one step, never commits
-  hoko-researcher.md      subagent; external research, writes .ai/research/<stamp>-<slug>.md
-  hoko-step-gate.md       subagent; a step's fast gate — static analysis + unit tests
+  hoko-specifier.md       subagent; refines a task prompt, writes scope.json
+  hoko-spec-writer.md     subagent; writes or reconciles the spec
+  hoko-planner.md         subagent; writes a task's plan and its hand-off
+  hoko-quality-assurance.md subagent; the full gate, fixes and commits
+  hoko-final-reviewer.md  subagent; the one review of a finished run
   hoko-code-reviewer.md   subagent; reviews a diff via hoko-code-review on request
-  hoko-code-reviewer-deep.md subagent; the single end-of-run review over the whole
-                          branch, on HOKO_REVIEWER_DEEP_MODEL
-  hoko-quality-assurance.md subagent; the end-of-run full gate, fixes and commits
+  hoko-researcher.md      subagent; external research, writes .ai/research/<stamp>-<slug>.md
+  hoko-security-auditor.md subagent; a security audit of a path or a codebase
+  hoko-journal-writer.md  subagent; files one journal report on request
   hoko-go-code-reviewer.md subagent; reviews a Go diff against hoko-senior-go-developer,
                           findings tagged official/community/contested, read-only
   hoko-go-test-writer.md  subagent; writes table-driven Go tests, edits only _test.go
@@ -457,16 +670,20 @@ agents/
                           read-only
 commands/
   grill-me.md
-  hoko/{plan,execute-plan,commit,research,pr}.md
+  hoko/{plan,execute-plan,task,commit,research,pr}.md
 skills/
   grill-me/               the grilling protocol
+  hoko-task/              the /hoko/task conductor: the loop around task.py
   hoko-commit/            commit message conventions
   hoko-pull-request/      end of a run: push and open a PR on GitHub
   hoko-code-review/       review standards + per-language reference guides
+  hoko-security-review/   the security guide as a front door
   hoko-quality-assurance/ lint → static analysis → tests, any stack
   hoko-feature-specs/     specs/<capability>.md — EARS requirements, selective
-                          Gherkin criteria, design notes; written from intent or
-                          derived from existing code
+                          Gherkin criteria, design notes
+  hoko-research/          answer an external question, file the findings
+  hoko-log-plan/          the manual fallback for filing a prompt and a plan
+  hoko-log-report/        the manual fallback for filing a run's report
   hoko-api-developer/     PHP only: JSON Schema + swagger.yml + versioned routes
   hoko-senior-php-developer/ PHP only: no-comment self-explanatory code, objects over
                           arrays, typed collections, mirrored test tree
@@ -474,28 +691,45 @@ skills/
                           endpoints + queries API layer, composition over prop flags
   hoko-senior-go-developer/ Go only: top-level packages and internal/ with no pkg/,
                           errors wrapped only where the API exposes the chain, stdlib
-                          net/http, hand-written fakes, log/slog; a reference per topic
-                          plus check/test/scaffold scripts
+                          net/http, hand-written fakes, log/slog
 instructions/
   hoko.md                 git stops at the commit: never merge, never push, PR instead;
-                          and plan-run delegation is pre-approved by the plan approval
+                          and run delegation is pre-approved by the plan approval
   communication.md        how to answer: lead with the answer, short by default, no
                           preamble before a tool call, comments are the exception
   docker-first.md         docker first: never install or run a language runtime on the
-                          host — use docker and docker compose, newest version, and stop
-                          when docker does not work
+                          host — use docker and docker compose, and stop when docker
+                          does not work
 scripts/
-  install-agents.sh       symlink agents/*.md into ~/.config/opencode/agents/
   settings.py             the hoko.json/env config the scripts share
+  plan_format.py          the plan's own format: steps, requirements, sections
+  plan-lint.py            the machine checks on a plan: block approval or note
+  plan-find.py            find the newest unfinished plan, this repo first
+  plan-slice.py           cut one step out of a plan for its executor
+  plan-flow.py            the grill subcommand the planning protocol calls
+  plan-file.py            file an approved plan: header, copy, Progress, registry
+  plan-progress.py        init | start | tick | complete | abort — the checklist and
+                          the run's events
+  progress.py             the one reader/writer of ## Progress and progress.json
+  followup.py             render the next round's plan from findings
+  review-findings.py      turn the strict review's JSON into a follow-up plan
+  commands.py             resolve a project's lint/analyse/unit/suite/coverage/mutation
+  gate.py                 run one gate command and keep its exit status
+  fast-gate.py            the analyser + unit tests a step commit runs
+  in-service.py           wrap a PHP command in the project's container
+  crap.py                 the CRAP index for the changed methods
+  step-commit.py          gate, commit and tick one step in one enforced call
+  events.py               the only writer of .ai/runs/<run_id>/events.jsonl
+  analytics.py            where a journal entry's numbers live
   journal.py              write | report | register — the journal entry
-  plan-file.py            file an approved plan, record Project:/Journal:, register the session
-  invoice.py              render invoice.json + invoice.md from a finished entry's usage
-  test_settings.py
-  test_journal.py         tests, against a throwaway journal root
-  test_plan_file.py
-  test_invoice.py
+  invoice.py              render invoice.json + invoice.md from reported usage
+  task.py                 the /hoko/task state machine
+  pricing.json            the bundled rates the invoice falls back to
+  install-agents.sh       symlink agents/*.md into ~/.config/opencode/agents/
+  run_tests.py            the parallel runner for the suites below
 hoko.env.example          every setting, commented, with its default
 opencode.json.example     the one line that registers the plugin
+MIGRATION-V2.md           the V1 → V2 plugin-API migration
 ```
 
 Agents, commands and skills are plain opencode files — the plugin only reads their
@@ -508,14 +742,13 @@ model decides to load it, which is exactly when "just commit this" turned into a
 merge into the integration branch.
 
 Dropping a file into `instructions/` is all it takes to add a set, and deleting one is
-all it takes to remove it — which is how `communication.md` gets there. Unlike V1, the
-plugin does not know what is in `opencode.json`: if you also list an instructions file
-there you will get it twice, so let the plugin carry it. Two caveats: instructions cost
-context on every turn of every agent, cheap subagents included, so a long file is not
-free; and a general rule can collide with the workflow. `communication.md` says not to
-spawn subagents without asking, which a plan run does constantly — `hoko.md` carves that
-out explicitly, and any other collision belongs there too, not in an edit to the file it
-collides with.
+all it takes to remove it. Unlike V1, the plugin does not know what is in
+`opencode.json`: if you also list an instructions file there you will get it twice, so let
+the plugin carry it. Two caveats: instructions cost context on every turn of every agent,
+cheap subagents included, so a long file is not free; and a general rule can collide with
+the workflow. `communication.md` says not to spawn subagents without asking, which a run
+does constantly — `hoko.md` carves that out explicitly, and any other collision belongs
+there too, not in an edit to the file it collides with.
 
 The frontmatter parser covers scalars, nested maps (`permission:`, `tools:`) and the
 `>`/`|` block scalars the skill descriptions use. It is not a full YAML parser.
@@ -530,21 +763,23 @@ like the commands.
 The parts most likely to want changing:
 
 - **Commit and PR conventions** — `skills/hoko-commit/SKILL.md` carries the message
-  format (why-focused summary, one bullet per change, a trailing Jira-style key when the
+  format (why-focused summary, one bullet per change, a trailing ticket key when the
   branch name has one). `skills/hoko-pull-request/SKILL.md` carries the PR title and body
   rules.
 - **The branching rules** — `instructions/hoko.md` states them (protected branches, which
   base each prefix is cut from, the `<type>/<TICKET-><slug>` naming); `gitVerdict` in
   `plugin/hoko.ts` enforces them, refusing the shell tool a commit on a protected branch, a
   name off the convention, or a branch cut from an explicitly wrong base. A branch created
-  without a start point is only toasted, so stacking one branch on another still works.
-  Change both together, or the guard contradicts the prose.
-- **The gates** — `skills/hoko-quality-assurance/SKILL.md` is the whole gate in one
-  file, tool-agnostic. Its hard rules (no suppression entries, no inline ignore
-  comments, coverage only goes up) are the opinionated part.
-- **The gate's allowlist** — `agents/hoko-step-gate.md`, or
-  `agents/hoko-code-reviewer-deep.md` for the end-of-run review, if one cannot run your
-  project's check command.
+  without a start point is only warned about, so stacking one branch on another still
+  works. Change both together, or the guard contradicts the prose.
+- **The gates** — `skills/hoko-quality-assurance/SKILL.md` is the whole gate in one file,
+  tool-agnostic. Its hard rules (no suppression entries, no inline ignore comments,
+  coverage only goes up) are the opinionated part. The commands themselves come from
+  `scripts/commands.py`, so a project that names its gate in a `Makefile`, a manifest or
+  CI is already covered; extend that resolver when your project names it somewhere else.
+- **The engine's checks** — `scripts/plan-lint.py` decides what blocks a plan's approval,
+  `scripts/fast-gate.py` what a step must pass, and `scripts/step-commit.py` how a commit
+  is validated. All three are plain Python with their own suites.
 - **Standing rules** — anything in `instructions/`, in context on every agent, every
   turn. `hoko.md` is the git and delegation policy; `communication.md` is response style
   and code-comment policy, and is the most personal file here — replace it with your own
@@ -558,18 +793,21 @@ The parts most likely to want changing:
 
 ### Stack-specific skills
 
-Six skills trigger on their own descriptions rather than through a command. Two are
-stack-neutral — the quality gate and the spec writer; the other four carry stack
-conventions and stay out of the way on a diff that is not theirs.
+The stack-neutral skills — the quality gate, the spec writer, the reviewer, the task
+pipeline — trigger on their own descriptions; the stack skills carry conventions and stay
+out of the way on a diff that is not theirs.
 
 - **`hoko-quality-assurance`** — the gate: lint, then the project's static analyser with
   no suppressions and no inline ignore comments, then tests with coverage above
   `HOKO_COVERAGE_MIN` and rising — with the floor graded in one of three modes:
   `strict` when the project meets it or has met it before, `legacy` when it never has
   (held to its own gitignored `.ai/coverage-baseline` instead), or `absent` when there
-  is no suite or no coverage tooling. It comes in two shapes — the fast gate (analyser + unit tests)
-  that `hoko-step-gate` runs per step, and the full gate that runs once at the end of a
-  run or before a standalone commit.
+  is no suite or no coverage tooling. After coverage it scores the changed methods for
+  CRAP against `crapMax` and measures mutation against `mutationMin`; both are reported,
+  and a surviving mutant is closed by an assertion rather than by suppressing the mutant.
+  It comes in two shapes — the fast gate (`scripts/fast-gate.py`, analyser + unit tests)
+  that every step commit runs, and the full gate that runs once at the end of a run or
+  before a standalone commit.
 - **`hoko-feature-specs`** — writes `specs/<capability>.md`: numbered EARS requirements,
   selective Gherkin acceptance criteria and short design notes, from intent before the
   code exists or derived from code that already runs.
@@ -600,8 +838,9 @@ framework and test tooling from the project and express the rules in its idioms.
 `hoko-commit` invokes the quality gate before drafting a message, and `hoko-code-review`
 points the reviewer at the PHP pair on a PHP diff, at the frontend skill on a
 TypeScript/React one and at the Go skill on a Go one, so a plan run picks them up at the
-commit step and at the end-of-run review.
-Inside a plan run `hoko-commit` holds to the fast gate `hoko-step-gate` already ran
+commit step and at the end-of-run review. `hoko-security-review` is the front door to the
+review's security guide when you want only that pass.
+Inside a plan run `hoko-commit` holds to the fast gate the step commit already ran
 instead of starting the full one; every other commit runs all three.
 
 ## Research
@@ -620,7 +859,9 @@ Three ways it runs:
   in a subagent, on its own context.
 - plan mode launches it during grilling instead of guessing at external behaviour, and
   cites the findings file in the plan's *Decisions*.
-- `/hoko/execute-plan` launches it when a step's blocker is an external unknown.
+- a run launches it when a step's blocker is an external unknown: the `/hoko/task`
+  pipeline routes an `external` blocker to it and puts the findings into the implementer's
+  prompt, and the plan conductor does the same by hand.
 
 It may write exactly one path (`.ai/research/*.md`), has `webfetch` and `websearch`
 allowed, `bash` restricted to `date`, `mkdir -p` and `git rev-parse`, and cannot ask you
@@ -632,28 +873,34 @@ install — check with `opencode debug agent hoko-researcher` and look for it in
 map; `webfetch` always works, so give it URLs when it has no search. And subagents
 cannot launch subagents at opencode's default `subagent_depth: 1`, so `hoko-plan-executor`
 and `hoko-code-reviewer` cannot research on their own — only the primary agent can, which
-is why the blocker path routes back through the conductor.
+is why both the blocker path and the task pipeline route back through the conductor.
 
 ## Tests
 
 The suite needs bun and python3 together, so it runs in the container this repo ships:
 
 ```sh
-docker compose run --rm test    # the whole suite, in the order below
+docker compose run --rm test    # the whole suite
 ```
 
 The `test` service is `bun run test`, which is:
 
 ```sh
-bun plugin/test_hoko.ts         # plugin: capture, the tool, the handoff, journaling, invoice
-python3 scripts/test_settings.py  # config: precedence, coercion, dict parsing
-python3 scripts/test_journal.py # journal: entries, titles, projects, reports, config
-python3 scripts/test_plan_file.py # filing: header lines, sessions.json, idempotence
-python3 scripts/test_invoice.py # invoice: per-model sums, round/role attribution, rates
-python3 skills/hoko-senior-go-developer/scripts/test_go_scripts.py
-                                # Go scripts: check order, skips, coverage, scaffold
+bun plugin/test_hoko.ts && python3 scripts/run_tests.py
 ```
 
-Run a single one with `docker compose run --rm test bun plugin/test_hoko.ts`.
+`bun plugin/test_hoko.ts` covers the server entrypoint, the guard and the display;
+`python3 scripts/run_tests.py` discovers two roots and runs them in parallel: every
+`scripts/test_*.py` suite, one per engine script — settings, the plan format and lint,
+progress, the gates, the step commit, events and analytics, journaling, the invoice, the
+task pipeline, the follow-up renderer, the docs and the manifests — and the Go script suite
+under `skills/hoko-senior-go-developer/scripts/`, which `unittest discover` over `scripts/`
+cannot see. `--start-dir <dir>` narrows discovery to that one folder and drops the other
+root. `make test` is the same runner; `make test-serial` runs the `scripts/` suites one
+after another when a failure needs readable output.
+
+Run a single Python suite by path — `python3 scripts/test_settings.py` — one suite through
+the runner with `python3 scripts/run_tests.py --pattern test_settings.py`, and the
+TypeScript file with `bun plugin/test_hoko.ts`.
 
 Every one runs against throwaway directories and never touches a real journal.

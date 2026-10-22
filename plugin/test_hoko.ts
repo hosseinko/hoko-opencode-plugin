@@ -762,7 +762,7 @@ async function boot(overrides: any = {}) {
   const navigated: any[] = []
   const synced: string[] = []
   const toasts: any[] = []
-  const cleanup = tui.setup({
+  const cleanup = await tui.setup({
     data: {
       on: (name: string, callback: (event: any) => void) => {
         listeners[name] = callback
@@ -788,6 +788,179 @@ async function boot(overrides: any = {}) {
   check("a hoko run is announced", toasts.at(-1)?.message === "Run started", JSON.stringify(toasts))
   cleanup?.()
   check("the TUI listener is removed on cleanup", !listeners["session.created"])
+}
+
+// ---------------------------------------------------------- the run status reader --
+
+{
+  const { statusView, runningAgents } = await import("./status.ts")
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-status-"))
+  const write = (file: string, value: any) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n")
+  }
+  // The newest file wins, so a later fixture has to be written later, not merely named
+  // later.
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 15))
+
+  const shop = path.join(base, "shop")
+  const plans = path.join(shop, ".ai", "plans")
+  fs.mkdirSync(path.join(shop, ".git"), { recursive: true })
+  fs.writeFileSync(path.join(shop, ".git", "HEAD"), "ref: refs/heads/main\n")
+  const taskFolder = path.join(plans, "20261022-1200-speed-tests")
+  write(path.join(taskFolder, "progress.json"), {
+    version: 1,
+    run_id: "01JBSTATUS",
+    task: "20261022-1200-speed-tests",
+    title: "Speed tests",
+    status: "in_progress",
+    stage: "Implement",
+    cycle: 1,
+    loop_limit: 3,
+    stages: { Refine: "skipped", Spec: "skipped", Plan: "done", Implement: "in_progress", QA: "pending", Review: "pending" },
+    rounds: [{
+      round: 1, plan: "plan-01.md", source: "plan", steps: [{ n: 1, title: "Old round", status: "done", commit: null, note: null, blocker: null }],
+    }, {
+      round: 2,
+      plan: "plan-02.md",
+      source: "review",
+      steps: [
+        { n: 1, title: "Add the index", status: "done", commit: "abcdef1234567", note: null, blocker: null },
+        { n: 2, title: "Measure it", status: "in_progress", commit: null, note: null, blocker: null },
+        { n: 3, title: "Tune it", status: "pending", commit: null, note: null, blocker: { kind: "external", text: "needs the benchmark box" } },
+      ],
+    }],
+  })
+
+  const active = statusView({ root: shop, plansDir: ".ai/plans" })
+  check("an in-progress task shows the step in progress over the round's steps",
+    active.line === "hoko · shop@main · Implement 2/3 · cycle 1", active.line)
+  check("the pane lists the run's stages and their statuses",
+    active.run?.stages.length === 6
+      && active.run?.stages.find((stage: any) => stage.name === "QA")?.status === "pending"
+      && active.run?.stages.find((stage: any) => stage.name === "Implement")?.status === "in_progress",
+    JSON.stringify(active.run?.stages))
+  check("the pane takes the newest round's steps",
+    active.run?.round === 2 && active.run?.steps.length === 3, JSON.stringify(active.run?.round))
+  check("a step carries its commit", active.run?.steps[0].commit === "abcdef1234567", JSON.stringify(active.run?.steps[0]))
+  check("a step carries its blocker",
+    active.run?.steps[2].blocked === true && (active.run?.steps[2].blocker ?? "").includes("benchmark"),
+    JSON.stringify(active.run?.steps[2]))
+
+  const withAgents = statusView({
+    root: shop, plansDir: ".ai/plans",
+    agents: [{ id: "child", agent: "hoko-plan-executor", status: "busy" }],
+  })
+  check("an active run carries the running agents", withAgents.run?.agents[0]?.agent === "hoko-plan-executor",
+    JSON.stringify(withAgents.run?.agents))
+
+  // A flat plan keeps its run state in `<stem>.progress.json` beside the plan.
+  await settle()
+  write(path.join(plans, "20261022-1300-plan-run.progress.json"), {
+    version: 1,
+    task: "20261022-1300-plan-run",
+    title: "Plan run",
+    status: "in_progress",
+    stage: "Implement",
+    cycle: 1,
+    loop_limit: 5,
+    stages: { Implement: "in_progress", QA: "pending", Review: "pending" },
+    rounds: [{ round: 1, plan: "20261022-1300-plan-run.md", source: "plan", steps: [
+      { n: 1, title: "One", status: "pending", commit: null, note: null, blocker: null },
+      { n: 2, title: "Two", status: "pending", commit: null, note: null, blocker: null },
+    ] }],
+  })
+  const planned = statusView({ root: shop, plansDir: ".ai/plans" })
+  check("a flat plan's sidecar names its first pending step",
+    planned.line === "hoko · shop@main · Implement 1/2 · cycle 1", planned.line)
+  check("the pane counts cycles as 1 + loop_limit", planned.run?.cycles === 6, JSON.stringify(planned.run?.cycles))
+
+  // A task between rounds has no steps to count.
+  await settle()
+  const qaFolder = path.join(plans, "20261022-1400-qa")
+  write(path.join(qaFolder, "progress.json"), {
+    version: 1, task: "20261022-1400-qa", title: "QA run", status: "in_progress",
+    stage: "QA", cycle: 2, loop_limit: 3,
+    stages: { Refine: "skipped", Spec: "skipped", Plan: "done", Implement: "done", QA: "in_progress", Review: "pending" },
+    rounds: [],
+  })
+  const staged = statusView({ root: shop, plansDir: ".ai/plans" })
+  check("a stage with no steps shows the stage alone", staged.line === "hoko · shop@main · QA · cycle 2", staged.line)
+  check("a stage-only run still draws a pane", staged.run?.title === "QA run", JSON.stringify(staged.run?.title))
+
+  // A finished run keeps the plain line and closes the pane.
+  const finishedDocument = JSON.parse(fs.readFileSync(path.join(qaFolder, "progress.json"), "utf8"))
+  write(path.join(qaFolder, "progress.json"), { ...finishedDocument, status: "done" })
+  const finished = statusView({ root: shop, plansDir: ".ai/plans" })
+  check("a finished run keeps the plain status line", finished.line === "hoko · shop@main", finished.line)
+  check("a finished run draws no pane", finished.run === undefined, JSON.stringify(finished.run))
+
+  // No run at all, and a run whose file cannot be parsed.
+  const bare = path.join(base, "bare")
+  fs.mkdirSync(path.join(bare, ".git"), { recursive: true })
+  fs.writeFileSync(path.join(bare, ".git", "HEAD"), "ref: refs/heads/main\n")
+  const empty = statusView({ root: bare, plansDir: ".ai/plans" })
+  check("no run shows hoko, the project and the branch", empty.line === "hoko · bare@main", empty.line)
+  check("no run draws no pane", empty.run === undefined, JSON.stringify(empty.run))
+
+  const broken = path.join(bare, ".ai", "plans", "20261022-1500-broken.progress.json")
+  write(broken, "{not json")
+  check("an unparsable progress file keeps the plain line",
+    statusView({ root: bare, plansDir: ".ai/plans" }).line === "hoko · bare@main",
+    statusView({ root: bare, plansDir: ".ai/plans" }).line)
+
+  // The newest unreadable run hides an older running one: past the newest is never read.
+  await settle()
+  write(path.join(bare, ".ai", "plans", "20261022-1400-older", "progress.json"), {
+    version: 1, task: "20261022-1400-older", title: "Older", status: "in_progress",
+    stage: "Implement", cycle: 1, loop_limit: 1,
+    stages: { Implement: "in_progress" },
+    rounds: [{ round: 1, plan: "plan-01.md", steps: [{ n: 1, title: "One", status: "pending" }] }],
+  })
+  await settle()
+  write(broken, "{still not json")
+  const hidden = statusView({ root: bare, plansDir: ".ai/plans" })
+  check("an unreadable newest run hides an older running one", hidden.line === "hoko · bare@main" && hidden.run === undefined,
+    JSON.stringify(hidden))
+
+  // A detached HEAD names the commit; a missing HEAD leaves the branch out.
+  fs.rmSync(path.join(bare, ".ai"), { recursive: true, force: true })
+  fs.writeFileSync(path.join(bare, ".git", "HEAD"), "3f2a1b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a\n")
+  check("a detached HEAD shows the short sha",
+    statusView({ root: bare, plansDir: ".ai/plans" }).line === "hoko · bare@3f2a1b9",
+    statusView({ root: bare, plansDir: ".ai/plans" }).line)
+
+  const noHead = path.join(base, "nohead")
+  fs.mkdirSync(path.join(noHead, ".git"), { recursive: true })
+  check("an unreadable HEAD leaves @branch out",
+    statusView({ root: noHead, plansDir: ".ai/plans" }).line === "hoko · nohead",
+    statusView({ root: noHead, plansDir: ".ai/plans" }).line)
+
+  // A worktree's `.git` is a pointer to a gitdir whose HEAD is the worktree's own.
+  const worktree = path.join(base, "wt")
+  const gitdir = path.join(base, "git", "worktrees", "wt")
+  fs.mkdirSync(gitdir, { recursive: true })
+  fs.writeFileSync(path.join(gitdir, "HEAD"), "ref: refs/heads/feature/ABC-1-worktree\n")
+  fs.mkdirSync(worktree, { recursive: true })
+  fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${gitdir}\n`)
+  check("a worktree shows its own branch",
+    statusView({ root: worktree, plansDir: ".ai/plans" }).line === "hoko · wt@feature/ABC-1-worktree",
+    statusView({ root: worktree, plansDir: ".ai/plans" }).line)
+
+  // The agent list is the session family's working members, capped at 8.
+  const busy = Object.fromEntries([["root", "busy"], ["a", "busy"], ["b", "retry"], ["idle", "idle"],
+    ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`c${n}`, "busy"])])
+  const agents = runningAgents("root", {
+    family: () => ["root", "a", "b", "idle", ...Object.keys(busy).filter((id) => id.startsWith("c"))],
+    get: (id) => ({ agent: id === "root" ? "build" : `hoko-${id}` }),
+    status: (id) => (id === "a" ? "running" : busy[id] ? { type: busy[id] } : undefined),
+  })
+  check("the pane lists only the working agents, at most 8",
+    agents.length === 8 && agents.every((agent: any) => agent.status !== "idle"), JSON.stringify(agents))
+  check("an agent row names its agent and its status",
+    agents[0].agent === "build" && agents[0].status === "busy", JSON.stringify(agents[0]))
+  check("a host that reports a plain status word is read too",
+    agents.some((agent: any) => agent.status === "running"), JSON.stringify(agents))
 }
 
 console.log()

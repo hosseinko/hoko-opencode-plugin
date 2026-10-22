@@ -71,14 +71,15 @@ export function guardVerdict({ tool, path: file, agent, run }: GuardInput): stri
 }
 
 /**
- * The run that is executing now: the newest `progress.json` under `plansDir`, whether it
- * lives in a task folder or beside a flat plan, and only when it reports `in_progress`.
+ * The newest `progress.json` under `plansDir`: a task folder's own file, or a flat plan's
+ * `<stem>.progress.json` sidecar. One owner for a rule two readers share — whether a run
+ * is armed (`activeRun`) and what the terminal UI shows about it (`status.ts`).
  *
  * Older files are never consulted. A run that died before filing its report leaves its
  * file at `in_progress`; reading past the newest one would arm the guard on every later
  * session for a run that no longer exists.
  */
-export function activeRun(root: string, plansDir: string): GuardRun | undefined {
+export function newestProgressFile(root: string, plansDir: string): string | undefined {
   const dir = path.join(root, ...plansDir.split("/"))
   let entries: fs.Dirent[]
   try {
@@ -101,11 +102,16 @@ export function activeRun(root: string, plansDir: string): GuardRun | undefined 
     } catch {}
   }
   files.sort((left, right) => right.mtime - left.mtime)
-  const newest = files[0]
+  return files[0]?.file
+}
+
+/** The run that is executing now, when the newest `progress.json` reports `in_progress`. */
+export function activeRun(root: string, plansDir: string): GuardRun | undefined {
+  const newest = newestProgressFile(root, plansDir)
   if (!newest) return undefined
   let document: any
   try {
-    document = JSON.parse(fs.readFileSync(newest.file, "utf8"))
+    document = JSON.parse(fs.readFileSync(newest, "utf8"))
   } catch {
     return undefined
   }

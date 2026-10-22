@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Usage: ./$0 <service_name> <command>
+
+SERVICE="$1"
+shift # Remove the first argument (service name) so the rest are the command
+
+# Check if the service is currently running
+# 'docker compose ps -q' returns the container ID if running, or empty if not
+if [ -n "$(docker compose ps -q "$SERVICE")" ]; then
+    # echo "Container is running. Using 'exec'..."
+    echo "Will run 'docker compose exec $(printf "%q " "$SERVICE" "$@")"
+    docker compose exec "$SERVICE" "$@"
+else
+    # echo "Container is not running. Using 'run'..."
+    # --rm removes the container after the command finishes to keep things clean
+    echo "Will run 'docker compose run --rm --no-deps $(printf "%q " "$SERVICE" "$@")"
+    docker compose run --rm --no-deps "$SERVICE" "$@"
+fi

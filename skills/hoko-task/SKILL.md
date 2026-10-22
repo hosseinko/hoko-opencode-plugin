@@ -165,8 +165,9 @@ If the child cannot be reached (it is gone, or the call fails), ask `next` again
 Put the action's `questions` (1 to 4) to the user with the `question` tool, one entry per
 question: the action's `question` as the text, its `stage` as the header, its `options` as
 the labels with the `recommended` one first and marked `(Recommended)`, and its `why` as
-that option's description. Then store the answers, one JSON object of question id to the
-answer text:
+that option's description. When a question carries `"multiple": true`, pass it on so the
+tool lets the user pick more than one option. Then store the answers, one JSON object of
+question id to the answer text:
 
 ```bash
 python3 "${HOKO_ROOT}/scripts/task.py" answer --task "<dir>" --answer-file - <<'ANSWER'

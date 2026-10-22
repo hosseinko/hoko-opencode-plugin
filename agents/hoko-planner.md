@@ -47,7 +47,7 @@ to this conversation, so a decision that is not in it does not exist:
 # <the task title, from the prompt you were given>
 Spec: specs/login.md (SPEC-007: REQ-2, REQ-5)    one line per spec file, only when there is a spec
 Ticket: <KEY>                                    only when scope.json has a ticket
-QA: crap, mutation                               the checks the settings turn on, or `QA: none`
+QA: crap, mutation                               the scope's checks list, else the settings, or `QA: none`
 ## Goal
 <one line>
 ## Non-goals
@@ -64,7 +64,10 @@ QA: crap, mutation                               the checks the settings turn on
 - Irreversible: what cannot be undone    only on a step whose commit revert does not undo it
 ```
 
-- `QA:` comes from `python3 "${HOKO_ROOT}/scripts/settings.py" crap` and `... mutation`, each printing `true` or `false`. It is not asked.
+- `QA:` comes from `scope.json`'s `checks` list when it carries one — the pipeline names
+  that list in your prompt — and otherwise from `python3 "${HOKO_ROOT}/scripts/settings.py" crap`
+  and `... mutation`, each printing `true` or `false`. Write `QA: none` when the list is
+  empty, or when there is no list and both settings are off. It is not asked.
 - Do not write `Project:`, `Journal:`, `Base:` or `## Progress`: the pipeline stamps them.
 - A plan with `Spec:` lines has no `## Requirements` section. Each line names a spec file by the path `spec.json` gives, the spec's own id from its front matter, and the requirements this plan delivers. Every listed `REQ` is claimed by exactly one step as `<spec id>/REQ-N`, and a step claims only what a line lists. Without a spec, write `## Requirements` instead: numbered `R<N>` list items in EARS form, one `shall` each, every one claimed by exactly one step. Omit it when the change has no observable behaviour; such a step says `Satisfies: none — internal`.
 - Write `## Non-goals` only for what the prompt or `scope.json` explicitly leaves out of the change. When neither leaves anything out, write no `## Non-goals` section.

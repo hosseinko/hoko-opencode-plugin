@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Every agent declares its tool rules in the V2 permission map, and the final reviewer's git access."""
+"""Every agent declares its tool rules in the V2 permission map, the final reviewer's git
+access, and the specifier and planner's Refine checks question."""
 
 import re
 import unittest
@@ -79,6 +80,32 @@ class FinalReviewerShellTestCase(unittest.TestCase):
         bash = permission_map(AGENTS / "hoko-final-reviewer.md")["bash"]
         expected = {"*": "deny", **{command: "allow" for command in GIT_COMMANDS}}
         self.assertEqual(expected, bash)
+
+
+class RefineChecksTestCase(unittest.TestCase):
+    """REQ-11 and REQ-12 — Refine asks the CRAP/Mutation/Skip question and records its answer."""
+
+    def test_SPEC_LOCAL_REQ_11_the_specifier_asks_one_multi_select_crap_mutation_or_skip_question(self):
+        text = read(AGENTS / "hoko-specifier.md")
+        self.assertIn("multi-select", text)
+        for option in ("- `CRAP`", "- `Mutation`", "- `Skip`"):
+            self.assertIn(option, text)
+        self.assertIn('"multiple": true', text)
+
+    def test_SPEC_LOCAL_REQ_12_the_specifier_records_the_selection_in_the_scope_checks_list(self):
+        text = read(AGENTS / "hoko-specifier.md")
+        self.assertIn("`checks`", text)
+        self.assertIn('"checks": ["crap", "mutation"]', text)
+        self.assertIn("`[]` for `Skip`", text)
+
+
+class PlannerQaLineTestCase(unittest.TestCase):
+    """REQ-14 — the planner writes the plan's QA: line from the scope's checks list."""
+
+    def test_SPEC_LOCAL_REQ_14_the_planner_takes_the_qa_line_from_the_scopes_checks(self):
+        text = read(AGENTS / "hoko-planner.md")
+        self.assertIn("`scope.json`'s `checks` list", text)
+        self.assertIn("`QA: none`", text)
 
 
 if __name__ == "__main__":

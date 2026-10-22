@@ -151,6 +151,7 @@ SIZES = ("trivial", "small", "medium", "large")
 STATUSES = ("ok", "needs_input", "spec_invalid", "blocked")
 VERDICTS = ("green", "green with debt", "not ready")
 CHECKS = ("fast-gate", "lint", "analyse", "tests", "coverage", "crap", "mutation")
+SCOPED_CHECKS = ("crap", "mutation")
 GATE_STATUSES = ("passed", "failed", "skipped", "error")
 ACTIONABLE = ("blocking", "important")
 SEVERITIES = ACTIONABLE + ("nit", "suggestion", "learning", "praise")
@@ -349,6 +350,8 @@ def check_questions(name, questions, required):
             fail(name, f"{where}.options must be 2 to 4 non-empty strings")
         if item.get("recommended") not in options:
             fail(name, f"{where}.recommended must be one of its options")
+        if "multiple" in item and not isinstance(item["multiple"], bool):
+            fail(name, f"{where}.multiple must be true or false")
 
 
 def check_decisions(name, decisions):
@@ -396,6 +399,13 @@ def check_scope(name, data):
     for index, item in enumerate(unknowns):
         if not isinstance(item, dict) or not is_text(item.get("question")) or not is_text(item.get("resolution")):
             fail(name, f"unknowns[{index}] needs a question and a resolution")
+    if "checks" in data:
+        checks = data["checks"]
+        if not isinstance(checks, list) or not all(isinstance(check, str) for check in checks):
+            fail(name, "checks must be a list of crap and mutation")
+        unknown = [check for check in checks if check not in SCOPED_CHECKS]
+        if unknown:
+            fail(name, f"checks may name only crap and mutation, not {unknown[0]!r}")
 
 
 def check_spec(name, data):
@@ -549,6 +559,9 @@ def implicit_plan(task, scope, prompt, references=(), claimed=()):
     if len(change) > 1000:
         change = change[:1000].rsplit(" ", 1)[0] + " …"
     header = "".join(f"Spec: {line}\n" for line in references)
+    checks = qa_line(scope["checks"] if "checks" in scope else None)
+    if checks is not None:
+        header += f"QA: {checks}\n"
     satisfies = f"- Satisfies: {', '.join(claimed)}\n" if claimed else ""
     tests = ("a test for each claimed requirement that fails without the change; "
              if claimed else "") + "the project's own checks stay green."
@@ -892,7 +905,8 @@ def phase_refine(task):
     handoff = task.path("scope.json")
     return spawn(task, "Refine", prompt_lines(
         task, handoff, "Refine the prompt into scope.json: size, impact, needs_spec, needs_plan, ticket "
-        "and the unknowns you resolved from the code. Ask only product questions."),
+        "and the unknowns you resolved from the code. Ask the product questions, and always ask "
+        "which QA checks the run gets."),
         handoff=str(handoff))
 
 
@@ -915,6 +929,39 @@ def scope_lines(task):
     """The scope hand-off, for a task that has one: a task started from a spec skips Refine."""
     scope = task.path("scope.json")
     return [f"The scope: {scope}"] if scope.is_file() else []
+
+
+def selected_checks(task):
+    """The checks the Refine answer selected, or None when the task asked no such question:
+    a pre-change scope and a task started from a spec or a plan carry no `checks` list."""
+    scope = task.flow.get("scope") or {}
+    return scope["checks"] if "checks" in scope else None
+
+
+def qa_line(checks):
+    """The plan's `QA:` value for a checks selection, or None when there was no selection."""
+    return None if checks is None else ", ".join(checks) or "none"
+
+
+def plan_check_lines(task):
+    """What the planner writes on the plan's `QA:` line: the Refine answer when there is one,
+    else nothing and the plan in force or the settings decide."""
+    checks = selected_checks(task)
+    if checks is None:
+        return []
+    if not checks:
+        return ["Refine selected no QA check (Skip): write the plan's `QA:` line as `QA: none`."]
+    return [f"Refine selected the QA checks {', '.join(checks)}: write that list on the plan's `QA:` line."]
+
+
+def qa_check_lines(task):
+    checks = selected_checks(task)
+    if checks is None:
+        return []
+    if not checks:
+        return ["Refine selected no QA check (Skip): run neither the CRAP index nor mutation testing, "
+                "and report both as off."]
+    return [f"Refine selected the QA checks {', '.join(checks)}: run exactly those and report the rest as off."]
 
 
 def phase_spec(task):
@@ -962,6 +1009,7 @@ def phase_plan(task):
                      f"write plan.json again, with these changes: {revision}")
     if task.flow.get("plan_against_spec_as_written"):
         lines.append("The user chose to plan against the spec as written: do not hand it back again.")
+    lines.extend(plan_check_lines(task))
     return spawn(task, "Plan", lines, handoff=str(handoff), **({"mode": "replan"} if replan else {}))
 
 
@@ -1016,10 +1064,13 @@ def phase_research(task):
 def phase_qa(task):
     plan, entry = plan_of_round(task)
     handoff = task.path(f"qa-{task.cycle:02d}.json")
-    return spawn(task, "QA", prompt_lines(
+    lines = prompt_lines(
         task, handoff, f"The plan: {plan}", f"The range: {plan_base(task, plan)}..HEAD",
         "Run only the project's auto-fixers and commit their output; every other problem goes back "
-        "as a finding."), handoff=str(handoff), plan=str(plan), range=f"{plan_base(task, plan)}..HEAD")
+        "as a finding.")
+    lines.extend(qa_check_lines(task))
+    return spawn(task, "QA", lines, handoff=str(handoff), plan=str(plan),
+                 range=f"{plan_base(task, plan)}..HEAD")
 
 
 def phase_review(task):
@@ -1175,6 +1226,8 @@ def record_refine(task, args):
     if not data["needs_plan"]:
         adopt_plan(task, implicit_plan(task, data, prompt), 1, "implicit")
     task.flow["scope"] = {key: data[key] for key in ("title", "size", "needs_spec", "needs_plan", "ticket")}
+    if "checks" in data:
+        task.flow["scope"]["checks"] = data["checks"]
     done_stage(task, "Refine", size=data["size"], needs_spec=data["needs_spec"], needs_plan=data["needs_plan"])
     if not data["needs_spec"]:
         skip_stage(task, "Spec")

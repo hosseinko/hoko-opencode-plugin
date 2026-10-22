@@ -60,9 +60,9 @@ subagent (`subagent_type: hoko-researcher`) with the specific question. It files
 findings under `.ai/research/` and reports a path; cite that path in the plan's
 *Decisions* so the executor can read the evidence.
 
-Once the grilling is done, ask which QA checks the run gets — `CRAP` and `Mutation`,
-always, never skipped because the change looks small — and record the answer as the
-plan's `QA:` header line.
+Once the grilling is done, ask which QA checks the run gets — `CRAP`, `Mutation` and
+`Skip`, always asked, never skipped because the change looks small — and record the answer
+as the plan's `QA:` header line (`QA: none` for `Skip`).
 
 Stop grilling once you can write the plan. Never fill a material gap with an assumption
 — an unresolved blocker goes under **Open questions** in the plan.

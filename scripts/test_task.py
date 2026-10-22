@@ -437,6 +437,13 @@ class TestStartFromSpec(TaskTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("not both", result.stderr)
 
+    def test_SPEC_LOCAL_REQ_15_a_spec_start_carries_no_checks_line_so_the_plans_qa_line_stands(self):
+        folder = self.started()
+        self.record(folder, "Preflight", "--exit-code", "0")
+        action = self.next(folder)
+        self.assertEqual(action["stage"], "Plan")
+        self.assertNotIn("Refine selected", action["prompt"])
+
 
 class TestNext(TaskTestCase):
     def test_next_prints_one_json_object_naming_the_agent_and_no_model_without_one(self):
@@ -553,6 +560,15 @@ class TestHandoffSchema(TaskTestCase):
     def test_a_question_needs_two_to_four_options_and_a_recommended_one_of_them(self):
         bad = {"id": "q1", "question": "Which?", "options": ["a", "b"], "recommended": "c", "why": "because"}
         self.rejected(self.scope_handoff(status="needs_input", questions=[bad]), "recommended")
+
+    def test_SPEC_LOCAL_REQ_11_a_multiple_hint_must_be_a_boolean(self):
+        bad = {"id": "q1", "question": "Which?", "options": ["a", "b", "c"], "recommended": "a",
+               "why": "because", "multiple": "yes"}
+        self.rejected(self.scope_handoff(status="needs_input", questions=[bad]), "multiple")
+
+    def test_SPEC_LOCAL_REQ_13_a_checks_value_other_than_crap_or_mutation_is_rejected(self):
+        self.rejected(self.scope_handoff(checks=["lint"]), "scope.json", "checks", "lint")
+        self.rejected(self.scope_handoff(checks="crap"), "checks", "list")
 
     def test_a_qa_hand_off_needs_a_findings_list_and_known_gate_checks(self):
         folder = self.green_to_qa()
@@ -803,6 +819,56 @@ class TestNeedsNoPlan(TaskTestCase):
         action = self.next(self.folder)
         self.assertEqual((action["action"], action["stage"], action["mode"]), ("spawn", "Plan", "replan"))
         self.assertIn("plan-02.md", action["prompt"])
+
+
+class TestRefineChecks(TaskTestCase):
+    """The QA checks the Refine answer selects reach the plan and the QA gate."""
+
+    def asked(self, **question):
+        folder = self.start()["dir"]
+        self.next(folder)
+        checks = {"id": "checks", "question": "Which checks does this run get?",
+                  "options": ["CRAP", "Mutation", "Skip"], "recommended": "CRAP",
+                  "why": "Every extra check costs run time."}
+        checks.update(question)
+        self.put(folder, "scope.json", self.scope_handoff(status="needs_input", questions=[checks]))
+        self.record(folder, "Refine")
+        return self.next(folder)
+
+    def test_SPEC_LOCAL_REQ_11_a_multiple_hint_reaches_the_ask_action(self):
+        asked = self.asked(multiple=True)
+        self.assertEqual(asked["action"], "ask")
+        self.assertTrue(asked["questions"][0]["multiple"])
+
+    def test_SPEC_LOCAL_REQ_14_a_checks_list_lands_in_the_plan_prompt(self):
+        self.scope = {"checks": ["crap"]}
+        folder = self.start()["dir"]
+        prompt = self.drive(folder, until=spawns("Plan"))["prompt"]
+        self.assertIn("Refine selected the QA checks crap:", prompt)
+        self.assertNotIn("mutation", prompt)
+
+    def test_SPEC_LOCAL_REQ_12_the_selected_checks_land_in_the_qa_prompt(self):
+        self.scope = {"checks": ["crap"]}
+        folder = self.start()["dir"]
+        prompt = self.drive(folder, until=spawns("QA"))["prompt"]
+        self.assertIn("Refine selected the QA checks crap:", prompt)
+        self.assertNotIn("mutation", prompt)
+
+    def test_SPEC_LOCAL_REQ_12_skip_selects_no_quality_check(self):
+        self.scope = {"checks": []}
+        folder = self.start()["dir"]
+        plan = self.drive(folder, until=spawns("Plan"))["prompt"]
+        self.assertIn("Refine selected no QA check (Skip): write the plan's `QA:` line as `QA: none`.", plan)
+
+        folder = self.start("Another task")["dir"]
+        qa = self.drive(folder, until=spawns("QA"))["prompt"]
+        self.assertIn("Refine selected no QA check (Skip): run neither the CRAP index nor mutation testing", qa)
+
+    def test_SPEC_LOCAL_REQ_12_skip_writes_qa_none_into_the_implicit_plan(self):
+        self.scope = {"checks": [], "needs_plan": False}
+        folder = self.start()["dir"]
+        step = self.drive(folder, "step")
+        self.assertIn("QA: none\n", Path(step["plan"]).read_text())
 
 
 class TestSpecHandBack(TaskTestCase):

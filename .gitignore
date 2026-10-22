@@ -1,5 +1,6 @@
 hoko.env
 hoko.json
+hoko.json.backup
 .DS_Store
 node_modules/
 .ai/

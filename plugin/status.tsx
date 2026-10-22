@@ -20,6 +20,16 @@ import {
   type StepView,
 } from "./status.ts"
 
+/**
+ * The slot names a live opencode 2.1.2 run accepted. The host publishes no slot contract
+ * this repository can read, so these are an observation rather than a specification.
+ */
+export const SLOTS = {
+  promptFooter: "prompt.footer.status",
+  homeFooter: "home.footer.status",
+  sidebar: "sidebar.content",
+} as const
+
 const MARK: Record<string, string> = {
   done: "✓",
   in_progress: "▶",
@@ -127,10 +137,10 @@ export function runSlots(context: any, root: string): RunSlots {
   // The first read happens before the slots are mounted, so a footer never draws the
   // empty line even for one frame.
   refresh()
-  register({ append: "prompt.footer.status", render: () => <StatusLine context={context} snapshot={snapshot()} /> })
-  register({ append: "home.footer.status", render: () => <StatusLine context={context} snapshot={snapshot()} /> })
+  register({ append: SLOTS.promptFooter, render: () => <StatusLine context={context} snapshot={snapshot()} /> })
+  register({ append: SLOTS.homeFooter, render: () => <StatusLine context={context} snapshot={snapshot()} /> })
   register({
-    append: "sidebar.content",
+    append: SLOTS.sidebar,
     render: (input: any) => (
       <Show when={snapshot().run}>
         {(run) => <RunPane context={context} run={run()} agents={agentsFor(context, input?.sessionID)} />}

@@ -163,6 +163,11 @@ fresh session, and the run starts at step 1 with a `hoko-plan-executor` subagent
 status line under the prompt reads `hoko · <project>@<branch> · Implement 1/<n> · cycle 1`
 once the first step starts.
 
+The display's slot names — `prompt.footer.status` and `home.footer.status` for the status
+line, `sidebar.content` for the pane — are what a live opencode 2.1.2 run accepted. The
+host publishes no slot contract this repository can read, so `bun plugin/test_hoko.ts`
+pins `plugin/status.tsx` to that observation rather than to a specification.
+
 To undo all of this, delete the plugin entry from `opencode.json`, delete the symlinks
 step 3 made, and reload.
 

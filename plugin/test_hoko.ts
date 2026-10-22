@@ -1247,7 +1247,7 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
 // --------------------------------------------------------------- the run display --
 
 {
-  const { runSlots } = await import("./status.tsx")
+  const { runSlots, SLOTS } = await import("./status.tsx")
   // opencode compiles status.tsx through its Solid plugin, which turns <For> and <Show>
   // into reactive branches. Under the test runner the same JSX is a plain element tree,
   // so the test walks it with the runtime's own For and Show.
@@ -1319,8 +1319,13 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   const theme = { text: { base: "#ffffff", muted: "#808080" } }
   const active = display(theme)
   runSlots(active.context, shop)
-  check("the display registers the status line and pane slots the TUI provides",
-    active.slots.map((slot) => slot.append).join(",") === "prompt.footer.status,home.footer.status,sidebar.content",
+  // The host publishes no slot contract this repository can read, so the record is what a
+  // live opencode 2.1.2 run accepted, not what the host documents.
+  const observedSlots = ["prompt.footer.status", "home.footer.status", "sidebar.content"]
+  check("status.tsx's slot names are the ones observed on a live run",
+    Object.values(SLOTS).join(",") === observedSlots.join(","), JSON.stringify(Object.values(SLOTS)))
+  check("the display registers every slot name status.tsx declares",
+    active.slots.map((slot) => slot.append).join(",") === Object.values(SLOTS).join(","),
     JSON.stringify(active.slots.map((slot) => slot.append)))
 
   const line = render(slotOf(active.slots, "prompt.footer.status").render())

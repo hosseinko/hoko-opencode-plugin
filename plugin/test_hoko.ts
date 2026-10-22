@@ -416,8 +416,8 @@ async function boot(overrides: any = {}) {
     })
     return custom.get("plan")?.system === "My own plan protocol" && custom.get("plan")?.description === "Mine"
   })())
-  check("plan shell pre-allows the path-resolving commands",
-    ["date*", "mkdir -p*", "git rev-parse*", "test -f*"].every((command) =>
+  check("plan shell pre-allows the path-resolving commands and the plan linter",
+    ["date*", "mkdir -p*", "git rev-parse*", "test -f*", "python3 *plan-lint.py*"].every((command) =>
       planAgent.permissions.some((rule: any) => rule.action === "shell" && rule.resource === command && rule.effect === "allow")),
     JSON.stringify(planAgent.permissions))
   check("plan may call hoko_execute",

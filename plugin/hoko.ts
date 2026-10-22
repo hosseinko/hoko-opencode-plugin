@@ -73,7 +73,7 @@ const planGlobs = (dir: string, root: string) => [
 // writes into. Left at plan mode's default these prompt mid-grilling, and a denied one
 // leaves the model with no path — which is how a plan ends up in the chat instead of a
 // file. Everything else keeps the agent's default.
-const PLAN_BASH = ["date*", "mkdir -p*", "git rev-parse*", "ls*", "test -f*"]
+const PLAN_BASH = ["date*", "mkdir -p*", "git rev-parse*", "ls*", "test -f*", "python3 *plan-lint.py*"]
 const PROTECTED_BRANCHES = ["main", "master", "staging", "develop"]
 const BRANCH_NAME = /^(feature|bugfix|hotfix|release)\/(?:[A-Z][A-Z0-9]*-\d+-)?[a-z0-9]+(?:-[a-z0-9]+)*$/
 const GIT_CREATE = /\bgit\s+(?:checkout\s+-b|switch\s+-c)\s+(\S+)(?:\s+(\S+))?/

@@ -2,37 +2,18 @@
 description: Writes the lean plan for a /hoko/task run — plan-01.md plus plan.json — from the prompt, scope.json and spec.json, or hands the spec back with status spec_invalid when a requirement cannot be delivered as written, or in replan mode writes the next round's plan after the implementer was blocked. Invoke with the task folder and the hand-off paths. Use only as the Plan stage of /hoko/task.
 mode: subagent
 color: accent
-permissions:
-  - action: edit
-    resource: "*"
-    effect: deny
-  - action: edit
-    resource: ".ai/plans/**"
-    effect: allow
-  - action: edit
-    resource: "*/.ai/plans/**"
-    effect: allow
-  - action: edit
-    resource: "**/.ai/plans/**"
-    effect: allow
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: question
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "*"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
-  - action: webfetch
-    resource: "*"
-    effect: allow
-  - action: websearch
-    resource: "*"
-    effect: allow
+permission:
+  edit:
+    "*": deny
+    ".ai/plans/**": allow
+    "*/.ai/plans/**": allow
+    "**/.ai/plans/**": allow
+  task: deny
+  question: deny
+  bash: allow
+  skill: allow
+  webfetch: allow
+  websearch: allow
 ---
 
 You are the Plan stage of the `/hoko/task` pipeline. The scope is settled and the spec,

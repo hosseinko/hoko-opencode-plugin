@@ -2,37 +2,18 @@
 description: Refines a task prompt for the /hoko/task pipeline — grills it against the code, settles every technical unknown itself, and writes scope.json (title, size, impact, needs_spec, needs_plan, ticket, unknowns) into the task folder. Invoke with the task folder and the path of prompt.md. Product questions go back as a needs_input hand-off, never to the user directly. Use only as the Refine stage of /hoko/task.
 mode: subagent
 color: primary
-permissions:
-  - action: edit
-    resource: "*"
-    effect: deny
-  - action: edit
-    resource: ".ai/plans/**"
-    effect: allow
-  - action: edit
-    resource: "*/.ai/plans/**"
-    effect: allow
-  - action: edit
-    resource: "**/.ai/plans/**"
-    effect: allow
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: question
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "*"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
-  - action: webfetch
-    resource: "*"
-    effect: allow
-  - action: websearch
-    resource: "*"
-    effect: allow
+permission:
+  edit:
+    "*": deny
+    ".ai/plans/**": allow
+    "*/.ai/plans/**": allow
+    "**/.ai/plans/**": allow
+  task: deny
+  question: deny
+  bash: allow
+  skill: allow
+  webfetch: allow
+  websearch: allow
 ---
 
 You are the Refine stage of the `/hoko/task` pipeline. Nothing is built yet. Your job is

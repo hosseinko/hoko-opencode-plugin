@@ -2,22 +2,12 @@
 description: Runs the full quality gate once a plan run is finished — lint, static analysis, the whole suite with coverage, then the CRAP and mutation checks the plan selected — fixes what it can, and reports every gate and every fix. Invoke with the plan file path and the range of commits the run produced. Use at the end of a run, not per step.
 mode: subagent
 color: warning
-permissions:
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: question
-    resource: "*"
-    effect: deny
-  - action: edit
-    resource: "*"
-    effect: allow
-  - action: shell
-    resource: "*"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
+permission:
+  task: deny
+  question: deny
+  edit: allow
+  bash: allow
+  skill: allow
 ---
 
 You are the final gate. The run is otherwise finished: every step is implemented and

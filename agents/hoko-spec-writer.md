@@ -7,22 +7,12 @@ description: >-
   per step.
 mode: subagent
 color: info
-permissions:
-  - action: question
-    resource: "*"
-    effect: deny
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: edit
-    resource: "*"
-    effect: allow
-  - action: shell
-    resource: "*"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
+permission:
+  question: deny
+  task: deny
+  edit: allow
+  bash: allow
+  skill: allow
 ---
 
 You write specs, in one of three modes. The prompt you were given says which: a

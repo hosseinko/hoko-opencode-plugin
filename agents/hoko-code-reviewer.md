@@ -2,37 +2,18 @@
 description: Reviews a diff against the plan step it was meant to implement, using the hoko-code-review skill. Invoke with the plan file path, or a slice of it carrying that one step, plus the step number and the diff command to run. Use by hand for an ad-hoc review outside a plan run — inside a run, every step gets the mechanical fast gate alone, and the one review is `hoko-final-reviewer` at the end.
 mode: subagent
 color: accent
-permissions:
-  - action: edit
-    resource: "*"
-    effect: deny
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: question
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "git diff*"
-    effect: allow
-  - action: shell
-    resource: "git log*"
-    effect: allow
-  - action: shell
-    resource: "git show*"
-    effect: allow
-  - action: shell
-    resource: "git status*"
-    effect: allow
-  - action: shell
-    resource: "git rev-parse*"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
+permission:
+  edit: deny
+  task: deny
+  question: deny
+  bash:
+    "*": deny
+    "git diff*": allow
+    "git log*": allow
+    "git show*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+  skill: allow
 ---
 
 You review one step's diff against the plan step it was meant to implement, then stop.

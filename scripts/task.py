@@ -52,12 +52,14 @@ transition that already happened — asking twice writes nothing twice:
 
     branch      on a protected branch: create the branch (ticket key in `ticket`), then ask again
     preflight   run `command` (the fast gate) and `record --stage Preflight --exit-code N`
-    spawn       launch `agent` named `name` on `model` at `effort` with `prompt`, then
+    spawn       launch `agent` named `name` on `model` (its ref already carries the stage's
+                effort as the `#variant`) with `prompt`, then
                 `record --stage <stage> --agent-session <id>` with the child session the
                 `subagent` tool returned
     resume      continue the child session `session_id` that asked, with `message`
     ask         put `questions` (1–4) to the user, then `answer`
-    step        the next unticked step: `slice` for `hoko-plan-executor`, then `step-commit.py`;
+    step        the next unticked step: `slice` for `hoko-plan-executor` (its `model`, when
+                present, likewise carries the implement effort), then `step-commit.py`;
                 `context` (when present) goes into the executor's prompt
     finish      every cycle is green: `finish --report-file -`
     stop        the run ended (`status`); report `reason` and end
@@ -226,6 +228,19 @@ def on_protected_branch(root):
 
 def stage_effort(stage):
     return settings.get(f"efforts.{stage.lower()}")
+
+
+def model_with_effort(model, effort):
+    """The model reference the conductor passes: the stage's model with its effort as the
+    `#variant`. A ref that already names a variant keeps it, because that is an explicit
+    choice and the stage default does not override it. No model, no effort, no suffix."""
+    if not model or not effort or "#" in model:
+        return model
+    return f"{model}#{effort}"
+
+
+def stage_model_ref(stage):
+    return model_with_effort(progress.stage_model(stage), stage_effort(stage))
 
 
 def project_slug(root):
@@ -868,8 +883,8 @@ def spawn(task, stage, lines, **extra):
     if answers.is_file():
         lines = lines + [f"Answers the user already gave are in {answers}."]
     action = {"action": "spawn", "stage": stage, "name": name, "agent": AGENTS[stage],
-              "effort": effort, "prompt": "\n".join(lines)}
-    model = progress.stage_model(stage)
+              "prompt": "\n".join(lines)}
+    model = stage_model_ref(stage)
     if model:
         action["model"] = model
     return {**action, **extra}
@@ -990,8 +1005,8 @@ def phase_implement(task):
         raise TaskError(f"cannot slice step {step['n']} of {plan.name}: {result.stderr.strip()}")
     action = {"action": "step", "plan": str(plan), "step": step["n"], "steps": len(entry["steps"]),
               "title": step["title"], "round": entry["round"], "cycle": task.cycle,
-              "slice": result.stdout.strip(), "effort": stage_effort("Implement")}
-    model = progress.stage_model("Implement")
+              "slice": result.stdout.strip()}
+    model = stage_model_ref("Implement")
     if model:
         action["model"] = model
     context = task.flow.get("context")

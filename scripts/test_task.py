@@ -440,7 +440,7 @@ class TestStartFromSpec(TaskTestCase):
 
 
 class TestNext(TaskTestCase):
-    def test_next_prints_one_json_object_naming_the_agent_and_the_stage_effort(self):
+    def test_next_prints_one_json_object_naming_the_agent_and_no_model_without_one(self):
         folder = self.start()["dir"]
         result = self.run_task("next", "--task", folder)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -448,21 +448,54 @@ class TestNext(TaskTestCase):
         action = json.loads(result.stdout)
         self.assertEqual((action["action"], action["stage"], action["agent"], action["name"]),
                          ("spawn", "Refine", "hoko-specifier", "refine-c1"))
-        self.assertEqual(action["effort"], "high")
         self.assertNotIn("model", action, "no HOKO_*_MODEL names the refine stage")
+        self.assertNotIn("effort", action, "the effort rides on the model ref, not beside it")
         self.assertIn(str(Path(folder, "scope.json")), action["prompt"])
 
-    def test_a_spawn_carries_the_model_its_stage_environment_names(self):
+    def test_a_step_carries_the_model_its_stage_environment_names_with_the_effort(self):
         self.env["HOKO_EXECUTOR_MODEL"] = "opencode-go/deepseek-v4-flash"
         self.scope = {"needs_plan": False}
         folder = self.start()["dir"]
         step = self.drive(folder, "step")
-        self.assertEqual(step["model"], "opencode-go/deepseek-v4-flash")
+        self.assertEqual(step["model"], "opencode-go/deepseek-v4-flash#high")
 
-    def test_a_spawn_carries_the_resolved_effort_of_its_stage(self):
+    def test_a_step_carries_the_implement_effort_as_the_model_variant(self):
+        self.env["HOKO_EXECUTOR_MODEL"] = "opencode-go/deepseek-v4-flash"
+        self.env["HOKO_EFFORTS"] = json.dumps({"implement": "low"})
+        self.scope = {"needs_plan": False}
+        folder = self.start()["dir"]
+        step = self.drive(folder, "step")
+        self.assertEqual(step["model"], "opencode-go/deepseek-v4-flash#low")
+
+    def test_a_spawn_carries_the_stage_effort_as_the_model_variant(self):
+        self.env["HOKO_QA_MODEL"] = "opencode-go/glm-5.3-flash"
+        self.env["HOKO_EFFORTS"] = json.dumps({"qa": "max"})
+        folder = self.start()["dir"]
+        action = self.drive(folder, until=spawns("QA"))
+        self.assertEqual(action["model"], "opencode-go/glm-5.3-flash#max")
+        self.assertNotIn("effort", action)
+
+    def test_a_model_that_already_names_a_variant_keeps_it(self):
+        self.env["HOKO_QA_MODEL"] = "opencode-go/glm-5.3-flash#low"
+        self.env["HOKO_EFFORTS"] = json.dumps({"qa": "max"})
+        folder = self.start()["dir"]
+        action = self.drive(folder, until=spawns("QA"))
+        self.assertEqual(action["model"], "opencode-go/glm-5.3-flash#low")
+
+    def test_an_empty_effort_leaves_the_model_bare(self):
+        import task
+
+        self.assertEqual(task.model_with_effort("opencode-go/glm-5.3-flash#max", None),
+                         "opencode-go/glm-5.3-flash#max")
+        self.assertEqual(task.model_with_effort("opencode-go/glm-5.3-flash", None),
+                         "opencode-go/glm-5.3-flash")
+        self.assertEqual(task.model_with_effort("opencode-go/glm-5.3-flash", ""),
+                         "opencode-go/glm-5.3-flash")
+
+    def test_a_spawn_records_the_resolved_effort_of_its_stage_in_its_event(self):
         self.env["HOKO_EFFORTS"] = json.dumps({"refine": "low", "qa": "max"})
         folder = self.start()["dir"]
-        self.assertEqual(self.next(folder)["effort"], "low")
+        self.assertEqual(self.next(folder)["stage"], "Refine")
         self.assertEqual(self.events(folder)[-1]["payload"]["effort"], "low")
 
     def test_asking_again_writes_no_event_a_second_time(self):

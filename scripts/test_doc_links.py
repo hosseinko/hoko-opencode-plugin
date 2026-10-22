@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DOC_DIRS = ("agents", "commands", "skills")
+DOC_FILES = ("README.md", "MIGRATION-V2.md")
 
 FENCE = re.compile(r"```.*?```", re.S)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
@@ -23,6 +24,8 @@ CLAUDE_ONLY = ("CLAUDE_PLUGIN_ROOT", "SendMessage", "AskUserQuestion", "ExitPlan
 def markdown_files():
     for base in DOC_DIRS:
         yield from sorted((ROOT / base).rglob("*.md"))
+    for name in DOC_FILES:
+        yield ROOT / name
 
 
 def read(path):

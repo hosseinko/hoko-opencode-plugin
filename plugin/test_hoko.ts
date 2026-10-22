@@ -30,7 +30,7 @@ process.env.HOKO_JOURNAL_PATH = journalRoot
 process.env.HOKO_PLAN_MODEL = ""
 process.env.HOKO_COVERAGE_MIN = ""
 process.env.HOKO_BUILD_MODEL = "anthropic/claude-test"
-process.env.HOKO_REVIEWER_DEEP_MODEL = "anthropic/claude-deep-test"
+process.env.HOKO_FINAL_REVIEW = "anthropic/claude-deep-test"
 // The main body below predates fresh sessions, so it runs the off path. The fresh
 // blocks at the end turn it back on.
 process.env.HOKO_FRESH_SESSION = "0"
@@ -69,7 +69,7 @@ const listedAgents = [
   { id: "hoko-researcher", mode: "subagent" },
   { id: "hoko-plan-executor", mode: "subagent" },
   { id: "hoko-code-reviewer", mode: "subagent" },
-  { id: "hoko-code-reviewer-deep", mode: "subagent" },
+  { id: "hoko-final-reviewer", mode: "subagent" },
   { id: "hoko-quality-assurance", mode: "subagent" },
 ]
 const models = [
@@ -426,9 +426,9 @@ async function boot(overrides: any = {}) {
   check("the build agent takes its model from the environment",
     agentEditor.get("build")?.model?.id === "claude-test" && agentEditor.get("build")?.model?.providerID === "anthropic",
     JSON.stringify(agentEditor.get("build")?.model))
-  check("with HOKO_REVIEWER_DEEP_MODEL set, hoko-code-reviewer-deep runs on that model",
-    agentEditor.get("hoko-code-reviewer-deep")?.model?.id === "claude-deep-test",
-    JSON.stringify(agentEditor.get("hoko-code-reviewer-deep")?.model))
+  check("with HOKO_FINAL_REVIEW set, hoko-final-reviewer runs on that model",
+    agentEditor.get("hoko-final-reviewer")?.model?.id === "claude-deep-test",
+    JSON.stringify(agentEditor.get("hoko-final-reviewer")?.model))
   check("an explicit HOKO_*_MODEL overrides an agent's own model", await (async () => {
     const prior = { ...process.env }
     process.env.HOKO_BUILD_MODEL = "anthropic/should-win"
@@ -438,6 +438,38 @@ async function boot(overrides: any = {}) {
     return kept?.id === "should-win" && kept?.providerID === "anthropic"
   })())
   check("an unset model leaves the agent alone", !agentEditor.get("plan")?.model, JSON.stringify(agentEditor.get("plan")?.model))
+  check("the plugin appends the stage's effort to the model it resolves", await (async () => {
+    const prior = { ...process.env }
+    process.env.HOKO_EXECUTOR_MODEL = "anthropic/claude-exec-test"
+    process.env.HOKO_EFFORTS = JSON.stringify({ implement: "low" })
+    const { agentEditor: resolved } = await boot()
+    const executor = resolved.get("hoko-plan-executor")?.model
+    const build = resolved.get("build")?.model
+    process.env = prior
+    return executor?.id === "claude-exec-test" && executor?.variant === "low"
+      && build?.id === "claude-test" && build?.variant === "low"
+  })())
+  check("a model ref that already names a variant keeps it", await (async () => {
+    const prior = { ...process.env }
+    process.env.HOKO_FINAL_REVIEW = "anthropic/claude-deep-test#max"
+    process.env.HOKO_EFFORTS = JSON.stringify({ review: "high" })
+    const { agentEditor: explicit } = await boot()
+    const model = explicit.get("hoko-final-reviewer")?.model
+    process.env = prior
+    return model?.id === "claude-deep-test" && model?.variant === "max"
+  })())
+  check("a stage with no effort configured leaves the model bare", await (async () => {
+    const prior = { ...process.env }
+    process.env.HOKO_EXECUTOR_MODEL = "anthropic/claude-exec-test"
+    process.env.HOKO_RESEARCH_MODEL = "anthropic/claude-research-test"
+    process.env.HOKO_EFFORTS = JSON.stringify({ implement: "" })
+    const { agentEditor: bare } = await boot()
+    const executor = bare.get("hoko-plan-executor")?.model
+    const researcher = bare.get("hoko-researcher")?.model
+    process.env = prior
+    return executor?.id === "claude-exec-test" && executor?.variant === undefined
+      && researcher?.id === "claude-research-test" && researcher?.variant === undefined
+  })())
 
   const names = skills.map((skill: any) => skill.id)
   check("every skill directory is registered",

@@ -273,19 +273,10 @@ def run_start(document):
     return min(moments) if moments else None
 
 
-def usage_wired():
-    """Whether the usage readers `usage_payloads` needs exist: `journal.recorded_sessions`
-    and the priced `invoice` readers land with the invoice rewrite."""
-    return all(hasattr(module, name) for module, name in (
-        (journal, "recorded_sessions"), (invoice, "load_prices"), (invoice, "stored_rates")))
-
-
 def usage_payloads(plan, text, document, root):
     """`usage.reported` payloads for the subagent calls made since the run started: from
     the `sessions.json` of the journal entry's analytics folder when there is one, else
     from the sessions the prompt recorded for this project."""
-    if not usage_wired():
-        return []
     entry = Path(root.name) / str(document.get("task") or Path(plan).stem)
     rows = None
     frozen = None

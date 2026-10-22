@@ -5,16 +5,21 @@ per-project journal folder.
 
 Ships with the `hoko` opencode plugin. Three modes:
 
-  write     Creates `<journalPath>/<project>/<stamp>-<slug>/`, with the initial prompt
-            copied verbatim into `prompt.md` and the plan copied verbatim into
-            `plan-01.md`. Prints the `plan-01.md` path.
+  write   Creates `<journalPath>/<project>/<stamp>-<slug>/`, with the initial prompt
+          copied verbatim into `prompt.md` and the plan copied verbatim into
+          `plan-01.md`. Prints the `plan-01.md` path.
+          With `--stamp <YYYYmmdd-HHMM> --slug <slug>` instead of `--plan` it files the
+          prompt only, into the folder a task already named, and prints the
+          `plan-01.md` path the entry will carry once a plan is copied there.
 
-  report    Reads the `Journal:` line of the given plan and writes `report-NN.md`
-            next to the `plan-NN.md` it names, overwriting an earlier report of the
-            same round.
+  report  Reads the `Journal:` line of the given plan and writes `report-NN.md`
+          next to the `plan-NN.md` it names, overwriting an earlier report of the
+          same round.
 
-  register  Records a session against a journal entry in `sessions.json`, once per
-            (session, round, role), so the invoice can find its usage later.
+  register  Records a session against a journal entry, once per (session, round,
+          role), so the invoice can find its usage later. The row goes into the
+          `sessions.json` of the entry's analytics folder (`analytics.py`), and the
+          folder's `entry.json` is rewritten after it.
 
 The journal root comes from HOKO_JOURNAL_PATH, else "journalPath" in
 ~/.config/opencode/hoko.json. There is no default: with neither set, journaling is off
@@ -32,36 +37,21 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-CONFIGS = (Path.home() / ".config" / "opencode" / "hoko.json",)
+import analytics
+import plan_format
+import settings
+
 STATE_DIR = Path(os.environ.get("HOKO_STATE_DIR") or Path(tempfile.gettempdir()) / "hoko-journal")
 PROJECT_MARKERS = (".git", ".ai", ".opencode", ".claude")
-SESSIONS_FILE = "sessions.json"
-JOURNAL_LINE = re.compile(r"^Journal:\s*(.+)$", re.M)
+SESSIONS_FILE = analytics.SESSIONS_FILE
+RECORDED_SESSIONS_LIMIT = 100
 ROUND = re.compile(r"^plan-(\d+)\.md$")
+STAMP = re.compile(r"^\d{8}-\d{4}$")
 
 
 def die(message):
     print(f"journal: {message}", file=sys.stderr)
     sys.exit(1)
-
-
-def journal_root():
-    configured = os.environ.get("HOKO_JOURNAL_PATH")
-    if not configured:
-        for config_path in CONFIGS:
-            try:
-                config = json.loads(config_path.read_text(encoding="utf-8"))
-            except OSError:
-                continue
-            except json.JSONDecodeError as exc:
-                die(f"{config_path} is not valid JSON: {exc}")
-            configured = config.get("journalPath")
-            if configured:
-                break
-    if not configured:
-        die("HOKO_JOURNAL_PATH is not set — journaling is off. "
-            "Set it in hoko.env to keep a journal.")
-    return Path(os.path.expandvars(configured)).expanduser()
 
 
 def state_file(session_id):
@@ -70,6 +60,27 @@ def state_file(session_id):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
     return STATE_DIR / f"{digest}.prompt"
+
+
+def project_anchor(root):
+    """The project-wide prompt anchor: survives a `/clear`, unlike the session-scoped
+    one, because it is keyed on the project instead of the session. Overwritten at the
+    start of each new cycle, never consumed by a write."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    return STATE_DIR / f"project-{digest}.prompt"
+
+
+def journal_root():
+    """The journal root from settings (`journalPath`, `hoko.json` /
+    `~/.config/opencode/hoko.json` / `HOKO_JOURNAL_PATH`). Exits naming the setting
+    when it is unset: journaling is opt-in, and a caller that reaches here asked for a
+    journal folder."""
+    path = settings.get("journalPath")
+    if not path:
+        die("HOKO_JOURNAL_PATH is not set — journaling is off. "
+            "Set it in hoko.json to keep a journal.")
+    return Path(os.path.expandvars(path)).expanduser()
 
 
 def git_toplevel(start):
@@ -111,24 +122,27 @@ def project_root(start):
 
 
 def resolve_project(explicit, plan, anchor):
-    """Preference order: an explicit override; the project the plugin recorded
-    alongside the captured prompt; this process's cwd; the plan's own location."""
+    """Preference order: an explicit override (which the filer sets from the plan's own
+    `Project:` line); this process's cwd, which is the project the run happens in; the
+    project the plugin recorded alongside the captured prompt; the plan's own
+    location."""
     if explicit:
         return slugify(explicit)
 
-    if anchor is not None:
+    root = project_root(Path.cwd())
+
+    if root is None and anchor is not None:
         try:
             recorded = Path(anchor.with_suffix(".project").read_text(encoding="utf-8").strip())
         except OSError:
             recorded = None
         if recorded is not None and recorded.name and recorded != home_path():
-            return slugify(recorded.name)
+            root = recorded
 
-    root = project_root(Path.cwd())
     if root is None and plan is not None:
         root = project_root(plan.parent)
     if root is None and plan is not None:
-        # A loose plan file: step over a <marker>/plans/ layout if there is one.
+        # A loose plan file: step over a plans-directory layout if there is one.
         root = plan.parent
         while root.name in plan_dir_segments() and root != root.parent:
             root = root.parent
@@ -197,9 +211,88 @@ def fence(text):
 
 
 def journal_plan(plan_text):
-    """The `plan-NN.md` a plan's `Journal:` line names, or None without one."""
-    match = JOURNAL_LINE.search(plan_text)
-    return Path(match.group(1).strip()) if match else None
+    """The `plan-NN.md` a plan's header `Journal:` line names, or None without one."""
+    value = plan_format.header_line(plan_text, "Journal")
+    return Path(value) if value else None
+
+
+def register_session(entry_dir, session_id, transcript_path="", round=1, role="plan", since=None):
+    """Records a session against `entry_dir` in the `sessions.json` of its analytics
+    folder (`analytics.py`). Each (session, round, role) is kept once, stamped with
+    `since` (an ISO-8601 UTC string; the registration time when omitted) so the invoice
+    can split a shared session; the file is replaced atomically and the folder's
+    `entry.json` rewritten after it. Returns the `sessions.json` path."""
+    folder = analytics.folder_for(entry_dir)
+    with analytics.guard(folder):
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / SESSIONS_FILE
+        try:
+            rows = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rows = []
+        if not isinstance(rows, list):
+            rows = []
+
+        for row in rows:
+            if (isinstance(row, dict) and row.get("session_id") == session_id
+                    and row.get("round") == round and row.get("role") == role):
+                return path
+
+        rows.append({"session_id": session_id, "transcript_path": transcript_path,
+                     "round": round, "role": role,
+                     "since": since or datetime.now(timezone.utc).isoformat(timespec="milliseconds")})
+        analytics.write_atomic(path, json.dumps(rows, indent=2) + "\n")
+        analytics.link(entry_dir)
+        return path
+    return folder / SESSIONS_FILE
+
+
+def recorded_sessions_file(root):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(str(Path(root).resolve()).encode("utf-8")).hexdigest()[:16]
+    return STATE_DIR / f"sessions-{digest}.json"
+
+
+def written_since(row, after):
+    """Whether the row's transcript was written to at or after `after`; a transcript
+    that is gone or unreadable was not."""
+    try:
+        modified = Path(str(row.get("transcript_path") or "")).stat().st_mtime
+    except OSError:
+        return False
+    return datetime.fromtimestamp(modified, timezone.utc) >= after
+
+
+def recorded_sessions(root, after=None):
+    """The sessions a run in the project at `root` recorded, as `sessions.json` rows;
+    empty when none was recorded. With `after` (a UTC-aware datetime) only the sessions
+    whose transcript was written to since then, which are the ones a run that began then
+    can have used."""
+    try:
+        rows = json.loads(recorded_sessions_file(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(rows, list):
+        return []
+    rows = [row for row in rows if isinstance(row, dict) and row.get("session_id")]
+    if after is not None:
+        rows = [row for row in rows if written_since(row, after)]
+    return rows
+
+
+def record_session(root, session_id, transcript_path=""):
+    """Keeps one row per session in the project's state file, newest last, at most
+    `RECORDED_SESSIONS_LIMIT` of them; the file is replaced atomically."""
+    rows = recorded_sessions(root)
+    if any(row["session_id"] == session_id for row in rows):
+        return
+    rows.append({"session_id": session_id, "transcript_path": transcript_path,
+                 "round": 1, "role": "execute",
+                 "since": datetime.now(timezone.utc).isoformat(timespec="milliseconds")})
+    path = recorded_sessions_file(root)
+    scratch = path.with_name(path.name + ".tmp")
+    scratch.write_text(json.dumps(rows[-RECORDED_SESSIONS_LIMIT:], indent=2) + "\n", encoding="utf-8")
+    os.replace(scratch, path)
 
 
 def read_text_arg(value, what):
@@ -212,11 +305,23 @@ def read_text_arg(value, what):
 
 
 def cmd_write(args):
-    plan = Path(args.plan).expanduser()
-    if not plan.is_file():
-        die(f"no plan file at {plan}")
-    plan = plan.resolve()
-    plan_text = plan.read_text(encoding="utf-8")
+    if args.stamp and args.plan:
+        die("--stamp files the prompt only; drop --plan")
+    if not args.stamp and not args.plan:
+        die("write needs --plan, or --stamp with --slug for a prompt-only entry")
+    if args.stamp and not STAMP.match(args.stamp):
+        die(f"--stamp must look like 20261021-1530, not {args.stamp!r}")
+    if args.stamp and not (args.slug and slugify(args.slug)):
+        die("--stamp needs a --slug naming the folder")
+
+    plan = None
+    plan_text = ""
+    if args.plan:
+        plan = Path(args.plan).expanduser()
+        if not plan.is_file():
+            die(f"no plan file at {plan}")
+        plan = plan.resolve()
+        plan_text = plan.read_text(encoding="utf-8")
 
     anchor = None
     if args.prompt_file != "-":
@@ -229,9 +334,10 @@ def cmd_write(args):
         die("the prompt is empty")
 
     root = journal_root()
-    project = resolve_project(args.project, plan, anchor)
+
+    project = resolve_project(args.project or plan_format.project_name(plan_text), plan, anchor)
     slug = slugify(args.slug) if args.slug else (slugify(plan_title(plan_text)) or plan_slug(plan))
-    stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M")
+    stamp = args.stamp or datetime.now().astimezone().strftime("%Y%m%d-%H%M")
 
     project_dir = root / project
     folder = project_dir / f"{stamp}-{slug}"
@@ -244,7 +350,8 @@ def cmd_write(args):
     guard = fence(prompt)
     (folder / "prompt.md").write_text(f"{guard}text\n{prompt.strip()}\n{guard}\n", encoding="utf-8")
     plan_copy = folder / "plan-01.md"
-    plan_copy.write_text(f"{plan_text.strip()}\n", encoding="utf-8")
+    if plan is not None:
+        plan_copy.write_text(f"{plan_text.strip()}\n", encoding="utf-8")
 
     if anchor is not None and anchor.parent == STATE_DIR.resolve():
         for used in (anchor, anchor.with_suffix(".project")):
@@ -285,25 +392,8 @@ def cmd_register(args):
     entry = Path(args.entry).expanduser()
     if not entry.is_dir():
         die(f"no journal entry directory at {entry}")
-    path = entry / SESSIONS_FILE
-
-    try:
-        rows = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        rows = []
-    if not isinstance(rows, list):
-        rows = []
-
-    for row in rows:
-        if (isinstance(row, dict) and row.get("session_id") == args.session
-                and row.get("round") == args.round and row.get("role") == args.role):
-            return
-
-    since = args.since or datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-    rows.append({"session_id": args.session, "round": args.round, "role": args.role, "since": since})
-    scratch = path.with_name(path.name + ".tmp")
-    scratch.write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
-    os.replace(scratch, path)
+    path = register_session(entry, args.session, args.transcript or "",
+                            args.round, args.role, args.since)
     print(path)
 
 
@@ -312,11 +402,13 @@ def main():
     modes = parser.add_subparsers(dest="mode", required=True)
 
     write = modes.add_parser("write", help="file a plan cycle's prompt and plan into a journal folder")
-    write.add_argument("--plan", required=True, help="absolute path to the plan file")
+    write.add_argument("--plan", help="absolute path to the plan file (omit with --stamp)")
+    write.add_argument("--stamp",
+                       help="file the prompt only, into the folder <stamp>-<slug>: the task's own YYYYmmdd-HHMM")
     write.add_argument("--prompt-file", required=True,
                        help="file holding the initial prompt verbatim, or - for stdin")
     write.add_argument("--project",
-                       help="override the project name (default: the project recorded with the prompt, else the cwd's project)")
+                       help="override the project name (default: the cwd's project, else the one recorded with the prompt)")
     write.add_argument("--slug",
                        help="override the folder slug (default: from the plan's title or Goal)")
 
@@ -331,6 +423,7 @@ def main():
     register_parser.add_argument("--round", required=True, type=int, help="the plan round")
     register_parser.add_argument("--role", required=True, help="plan or execute")
     register_parser.add_argument("--since", help="registration time (default: now, UTC)")
+    register_parser.add_argument("--transcript", help="the session's transcript path, when one exists")
 
     args = parser.parse_args()
     if args.mode == "write":

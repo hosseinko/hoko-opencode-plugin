@@ -30,7 +30,10 @@ and stop.
    Note its `QA:` header line: it names the extra checks this run gets (`crap`, `mutation`, both, or
    `none`). A plan with no `QA:` line falls back to the settings — run each check whose
    `python3 "${HOKO_ROOT}/scripts/settings.py" crap` / `... mutation` prints `true`.
-2. Read the run's diff (`git diff <range>`) so you know what this run actually touched.
+2. Read the run's diff (`git diff <range>`) so you know what this run actually touched. The
+   prompt also names the files the run changed: that list and nothing wider is the scope of
+   both the CRAP index and mutation testing. When the list is empty, report both as absent
+   rather than widening them.
 3. Invoke the `hoko-quality-assurance` skill and follow it end to end: find the
    project's own commands, then lint → static analysis → the full suite with coverage,
    and after coverage the CRAP index and mutation testing (its sections 4 and 5), each

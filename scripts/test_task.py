@@ -871,6 +871,37 @@ class TestRefineChecks(TaskTestCase):
         self.assertIn("QA: none\n", Path(step["plan"]).read_text())
 
 
+class TestQaScope(TaskTestCase):
+    """REQ-16 — the QA stage scopes both expensive checks to the run's changed files."""
+
+    def commit_files(self, *names):
+        for name in names:
+            path = Path(self.repo, name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("x = 1\n", encoding="utf-8")
+        self.git("add", *names)
+        self.git("commit", "-q", "-m", "implement the step")
+
+    def test_SPEC_LOCAL_REQ_16_the_qa_prompt_names_exactly_the_files_the_range_changed(self):
+        folder = self.start()["dir"]
+        step = self.drive(folder, "step")
+        self.commit_files("src/a.py", "src/login/b.py")
+        self.tick_all(step)
+        action = self.next(folder)
+        self.assertEqual(action["stage"], "QA")
+        prompt = action["prompt"]
+        self.assertIn("The files this run changed, and the only files in scope for the CRAP index and "
+                      "mutation testing: src/a.py, src/login/b.py.", prompt)
+        self.assertNotIn("whole project", prompt)
+        self.assertNotIn("project-wide", prompt)
+
+    def test_SPEC_LOCAL_REQ_16_an_empty_scope_is_reported_absent_instead_of_widened(self):
+        folder = self.start()["dir"]
+        prompt = self.drive(folder, until=spawns("QA"))["prompt"]
+        self.assertIn("The run changed no files: report the CRAP index and mutation testing as absent "
+                      "rather than widening the scope.", prompt)
+
+
 class TestSpecHandBack(TaskTestCase):
     def setUp(self):
         super().setUp()

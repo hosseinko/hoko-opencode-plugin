@@ -152,6 +152,7 @@ STATUSES = ("ok", "needs_input", "spec_invalid", "blocked")
 VERDICTS = ("green", "green with debt", "not ready")
 CHECKS = ("fast-gate", "lint", "analyse", "tests", "coverage", "crap", "mutation")
 SCOPED_CHECKS = ("crap", "mutation")
+SCOPED_CHECK_NAMES = {"crap": "the CRAP index", "mutation": "mutation testing"}
 GATE_STATUSES = ("passed", "failed", "skipped", "error")
 ACTIONABLE = ("blocking", "important")
 SEVERITIES = ACTIONABLE + ("nit", "suggestion", "learning", "praise")
@@ -964,6 +965,29 @@ def qa_check_lines(task):
     return [f"Refine selected the QA checks {', '.join(checks)}: run exactly those and report the rest as off."]
 
 
+def changed_files(task, base):
+    """The files the run's commit range touched, in git's own order: the one list the QA
+    stage scopes both expensive checks to."""
+    result = git(task.root, "-c", "core.quotepath=off", "diff", "--name-only", f"{base}..HEAD")
+    if result.returncode != 0:
+        raise TaskError(f"cannot list the files {base}..HEAD changed: {(result.stderr or result.stdout).strip()}")
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def qa_scope_line(task, files):
+    """The changed files the selected checks are scoped to. A check with an empty scope is
+    reported absent rather than widened, and a run with no check selected has nothing to
+    scope."""
+    checks = selected_checks(task)
+    names = [name for check, name in SCOPED_CHECK_NAMES.items() if checks is None or check in checks]
+    if not names:
+        return None
+    scope = " and ".join(names)
+    if not files:
+        return f"The run changed no files: report {scope} as absent rather than widening the scope."
+    return f"The files this run changed, and the only files in scope for {scope}: {', '.join(files)}."
+
+
 def phase_spec(task):
     handoff = task.path("spec.json")
     mode = task.flow["spec_mode"]
@@ -1064,13 +1088,17 @@ def phase_research(task):
 def phase_qa(task):
     plan, entry = plan_of_round(task)
     handoff = task.path(f"qa-{task.cycle:02d}.json")
+    base = plan_base(task, plan)
+    diff_range = f"{base}..HEAD"
     lines = prompt_lines(
-        task, handoff, f"The plan: {plan}", f"The range: {plan_base(task, plan)}..HEAD",
-        "Run only the project's auto-fixers and commit their output; every other problem goes back "
-        "as a finding.")
+        task, handoff, f"The plan: {plan}", f"The range: {diff_range}")
+    scope = qa_scope_line(task, changed_files(task, base))
+    if scope is not None:
+        lines.append(scope)
+    lines.append("Run only the project's auto-fixers and commit their output; every other problem goes "
+                 "back as a finding.")
     lines.extend(qa_check_lines(task))
-    return spawn(task, "QA", lines, handoff=str(handoff), plan=str(plan),
-                 range=f"{plan_base(task, plan)}..HEAD")
+    return spawn(task, "QA", lines, handoff=str(handoff), plan=str(plan), range=diff_range)
 
 
 def phase_review(task):

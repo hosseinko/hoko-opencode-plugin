@@ -108,5 +108,19 @@ class PlannerQaLineTestCase(unittest.TestCase):
         self.assertIn("`QA: none`", text)
 
 
+class QaCheckScopeTestCase(unittest.TestCase):
+    """REQ-16 — the QA agent and its skill take the changed-file list as the scope of both checks."""
+
+    def test_SPEC_LOCAL_REQ_16_the_qa_agent_and_skill_scope_both_checks_to_the_changed_files(self):
+        for path in (AGENTS / "hoko-quality-assurance.md",
+                     ROOT / "skills" / "hoko-quality-assurance" / "SKILL.md"):
+            text = " ".join(read(path).split())
+            where = path.relative_to(ROOT).as_posix()
+            self.assertIn("that list and nothing wider is the scope of both the CRAP index and "
+                          "mutation testing", text, where)
+            self.assertIn("When the list is empty, report both as absent rather than widening them.",
+                          text, where)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

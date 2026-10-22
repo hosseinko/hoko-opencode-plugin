@@ -89,7 +89,7 @@ The common case here, and the one where the temptation to invent is strongest.
 
 ### From intent, before the code exists
 
-1. If the request is a sentence, it is not a spec yet — run `hoko-grill-me` first. A spec
+1. If the request is a sentence, it is not a spec yet — run `grill-me` first. A spec
    written from an unexamined one-liner is the failure mode the whole approach exists to
    prevent.
 2. Grill toward the five EARS buckets: the always-true rule, the state-dependent one, the

@@ -1536,9 +1536,12 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     fs.writeFileSync(repoConfig, JSON.stringify({ plansDir: "interrupted/plans" }))
     fs.writeFileSync(repoBackup, planted)
     const undo = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
-    check("the reader test never overwrites a backup it found with the file currently in place",
-      fs.readFileSync(repoBackup, "utf8") === planted, fs.readFileSync(repoBackup, "utf8"))
-    undo()
+    try {
+      check("the reader test never overwrites a backup it found with the file currently in place",
+        fs.readFileSync(repoBackup, "utf8") === planted, fs.readFileSync(repoBackup, "utf8"))
+    } finally {
+      undo()
+    }
     check("the reader test restores the hoko.json held by a backup found on entry",
       fs.existsSync(repoConfig) && fs.readFileSync(repoConfig, "utf8") === planted,
       fs.existsSync(repoConfig) ? fs.readFileSync(repoConfig, "utf8") : "no config")
@@ -1576,11 +1579,14 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
     const original = JSON.stringify({ plansDir: "parked/original" })
     fs.writeFileSync(repoConfig, original)
     const undo = plantRepoConfig(JSON.stringify({ plansDir: "repo/plans" }))
-    check("the reader test keeps a config it displaces recoverable outside the repository root",
-      !parkedConfig.startsWith(ROOT + path.sep) && fs.existsSync(parkedConfig)
-        && fs.readFileSync(parkedConfig, "utf8") === original,
-      fs.existsSync(parkedConfig) ? fs.readFileSync(parkedConfig, "utf8") : "nothing parked")
-    undo()
+    try {
+      check("the reader test keeps a config it displaces recoverable outside the repository root",
+        !parkedConfig.startsWith(ROOT + path.sep) && fs.existsSync(parkedConfig)
+          && fs.readFileSync(parkedConfig, "utf8") === original,
+        fs.existsSync(parkedConfig) ? fs.readFileSync(parkedConfig, "utf8") : "nothing parked")
+    } finally {
+      undo()
+    }
     check("the reader test removes the parked config once the plant is restored",
       !fs.existsSync(parkedConfig) && fs.readFileSync(repoConfig, "utf8") === original,
       fs.existsSync(parkedConfig) ? "parked config left behind" : "config differs")

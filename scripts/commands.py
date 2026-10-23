@@ -18,7 +18,8 @@ Resolution order per gate, first hit wins:
      `[tool.poe.tasks]`, `Cargo.toml`'s `[package.metadata.scripts]`).
   3. A `run:` line in a `.github/workflows/*.yml` job.
   4. The ecosystem default, gated on the tool actually being present
-     (`vendor/bin/phpunit`, a `.eslintrc*`, `[tool.mypy]`, cargo's own subcommands...).
+     (`vendor/bin/phpunit`, a `.eslintrc*`, an installed `typescript`, `[tool.mypy]`,
+     cargo's own subcommands...).
 
 The `mutation` gate resolves the same way; its ecosystem default is the bare mutation
 tool (infection, stryker, mutmut, cargo-mutants, go-mutesting) and only when that binary
@@ -345,6 +346,16 @@ def php_default(gate, root):
     return None
 
 
+def typescript_installed(root):
+    if (root / "node_modules" / ".bin" / "tsc").is_file():
+        return True
+    data = read_json(root / "package.json") or {}
+    return any(
+        isinstance(data.get(section), dict) and "typescript" in data[section]
+        for section in ("dependencies", "devDependencies")
+    )
+
+
 def node_default(gate, root):
     has_eslint = any(
         (root / name).is_file()
@@ -354,7 +365,7 @@ def node_default(gate, root):
     if gate == "lint":
         return "npx eslint ." if has_eslint else None
     if gate == "analyse":
-        return "npx tsc --noEmit" if has_tsconfig else None
+        return "npx tsc --noEmit" if has_tsconfig and typescript_installed(root) else None
     if gate == "unit":
         return None
     if gate == "suite":

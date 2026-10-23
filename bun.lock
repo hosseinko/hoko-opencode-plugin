@@ -1,0 +1,21 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "hoko-opencode-plugin",
+      "devDependencies": {
+        "solid-js": "1.9.17",
+      },
+    },
+  },
+  "packages": {
+    "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
+
+    "seroval": ["seroval@1.6.12", "", {}, "sha512-CqbIVfk/7GL3ITwZI55lcPbpQbjHZ2DD5cUj4iH7E9YsCfHNJV1mx7yNp86Z84w5IpmkZZS/2s5vPOWmVWSdQg=="],
+
+    "seroval-plugins": ["seroval-plugins@1.6.12", "", { "peerDependencies": { "seroval": "^1.0" } }, "sha512-+reiwp/lYxiyctSrdvX7OQ1YLrcbWYgBiZrhSFL+V43b0/DGRLNVSDyZINbQe+tWplPOI2fw2dPrdv6hcc09kQ=="],
+
+    "solid-js": ["solid-js@1.9.17", "", { "dependencies": { "csstype": "^3.1.0", "seroval": "~1.6.8", "seroval-plugins": "~1.6.8" } }, "sha512-4GAmLOWPfNV8H9Jfn2LSFTpNEG6jiOKPiwd5lnLGQtehHaX6l3TOLzJqQ7mqwB/3k1Yy3zyumFVopmc/tm34ow=="],
+  }
+}

@@ -474,7 +474,7 @@ class TestPhpEcosystem(CommandsTestCase):
 class TestNodeEcosystem(CommandsTestCase):
     def test_prints_all_gates_for_a_node_repo(self):
         root = self.repo()
-        self.write(root, "package.json", "{}")
+        self.write(root, "package.json", json.dumps({"devDependencies": {"typescript": "^5.6.0"}}))
         self.write(root, ".eslintrc.json", "{}")
         self.write(root, "tsconfig.json", "{}")
         result = self.commands(root)
@@ -501,6 +501,19 @@ class TestNodeEcosystem(CommandsTestCase):
         self.write(root, "package.json", "{}")
         result = self.commands(root)
         self.assertIsNone(result["analyse"])
+
+    def test_a_tsconfig_without_typescript_resolves_no_analyser(self):
+        root = self.repo()
+        self.write(root, "package.json", "{}")
+        self.write(root, "tsconfig.json", "{}")
+        self.assertIsNone(self.commands(root)["analyse"])
+
+    def test_a_present_tsc_binary_gives_the_analyse_default(self):
+        root = self.repo()
+        self.write(root, "package.json", "{}")
+        self.write(root, "tsconfig.json", "{}")
+        self.write(root, "node_modules/.bin/tsc", "#!/bin/sh\n")
+        self.assertEqual(self.commands(root)["analyse"], "npx tsc --noEmit")
 
     def test_npm_script_wins_over_the_ecosystem_default(self):
         root = self.repo()
@@ -740,7 +753,7 @@ class TestMutationGate(CommandsTestCase):
 class TestPrintedCommands(CommandsTestCase):
     def test_reports_the_exact_lint_analysis_test_and_coverage_commands_it_resolved(self):
         root = self.repo()
-        self.write(root, "package.json", "{}")
+        self.write(root, "package.json", json.dumps({"devDependencies": {"typescript": "^5.6.0"}}))
         self.write(root, ".eslintrc.json", "{}")
         self.write(root, "tsconfig.json", "{}")
         proc = self.commands_proc(root)

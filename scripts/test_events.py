@@ -110,7 +110,7 @@ class EventsTestCase(unittest.TestCase):
 
     def isolate(self, env):
         """Settings read from `env` alone, never from a real hoko.json."""
-        patches = [mock.patch.object(settings, "CONFIGS", ()),
+        patches = [mock.patch.object(settings, "CONFIG_DIRS", ()),
                    mock.patch.dict(os.environ, env)]
         for patch in patches:
             patch.start()

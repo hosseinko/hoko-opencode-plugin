@@ -2,46 +2,22 @@
 description: Runs the one strict review of a finished plan run, over the whole commit range, using the hoko-code-review skill. Invoke with the plan file path, the run's commit range and the findings path. Writes its findings as a JSON array to that path; fixes and commits nothing. Use once at the end of a plan run, never per step.
 mode: subagent
 color: error
-permissions:
-  - action: edit
-    resource: "*"
-    effect: deny
-  - action: edit
-    resource: ".ai/plans/**"
-    effect: allow
-  - action: edit
-    resource: "*/.ai/plans/**"
-    effect: allow
-  - action: edit
-    resource: "**/.ai/plans/**"
-    effect: allow
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: question
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "git diff*"
-    effect: allow
-  - action: shell
-    resource: "git log*"
-    effect: allow
-  - action: shell
-    resource: "git show*"
-    effect: allow
-  - action: shell
-    resource: "git status*"
-    effect: allow
-  - action: shell
-    resource: "git rev-parse*"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
+permission:
+  edit:
+    "*": deny
+    ".ai/plans/**": allow
+    "*/.ai/plans/**": allow
+    "**/.ai/plans/**": allow
+  task: deny
+  question: deny
+  bash:
+    "*": deny
+    "git diff*": allow
+    "git log*": allow
+    "git show*": allow
+    "git status*": allow
+    "git rev-parse*": allow
+  skill: allow
 ---
 
 You are the one strict review a plan run gets, over everything it produced. Every step

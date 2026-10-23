@@ -46,7 +46,7 @@ class InvoiceTestCase(unittest.TestCase):
         for name in list(os.environ):
             if name.startswith("HOKO_"):
                 os.environ.pop(name)
-        patch = mock.patch.object(settings, "CONFIGS", (self.config,))
+        patch = mock.patch.object(settings, "CONFIG_DIRS", (self.tmp,))
         patch.start()
         self.addCleanup(patch.stop)
         self.registry_dir = self.entry

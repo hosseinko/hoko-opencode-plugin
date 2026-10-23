@@ -92,7 +92,7 @@ detail.
 
 The settings loader (`scripts/settings.py`) now also reads `~/.config/opencode/hoko.json`
 and carries the engine's keys — `analyticsPath`, `events`, `eventsDir`, `loopLimit`,
-`planGate`, `efforts`, `crap`, `mutation`, `crapMax`, `mutationMin`, `pricing` and the
+`planGate`, `crap`, `mutation`, `crapMax`, `mutationMin`, `pricing` and the
 rest. `HOKO_*` in the environment still overrides every file, and the plugin exports all
 of it into each shell, so the skills and the scripts read the same values.
 

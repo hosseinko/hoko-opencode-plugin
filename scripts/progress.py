@@ -15,7 +15,6 @@ rebuilt from the plan.
 
 import datetime
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -30,10 +29,10 @@ ROUND_SUFFIX = re.compile(r"^(.*)--r(\d+)$")
 TASK_PLAN = re.compile(r"^plan-(\d+)\.md$")
 TASK_FILE = "progress.json"
 
-STAGE_MODEL_ENV = {
-    "Implement": "HOKO_EXECUTOR_MODEL",
-    "QA": "HOKO_QA_MODEL",
-    "Review": "HOKO_FINAL_REVIEW",
+STAGE_MODEL_KEYS = {
+    "Implement": "executorModel",
+    "QA": "qaModel",
+    "Review": "finalReview",
 }
 
 
@@ -246,13 +245,13 @@ def ensure_run_id(document):
 
 
 def stage_model(stage):
-    """The model the stage's own `HOKO_*_MODEL` names, or None when it is unset. Models
-    are not settings here: `hoko.env` exports them and the plugin picks the agent, so an
-    unset model is left off the event rather than written as null."""
-    name = STAGE_MODEL_ENV.get(stage)
-    if name is None:
+    """The model the stage's own setting names, or None when it is unset. The key is read
+    through settings, so a model configured in hoko.json reaches the event and the
+    invoice, not only the shell the plugin exported."""
+    key = STAGE_MODEL_KEYS.get(stage)
+    if key is None:
         return None
-    return os.environ.get(name) or None
+    return settings.get(key) or None
 
 
 def with_model(payload, stage):
@@ -285,7 +284,7 @@ def run_started_payload(plan, plan_text, document, root):
     except ValueError:
         path = None
     loop_limit = document.get("loop_limit")
-    models = {stage: stage_model(stage) for stage in STAGE_MODEL_ENV}
+    models = {stage: stage_model(stage) for stage in STAGE_MODEL_KEYS}
     payload = {
         "source": "plan",
         "text": plan_text,

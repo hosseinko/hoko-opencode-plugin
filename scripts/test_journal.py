@@ -395,7 +395,7 @@ class TestRegisterSessionInProcess(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
         self.entry = Path(self.tmpdir.name)
-        patch = mock.patch.object(settings, "CONFIGS", ())
+        patch = mock.patch.object(settings, "CONFIG_DIRS", ())
         patch.start()
         self.addCleanup(patch.stop)
 

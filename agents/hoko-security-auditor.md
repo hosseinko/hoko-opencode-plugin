@@ -2,40 +2,20 @@
 description: Audits a module, a directory or a whole codebase for security defects against the hoko-code-review security guide, files the report under .ai/security/, and reports the blocking findings. Invoke with the path or diff command to audit. Use when the surface is larger than a diff; a diff is reviewed in-context with the same guide.
 mode: subagent
 color: error
-permissions:
-  - action: edit
-    resource: "*"
-    effect: deny
-  - action: edit
-    resource: ".ai/security/**"
-    effect: allow
-  - action: edit
-    resource: "*/.ai/security/**"
-    effect: allow
-  - action: edit
-    resource: "**/.ai/security/**"
-    effect: allow
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: question
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "mkdir -p *"
-    effect: allow
-  - action: shell
-    resource: "date*"
-    effect: allow
-  - action: shell
-    resource: "git *"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
+permission:
+  edit:
+    "*": deny
+    ".ai/security/**": allow
+    "*/.ai/security/**": allow
+    "**/.ai/security/**": allow
+  task: deny
+  question: deny
+  bash:
+    "*": deny
+    "mkdir -p *": allow
+    "date*": allow
+    "git *": allow
+  skill: allow
 ---
 
 You audit one target for security defects, file what you found, and stop.

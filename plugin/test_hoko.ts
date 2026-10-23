@@ -37,12 +37,12 @@ const state = (sessionID: string, suffix = ".prompt") =>
 const journalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "journal-"))
 process.env.HOKO_JOURNAL_PATH = journalRoot
 // Neither the developer's own hoko.env nor this machine's exported HOKO_* may decide
-// these. An empty value clears what a file set, so `= ""` covers both, where `delete`
-// only covers the exported one.
-process.env.HOKO_PLAN_MODEL = ""
-process.env.HOKO_COVERAGE_MIN = ""
-process.env.HOKO_PLANS_DIR = ""
-process.env.HOKO_LOOP_GUARD = ""
+// these: both the home and the repo root these tests read are scratch directories, so
+// deleting the variable is enough.
+delete process.env.HOKO_PLAN_MODEL
+delete process.env.HOKO_COVERAGE_MIN
+delete process.env.HOKO_PLANS_DIR
+delete process.env.HOKO_LOOP_GUARD
 process.env.HOKO_BUILD_MODEL = "anthropic/claude-test"
 process.env.HOKO_FINAL_REVIEW = "anthropic/claude-deep-test"
 // The main body below predates fresh sessions, so it runs the off path. The fresh
@@ -50,7 +50,7 @@ process.env.HOKO_FINAL_REVIEW = "anthropic/claude-deep-test"
 process.env.HOKO_FRESH_SESSION = "0"
 
 const hoko: any = (await import("./hoko.ts")).default
-const { gitVerdict } = await import("./hoko.ts")
+const { gitVerdict, settings: pluginSettings } = await import("./hoko.ts")
 const { guardVerdict } = await import("./guard.ts")
 
 const proj = fs.mkdtempSync(path.join(os.tmpdir(), "proj-"))
@@ -458,37 +458,26 @@ async function boot(overrides: any = {}) {
     return kept?.id === "should-win" && kept?.providerID === "anthropic"
   })())
   check("an unset model leaves the agent alone", !agentEditor.get("plan")?.model, JSON.stringify(agentEditor.get("plan")?.model))
-  check("the plugin appends the stage's effort to the model it resolves", await (async () => {
+  check("a configured model runs without an invented variant", await (async () => {
     const prior = { ...process.env }
     process.env.HOKO_EXECUTOR_MODEL = "anthropic/claude-exec-test"
-    process.env.HOKO_EFFORTS = JSON.stringify({ implement: "low" })
+    process.env.HOKO_RESEARCH_MODEL = "anthropic/claude-research-test"
     const { agentEditor: resolved } = await boot()
     const executor = resolved.get("hoko-plan-executor")?.model
     const build = resolved.get("build")?.model
+    const researcher = resolved.get("hoko-researcher")?.model
     process.env = prior
-    return executor?.id === "claude-exec-test" && executor?.variant === "low"
-      && build?.id === "claude-test" && build?.variant === "low"
+    return executor?.id === "claude-exec-test" && executor?.variant === undefined
+      && build?.id === "claude-test" && build?.variant === undefined
+      && researcher?.id === "claude-research-test" && researcher?.variant === undefined
   })())
-  check("a model ref that already names a variant keeps it", await (async () => {
+  check("a configured model ref keeps the variant it names", await (async () => {
     const prior = { ...process.env }
     process.env.HOKO_FINAL_REVIEW = "anthropic/claude-deep-test#max"
-    process.env.HOKO_EFFORTS = JSON.stringify({ review: "high" })
     const { agentEditor: explicit } = await boot()
     const model = explicit.get("hoko-final-reviewer")?.model
     process.env = prior
     return model?.id === "claude-deep-test" && model?.variant === "max"
-  })())
-  check("a stage with no effort configured leaves the model bare", await (async () => {
-    const prior = { ...process.env }
-    process.env.HOKO_EXECUTOR_MODEL = "anthropic/claude-exec-test"
-    process.env.HOKO_RESEARCH_MODEL = "anthropic/claude-research-test"
-    process.env.HOKO_EFFORTS = JSON.stringify({ implement: "" })
-    const { agentEditor: bare } = await boot()
-    const executor = bare.get("hoko-plan-executor")?.model
-    const researcher = bare.get("hoko-researcher")?.model
-    process.env = prior
-    return executor?.id === "claude-exec-test" && executor?.variant === undefined
-      && researcher?.id === "claude-research-test" && researcher?.variant === undefined
   })())
 
   const names = skills.map((skill: any) => skill.id)
@@ -723,7 +712,7 @@ async function boot(overrides: any = {}) {
   const envDir = await exported(fromEnv.hooks)
   check("the environment wins over hoko.json for the plans directory",
     envDir.HOKO_PLANS_DIR === "specs/plans", envDir.HOKO_PLANS_DIR)
-  process.env.HOKO_PLANS_DIR = before.HOKO_PLANS_DIR
+  delete process.env.HOKO_PLANS_DIR
 
   writeConfig({ loopGuard: false })
   const unguardedFolder = armed(".ai/plans", "20261022-1200-unguarded")
@@ -736,7 +725,7 @@ async function boot(overrides: any = {}) {
   const onRefusal = await refusal(on.hooks)
   check("the environment still overrides a false loopGuard in hoko.json",
     /hoko-plan-executor/.test(onRefusal), onRefusal || "allowed")
-  process.env.HOKO_LOOP_GUARD = before.HOKO_LOOP_GUARD
+  delete process.env.HOKO_LOOP_GUARD
 
   fs.writeFileSync(configFile, "{ not json")
   const broken = await boot()
@@ -748,6 +737,82 @@ async function boot(overrides: any = {}) {
 
   fs.rmSync(unguardedFolder, { recursive: true, force: true })
   fs.rmSync(configFile, { force: true })
+  process.env = before
+}
+
+// ------------------------------------- one hoko.json, read by both sides --
+{
+  const before = { ...process.env }
+  const repoConfig = path.join(REPO, "hoko.json")
+  const repoEnv = path.join(REPO, "hoko.env")
+  const machineConfig = path.join(CONFIG, "hoko.json")
+  const machineEnv = path.join(CONFIG, "hoko.env")
+  const planted = [repoConfig, repoEnv, machineConfig, machineEnv]
+  const wipe = () => planted.forEach((file) => fs.rmSync(file, { force: true }))
+  const plant = (file: string, text: string) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, text)
+  }
+  // scripts/settings.py takes its repository layer from its own location, so the copy sits
+  // in the repo root the plugin is pointed at and both readers see the same files.
+  const scripts = path.join(REPO, "scripts")
+  fs.mkdirSync(scripts, { recursive: true })
+  fs.copyFileSync(path.join(ROOT, "scripts", "settings.py"), path.join(scripts, "settings.py"))
+  const fromScript = (key: string) =>
+    execFileSync("python3", [path.join(scripts, "settings.py"), key], { env: process.env, encoding: "utf8" }).trim()
+  const fromPlugin = (key: string) =>
+    pluginSettings()[`HOKO_${key.replace(/(?<!^)(?=[A-Z])/g, "_").toUpperCase()}`] ?? ""
+  const bothRead = (key: string, expected: string) =>
+    fromPlugin(key) === expected && fromScript(key) === expected
+
+  wipe()
+  for (const name of ["HOKO_BUILD_MODEL", "HOKO_QA_MODEL", "HOKO_FINAL_REVIEW", "HOKO_COVERAGE_MIN", "HOKO_JOURNAL_PATH"]) {
+    delete process.env[name]
+  }
+
+  plant(repoConfig, JSON.stringify({ buildModel: "anthropic/from-json", coverageMin: 60, journalPath: "/notes" }))
+  const fromJson = await boot()
+  check("a model set in hoko.json reaches its agent",
+    fromJson.agentEditor.get("build")?.model?.id === "from-json",
+    JSON.stringify(fromJson.agentEditor.get("build")?.model))
+  const jsonShell = { env: {} as Record<string, string> }
+  await fromJson.hooks["shell.create.before"]({ command: "ls", cwd: proj, timeout: 0, shell: "/bin/zsh", env: jsonShell.env })
+  check("a repo hoko.json sets the journal path the shell gets",
+    jsonShell.env.HOKO_JOURNAL_PATH === "/notes", jsonShell.env.HOKO_JOURNAL_PATH)
+  check("the plugin and the settings loader read a repository hoko.json the same way",
+    bothRead("buildModel", "anthropic/from-json") && bothRead("coverageMin", "60")
+      && bothRead("journalPath", "/notes"),
+    `${fromPlugin("buildModel")} / ${fromScript("buildModel")} / ${fromScript("coverageMin")}`)
+
+  plant(machineConfig, JSON.stringify({ buildModel: "anthropic/from-machine-json", coverageMin: 65, journalPath: "/machine-notes" }))
+  check("the machine hoko.json overrides the repository one for both readers",
+    bothRead("buildModel", "anthropic/from-machine-json") && bothRead("coverageMin", "65")
+      && bothRead("journalPath", "/machine-notes"),
+    `${fromPlugin("buildModel")} / ${fromScript("buildModel")} / ${fromScript("journalPath")}`)
+
+  plant(repoEnv, "HOKO_BUILD_MODEL=anthropic/from-repo-env\nHOKO_COVERAGE_MIN=70\n")
+  check("a repository hoko.env line overrides both hoko.json files for both readers",
+    bothRead("buildModel", "anthropic/from-repo-env") && bothRead("coverageMin", "70"),
+    `${fromPlugin("buildModel")} / ${fromScript("buildModel")} / ${fromScript("coverageMin")}`)
+  const fromEnvFile = await boot()
+  check("a hoko.env line overrides a model hoko.json set",
+    fromEnvFile.agentEditor.get("build")?.model?.id === "from-repo-env",
+    JSON.stringify(fromEnvFile.agentEditor.get("build")?.model))
+
+  plant(machineEnv, "HOKO_BUILD_MODEL=anthropic/from-machine-env\nHOKO_COVERAGE_MIN=75\n")
+  check("the machine hoko.env overrides the repository one for both readers",
+    bothRead("buildModel", "anthropic/from-machine-env") && bothRead("coverageMin", "75"),
+    `${fromPlugin("buildModel")} / ${fromScript("buildModel")} / ${fromScript("coverageMin")}`)
+
+  process.env.HOKO_BUILD_MODEL = "anthropic/from-real-env"
+  const fromRealEnv = await boot()
+  check("the environment overrides every file for both readers",
+    fromRealEnv.agentEditor.get("build")?.model?.id === "from-real-env"
+      && bothRead("buildModel", "anthropic/from-real-env"),
+    `${fromPlugin("buildModel")} / ${fromScript("buildModel")}`)
+
+  wipe()
+  fs.rmSync(scripts, { recursive: true, force: true })
   process.env = before
 }
 
@@ -1432,7 +1497,7 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
       else fs.writeFileSync(file, text)
     }
     process.env.HOKO_REPO_ROOT = repoRoot
-    process.env.HOKO_PLANS_DIR = ""
+    delete process.env.HOKO_PLANS_DIR
 
     const shared = display(theme)
     runSlots(shared.context, one)

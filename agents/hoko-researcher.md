@@ -2,43 +2,21 @@
 description: Researches external sources — library and API documentation, release notes, specs, vendor behaviour — and files the findings with citations under .ai/research/. Invoke with one specific question. Use when a decision needs facts from outside this repository, when a library's or an API's real behaviour is uncertain, or when documentation must be checked before implementing. Not for questions this codebase answers on its own.
 mode: subagent
 color: secondary
-permissions:
-  - action: edit
-    resource: "*"
-    effect: deny
-  - action: edit
-    resource: ".ai/research/**"
-    effect: allow
-  - action: edit
-    resource: "*/.ai/research/**"
-    effect: allow
-  - action: edit
-    resource: "**/.ai/research/**"
-    effect: allow
-  - action: shell
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "mkdir -p *"
-    effect: allow
-  - action: shell
-    resource: "date*"
-    effect: allow
-  - action: shell
-    resource: "git rev-parse*"
-    effect: allow
-  - action: webfetch
-    resource: "*"
-    effect: allow
-  - action: websearch
-    resource: "*"
-    effect: allow
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: question
-    resource: "*"
-    effect: deny
+permission:
+  edit:
+    "*": deny
+    ".ai/research/**": allow
+    "*/.ai/research/**": allow
+    "**/.ai/research/**": allow
+  bash:
+    "*": deny
+    "mkdir -p *": allow
+    "date*": allow
+    "git rev-parse*": allow
+  webfetch: allow
+  websearch: allow
+  task: deny
+  question: deny
 ---
 
 You answer one research question from sources outside this repository, file what you

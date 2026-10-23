@@ -7,8 +7,8 @@
  *
  * `index.ts` is the server entrypoint and `tui.ts` the terminal entrypoint V2 resolves
  * beside it. From there the plugin:
- *   - owns the `plan` agent's prompt and plan-file exception and applies model overrides
- *     from hoko.env / the environment
+ *   - owns the `plan` agent's prompt and plan-file exception and applies the model
+ *     overrides resolved from hoko.json / hoko.env / the environment
  *   - registers this repo's commands and skills into the live registry
  *   - adds every instructions/*.md to every model request
  *   - captures the first prompt of each plan cycle verbatim, for the journal
@@ -103,61 +103,31 @@ const END_OF_TURN = new Set([
   "session.idle",
 ])
 
-const MODEL_ENV: Record<string, string> = {
-  plan: "HOKO_PLAN_MODEL",
-  build: "HOKO_BUILD_MODEL",
-  "hoko-plan-executor": "HOKO_EXECUTOR_MODEL",
-  "hoko-code-reviewer": "HOKO_REVIEWER_MODEL",
-  "hoko-final-reviewer": "HOKO_FINAL_REVIEW",
-  "hoko-quality-assurance": "HOKO_QA_MODEL",
-  "hoko-researcher": "HOKO_RESEARCH_MODEL",
+// The agent whose model a hoko.json key names. The key maps to `HOKO_<UPPER_SNAKE>` like
+// every other setting, so a model is configured in the same file as the rest.
+const MODEL_KEYS: Record<string, string> = {
+  plan: "planModel",
+  build: "buildModel",
+  "hoko-plan-executor": "executorModel",
+  "hoko-code-reviewer": "reviewerModel",
+  "hoko-final-reviewer": "finalReview",
+  "hoko-quality-assurance": "qaModel",
+  "hoko-researcher": "researchModel",
 }
 
-// Which `efforts` stage each agent runs at. The task pipeline embeds the effort in the
-// model ref it hands the conductor; a plan run passes no model, so this is what puts the
-// effort on the model the plugin resolves for the agent. `hoko-researcher` has no stage.
-const EFFORT_STAGE: Record<string, string> = {
-  "hoko-specifier": "refine",
-  "hoko-spec-writer": "spec",
-  "hoko-planner": "plan",
-  plan: "plan",
-  "hoko-plan-executor": "implement",
-  build: "implement",
-  "hoko-quality-assurance": "qa",
-  "hoko-code-reviewer": "review",
-  "hoko-final-reviewer": "review",
+/** `planModel` → `HOKO_PLAN_MODEL`. scripts/settings.py derives the same name from the
+ *  same key, so one setting is one variable on both sides. */
+function envName(key: string): string {
+  return "HOKO_" + key.replace(/(?<!^)(?=[A-Z])/g, "_").toUpperCase()
 }
 
-const DEFAULT_EFFORTS: Record<string, string> = {
-  refine: "high",
-  spec: "high",
-  plan: "high",
-  implement: "high",
-  qa: "medium",
-  review: "high",
-}
-
-/** The same defaults, hoko.json and HOKO_EFFORTS precedence the Python settings loader
- *  applies, so an effort means the same thing on either side of the run. */
-function stageEfforts(env: Record<string, string>): Record<string, string> {
-  const levels = { ...DEFAULT_EFFORTS }
-  const apply = (layer: any) => {
-    if (!layer || typeof layer !== "object" || Array.isArray(layer)) return
-    for (const [stage, level] of Object.entries(layer)) {
-      if (stage in levels && typeof level === "string") levels[stage] = level
-    }
-  }
-  for (const file of [path.join(repoRoot(), "hoko.json"), path.join(CONFIG_DIR, "hoko.json")]) {
-    try {
-      apply(JSON.parse(fs.readFileSync(file, "utf8")).efforts)
-    } catch {}
-  }
-  if (env.HOKO_EFFORTS) {
-    try {
-      apply(JSON.parse(env.HOKO_EFFORTS))
-    } catch {}
-  }
-  return levels
+/** A hoko.json value as the variable that carries it: a string as itself, a boolean as
+ *  `true`/`false`, an object as JSON. An empty string names no value. */
+function render(value: any): string {
+  if (typeof value === "string") return value
+  if (typeof value === "boolean") return value ? "true" : "false"
+  if (value === null || value === undefined) return ""
+  return typeof value === "object" ? JSON.stringify(value) : String(value)
 }
 
 function readEnvFile(file: string): Record<string, string> {
@@ -184,7 +154,7 @@ function readEnvFile(file: string): Record<string, string> {
 }
 
 /** `hoko.json`'s own values, the plugin's file first and the machine's last, so the
- *  machine's wins — the layer scripts/settings.py reads beneath the environment. A file
+ *  machine's wins — the first two of the five layers scripts/settings.py reads. A file
  *  that is missing or malformed contributes nothing, which leaves the defaults in place. */
 function fileSettings(): Record<string, any> {
   const merged: Record<string, any> = {}
@@ -197,15 +167,21 @@ function fileSettings(): Record<string, any> {
   return merged
 }
 
-/** Repo defaults, then `hoko.json`, then hoko.env, then the real environment — the same
- *  precedence scripts/settings.py applies, so a setting means one thing on either side.
+/** Repo defaults, then hoko.json, then hoko.env, then the real environment — the same
+ *  layers scripts/settings.py applies in the same order, so a setting means one thing on
+ *  either side. Every file key maps to its `HOKO_<UPPER_SNAKE>` variable, which is why a
+ *  model and a plans directory need no branch of their own.
  *  Exported for the terminal half: the guard and the display resolve the plans directory
  *  from this one reader, so a configured value names one directory for both. */
 export function settings(): Record<string, string> {
-  const fromFile = fileSettings()
-  const merged = {
-    ...readEnvFile(path.join(repoRoot(), "hoko.env")),
-    ...readEnvFile(path.join(CONFIG_DIR, "hoko.env")),
+  const merged: Record<string, string> = {}
+  for (const [key, value] of Object.entries(fileSettings())) {
+    const rendered = render(value)
+    if (rendered) merged[envName(key)] = rendered
+  }
+  // The two hoko.env files sit above both hoko.json files and beneath the environment.
+  for (const file of [path.join(repoRoot(), "hoko.env"), path.join(CONFIG_DIR, "hoko.env")]) {
+    Object.assign(merged, readEnvFile(file))
   }
   // Any HOKO_* variable in the real environment wins, whether or not a file mentions it.
   // An explicitly empty one clears what a file set, so `HOKO_JOURNAL_PATH= opencode`
@@ -214,22 +190,6 @@ export function settings(): Record<string, string> {
     if (!key.startsWith("HOKO_")) continue
     if (value) merged[key] = value
     else delete merged[key]
-  }
-  // The two settings the guard reads are the two the config file can name, and the
-  // environment wins over both: a configured plans directory cannot silently disarm it.
-  if (!merged.HOKO_PLANS_DIR && typeof fromFile.plansDir === "string") merged.HOKO_PLANS_DIR = fromFile.plansDir
-  if (!merged.HOKO_LOOP_GUARD && typeof fromFile.loopGuard === "boolean") {
-    merged.HOKO_LOOP_GUARD = fromFile.loopGuard ? "true" : "false"
-  }
-  // No built-in journal root: an unset HOKO_JOURNAL_PATH means journaling is off, not
-  // that entries land in somebody else's notes directory.
-  if (!merged.HOKO_JOURNAL_PATH) {
-    let configured: string | undefined
-    try {
-      configured = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, "hoko.json"), "utf8")).journalPath
-    } catch {}
-    if (configured) merged.HOKO_JOURNAL_PATH = configured
-    else delete merged.HOKO_JOURNAL_PATH
   }
   merged.HOKO_PLANS_DIR = (merged.HOKO_PLANS_DIR || DEFAULT_PLANS_DIR).replace(/^\.\//, "").replace(/\/+$/, "")
   merged.HOKO_COVERAGE_MIN ||= DEFAULT_COVERAGE_MIN
@@ -317,16 +277,6 @@ function parseModel(ref: string): { providerID: string; id: string; variant?: st
   const slash = name.indexOf("/")
   if (slash < 1 || slash === name.length - 1) return undefined
   return { providerID: name.slice(0, slash), id: name.slice(slash + 1), ...(variant ? { variant } : {}) }
-}
-
-/** `model` carrying `effort` as its variant. A variant already on the ref is an explicit
- *  choice and wins; an empty effort leaves the model bare. */
-function modelWithEffort(
-  model: { providerID: string; id: string; variant?: string },
-  effort: string,
-): { providerID: string; id: string; variant?: string } {
-  if (!effort || model.variant) return model
-  return { ...model, variant: effort }
 }
 
 /**
@@ -794,7 +744,6 @@ export default {
     })()
 
     await ctx.agent.transform((editor: any) => {
-      const efforts = stageEfforts(env)
       editor.update(PLAN_AGENT, (agent: any) => {
         if (!agent.system) {
           if (planSource.system) agent.system = planSource.system
@@ -812,18 +761,16 @@ export default {
           { action: "hoko_execute", resource: "*", effect: "allow" },
         ]
       })
-      // A HOKO_*_MODEL is an explicit choice for that agent, so it wins over an inherited
-      // model instead of only filling a gap. The stage's effort rides on the same ref as its
-      // variant, which is how a plan run — whose command names no model — still runs the
-      // implementer at `efforts.implement`.
-      for (const [name, key] of Object.entries(MODEL_ENV)) {
-        const ref = env[key]
+      // A model key is an explicit choice for that agent, so it wins over an inherited
+      // model instead of only filling a gap. The ref reaches the agent as written; a
+      // `#variant` it names is the user's choice and stays.
+      for (const [name, key] of Object.entries(MODEL_KEYS)) {
+        const ref = env[envName(key)]
         if (!ref) continue
         const model = parseModel(ref)
         if (!model) continue
-        const effort = efforts[EFFORT_STAGE[name] ?? ""] ?? ""
         editor.update(name, (agent: any) => {
-          agent.model = modelWithEffort(model, effort)
+          agent.model = model
         })
       }
     })

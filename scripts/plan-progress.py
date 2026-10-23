@@ -34,7 +34,10 @@ gives the run its id on first use and writes `run.started` once, then `stage.sta
 for the step; `complete` writes `files.changed`, one `usage.reported` per subagent call
 since the run started, then `run.finished` `done`, journaling on or off, and copies the
 events file into the journal entry's analytics folder as `events-<NN>.jsonl` and lists
-the run's id in the folder's `entry.json` (`analytics.py`); `abort` marks the run
+the run's id in the folder's `entry.json` (`analytics.py`). A successful copy deletes the
+run's live folder under the events directory, since the analytics copy is then the
+record; a closing that makes no copy keeps that folder, and one that cannot be deleted is
+a note on stderr. `abort` marks the run
 `stopped` and writes `stage.failed` for the stage it stopped in, then `run.finished`
 `failed`. An event that cannot be written never changes a command's exit status.
 
@@ -303,7 +306,8 @@ def usage_payloads(plan, text, document, root):
 
 def copy_events(text, root, run_id):
     """Copies the run's events file into the journal round's analytics folder as
-    `events-<NN>.jsonl`, and relinks the folder; a failure is a note on stderr."""
+    `events-<NN>.jsonl`, relinks the folder and prunes the live run directory the copy
+    came from; a failure is a note on stderr."""
     if configured_journal_root() is None or not run_id:
         return
     target = journal.journal_plan(text)
@@ -311,20 +315,34 @@ def copy_events(text, root, run_id):
     if match is None or not target.parent.is_dir():
         return
     try:
-        source = events.run_directory(root, run_id) / events.FILE
+        live = events.run_directory(root, run_id)
     except ValueError as exc:
         print(f"plan-progress: events not copied to the journal: {exc}", file=sys.stderr)
         return
+    source = live / events.FILE
     if not source.is_file():
         return
     folder = analytics.folder_for(target.parent)
+    copied = False
     with analytics.guard(folder):
         folder.mkdir(parents=True, exist_ok=True)
         destination = folder / f"events-{match.group(1)}.jsonl"
         scratch = destination.with_name(destination.name + ".tmp")
         shutil.copyfile(source, scratch)
         os.replace(scratch, destination)
+        copied = True
         analytics.link(target.parent)
+    if copied:
+        prune_run(live)
+
+
+def prune_run(live):
+    """Deletes a completed run's live directory, the analytics copy having replaced it; a
+    directory that cannot be deleted is a note on stderr, never a failed completion."""
+    try:
+        shutil.rmtree(live)
+    except OSError as exc:
+        print(f"plan-progress: run directory not pruned: {exc}", file=sys.stderr)
 
 
 def record_run(text, document):

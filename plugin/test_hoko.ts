@@ -374,8 +374,9 @@ async function boot(overrides: any = {}) {
 
   // The close is idempotent: the run's own progress.json is what stops a later turn end
   // from filing the report and appending the closing events a second time.
-  const runId = JSON.parse(fs.readFileSync(progressFile, "utf8")).run_id
-  const eventsFile = path.join(proj, ".ai", "runs", String(runId), "events.jsonl")
+  // The live folder under `.ai/runs` is pruned once its closing copy exists, so the copy
+  // the analytics folder keeps is where the close is counted.
+  const eventsFile = path.join(entry, "events-01.jsonl")
   const finishes = () => {
     try {
       return fs.readFileSync(eventsFile, "utf8").split("\n").filter((line) => line.includes('"run.finished"')).length

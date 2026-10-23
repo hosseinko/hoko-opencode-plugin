@@ -700,6 +700,9 @@ instructions/
   docker-first.md         docker first: never install or run a language runtime on the
                           host — use docker and docker compose, and stop when docker
                           does not work
+  read-exclusion.md       what search never walks into: the excluded folders named once,
+                          reached only by a path the caller names, and the repository
+                          read before the web
 scripts/
   settings.py             the hoko.json / hoko.env config the plugin and the scripts share
   plan_format.py          the plan's own format: steps, requirements, sections

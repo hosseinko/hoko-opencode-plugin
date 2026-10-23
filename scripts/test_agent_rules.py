@@ -122,5 +122,42 @@ class QaCheckScopeTestCase(unittest.TestCase):
                           text, where)
 
 
+class ReadExclusionTestCase(unittest.TestCase):
+    """REQ-22 to REQ-25 — one read-exclusion list, and the repository before the web."""
+
+    EXCLUDED = (
+        "node_modules", "vendor", "dist", "build", ".next", "target", "coverage",
+        ".git", "__pycache__", ".venv", ".ai/plans", ".ai/analytics",
+    )
+    ECOSYSTEM = (".gradle", ".bundle", ".terraform", "_build", "deps", "bin", "obj")
+
+    def setUp(self):
+        self.text = " ".join(read(ROOT / "instructions" / "read-exclusion.md").split())
+
+    def test_SPEC_LOCAL_REQ_22_the_instructions_name_every_excluded_folder(self):
+        for folder in self.EXCLUDED + self.ECOSYSTEM:
+            self.assertIn(f"`{folder}`", self.text, folder)
+        self.assertIn("the journal tree `journalPath` (`HOKO_JOURNAL_PATH`) resolves to", self.text)
+
+    def test_SPEC_LOCAL_REQ_23_an_excluded_folder_is_reached_only_by_a_path_the_caller_names(self):
+        self.assertIn("A file in an excluded folder is reached only by a path the caller names.",
+                      self.text)
+        self.assertIn("never reached by a recursive `grep`, `glob` or `find`", self.text)
+
+    def test_SPEC_LOCAL_REQ_24_the_web_is_reached_only_when_no_repository_file_answers(self):
+        self.assertIn("A stage reaches the web only when no file in this repository answers the "
+                      "question.", self.text)
+
+    def test_SPEC_LOCAL_REQ_25_a_web_answer_names_the_repository_file_it_ruled_out_first(self):
+        self.assertIn("it names the repository file it ruled out first", self.text)
+
+
+class ReadmeLayoutTestCase(unittest.TestCase):
+    """The README's instructions section names every standing rules file."""
+
+    def test_the_readme_lists_the_read_exclusion_instruction_file(self):
+        self.assertIn("read-exclusion.md", read(ROOT / "README.md"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -23,7 +23,7 @@
  *     reports `in_progress`, so the step work stays with the subagents (plugin/guard.ts)
  *   - exposes the resolved settings and HOKO_ROOT to every shell
  *
- * V2 removals this port has to work around (see README, "Migration from V1"):
+ * V2 removals this port has to work around (see docs/upgrading.md, "Migration from V1"):
  *   - a plugin cannot register agents, so this repo's agents/*.md are discovered from
  *     ~/.config/opencode/agents/ instead (scripts/install-agents.sh); `plan` collides
  *     with opencode's built-in plan agent, so its prompt is applied from this file too

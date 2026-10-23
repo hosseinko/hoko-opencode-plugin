@@ -18,6 +18,7 @@ import argparse
 import multiprocessing
 import multiprocessing.connection
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -82,6 +83,19 @@ def run_unittest_unit(unit, loader):
     )
 
 
+RAN_SUMMARY = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
+CHECK_LINE = re.compile(r"^(?:ok   |FAIL )", re.MULTILINE)
+
+
+def reported_tests(output):
+    """How many tests a whole script ran, read from its own output."""
+    summary = RAN_SUMMARY.search(output)
+    if summary:
+        return int(summary.group(1))
+    # The skill suites print one `ok`/`FAIL` line per check; a silent script still ran.
+    return len(CHECK_LINE.findall(output)) or 1
+
+
 def run_script_unit(unit):
     proc = subprocess.run(
         [sys.executable, unit.script.name],
@@ -89,12 +103,13 @@ def run_script_unit(unit):
         capture_output=True,
         text=True,
     )
-    if proc.returncode == 0:
-        return Outcome(ran=1)
     output = proc.stdout + proc.stderr
+    ran = reported_tests(output)
+    if proc.returncode == 0:
+        return Outcome(ran=ran)
     if not output.endswith("\n"):
         output += f"\nexit code {proc.returncode}\n"
-    return Outcome(ran=1, errors=[(unit.label, output)])
+    return Outcome(ran=ran, errors=[(unit.label, output)])
 
 
 def class_suites(suite):
@@ -256,7 +271,8 @@ def merge(total, unit, outcome):
     total.expected_failures += outcome.expected_failures
     total.unexpected_successes += outcome.unexpected_successes
     clean = not (outcome.failures or outcome.errors or outcome.unexpected_successes)
-    if clean and outcome.ran != unit.size:
+    # A script unit runs whole and reports its own count, so `size` only bounds a split.
+    if clean and unit.script is None and outcome.ran != unit.size:
         total.errors.append((unit.label, f"ran {outcome.ran} of {unit.size} discovered tests\n"))
 
 

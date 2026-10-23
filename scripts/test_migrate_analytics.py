@@ -57,6 +57,10 @@ class MigrateTestCase(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc
 
+    def events(self, name="events-01.jsonl"):
+        return [json.loads(line) for line in
+                (self.folder / name).read_text(encoding="utf-8").splitlines()]
+
 
 class TestLayout(MigrateTestCase):
     def test_req17_a_migrated_entry_lands_in_its_projects_folder_under_the_analytics_root(self):
@@ -87,6 +91,66 @@ class TestMoving(MigrateTestCase):
 
 
 class TestSynthesis(MigrateTestCase):
+    def test_req2_a_round_without_an_event_copy_is_backfilled_with_a_slim_migrated_event(self):
+        self.dated("plan-01.md", "# Speed up the shop\n\n## Goal\n" + "The shop is slow.\n" * 500,
+                   PLAN_TIME)
+        self.dated("report-01.md", "# Report\n", REPORT_TIME)
+        self.migrate()
+
+        found = self.events()
+        self.assertEqual([event["type"] for event in found], ["run.started", "run.finished"])
+        self.assertEqual(found[0]["payload"], {
+            "source": "plan", "text": "Speed up the shop",
+            "path": str((self.entry / "plan-01.md").resolve()),
+            "backend": "opencode", "migrated": True})
+        self.assertLess(len((self.folder / "events-01.jsonl").read_bytes()), 1024)
+
+    def test_req3_a_report_only_round_gains_a_single_run_finished_dated_from_its_report(self):
+        self.dated("report-02.md", "# Report\n", REPORT_TIME)
+        self.migrate()
+
+        self.assertEqual([(event["type"], event["ts"], event["seq"])
+                          for event in self.events("events-02.jsonl")],
+                         [("run.finished", "2026-10-21T10:30:00.000Z", 1)])
+
+    def test_req4_a_synthesized_round_is_written_under_the_run_id_entry_rnn(self):
+        self.dated("plan-03.md", "# Plan\n", PLAN_TIME)
+        self.migrate()
+
+        self.assertEqual({event["run_id"] for event in self.events("events-03.jsonl")},
+                         {"20261022-0950-speed-r03"})
+
+    def test_req5_a_synthesized_run_started_sets_the_migrated_marker(self):
+        self.dated("plan-01.md", "# Plan\n", PLAN_TIME)
+        self.migrate()
+
+        self.assertIs(self.events()[0]["payload"]["migrated"], True)
+
+    def test_req6_a_synthesized_run_started_sets_the_text_to_the_plans_first_heading(self):
+        self.dated("plan-01.md", "Some preamble\n\n# Speed up the shop\n\n## Goal\n", PLAN_TIME)
+        self.migrate()
+
+        self.assertEqual(self.events()[0]["payload"]["text"], "Speed up the shop")
+
+    def test_req6_without_a_heading_the_text_is_the_plans_first_non_empty_line(self):
+        self.dated("plan-01.md", "\nShip the slim payload\n## Goal\n", PLAN_TIME)
+        self.migrate()
+
+        self.assertEqual(self.events()[0]["payload"]["text"], "Ship the slim payload")
+
+    def test_req6_the_text_is_cut_to_120_characters(self):
+        self.dated("plan-01.md", "# " + "x" * 150 + "\n", PLAN_TIME)
+        self.migrate()
+
+        self.assertEqual(self.events()[0]["payload"]["text"], "x" * 120)
+
+    def test_req7_a_synthesized_run_started_sets_the_path_to_the_journal_plan(self):
+        self.dated("plan-01.md", "# Plan\n", PLAN_TIME)
+        self.migrate()
+
+        self.assertEqual(self.events()[0]["payload"]["path"],
+                         str((self.entry / "plan-01.md").resolve()))
+
     def test_req19_a_round_without_an_event_copy_gains_one_dated_from_its_plan_and_report(self):
         self.dated("plan-01.md", "# Plan\n", PLAN_TIME)
         self.dated("report-01.md", "# Report\n", REPORT_TIME)

@@ -8,8 +8,10 @@ For every journal entry, moves its `sessions.json`, `invoice.json`, `invoice.md`
 `events-<NN>.jsonl` copies into `<analytics root>/<project>/<entry>/`, overwriting what
 the target already holds. A round with no event copy gains one synthesized from its
 `plan-<NN>.md` and `report-<NN>.md` and their modification times: `run.started` at the
-plan's, `run.finished` at the report's, under run id `<entry>-r<NN>`. Every filled folder
-gets an `entry.json` naming the journal entry and listing its sessions.
+plan's, `run.finished` at the report's, under run id `<entry>-r<NN>`. A synthesized
+`run.started` carries the plan's title line and its journal path with the `migrated`
+marker, not the whole plan. Every filled folder gets an `entry.json` naming the journal
+entry and listing its sessions.
 
 The roots are arguments, not settings: the journal the migration empties and the analytics
 root it fills are the two places named on the command line. A round with neither a plan
@@ -31,6 +33,7 @@ import events
 MOVED_FILES = ("sessions.json", "invoice.json", "invoice.md")
 ROUND_FILE = re.compile(r"^(plan|report)-(\d+)\.md$")
 EVENT_COPY = re.compile(r"^events-(\d+)\.jsonl$")
+TITLE_LIMIT = 120
 
 
 def note(message):
@@ -134,14 +137,28 @@ def event(run_id, seq, type_, moment, project, payload):
     }
 
 
+def title_line(plan):
+    """The plan's first `# ` heading with the marker stripped, else its first non-empty
+    line, cut to `TITLE_LIMIT` characters."""
+    lines = plan.read_text(encoding="utf-8").splitlines()
+    for line in lines:
+        if line.startswith("# "):
+            return line[2:].strip()[:TITLE_LIMIT]
+    for line in lines:
+        if line.strip():
+            return line.strip()[:TITLE_LIMIT]
+    return ""
+
+
 def synthesized(entry, number, plan, report):
     run_id = f"{entry.name}-r{number:02d}"
     lines = []
     if plan is not None:
         lines.append(event(run_id, len(lines) + 1, "run.started", modified(plan),
                            entry.parent.name,
-                           {"source": "plan", "text": plan.read_text(encoding="utf-8"),
-                            "backend": events.BACKEND}))
+                           {"source": "plan", "text": title_line(plan),
+                            "path": str(plan.resolve()), "backend": events.BACKEND,
+                            "migrated": True}))
     if report is not None:
         lines.append(event(run_id, len(lines) + 1, "run.finished", modified(report),
                            entry.parent.name, {"status": "done"}))

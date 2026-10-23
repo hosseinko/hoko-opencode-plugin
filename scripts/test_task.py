@@ -1812,6 +1812,13 @@ class JournalTaskCase(TaskTestCase):
         self.assertEqual(len(entries), 1, entries)
         return os.path.join(project, entries[0])
 
+    def archived_events(self, folder):
+        """A finished run's events, read from the journal copy: closing prunes the live
+        folder under `.ai/runs` once that copy exists."""
+        copies = sorted(Path(self.entry()).glob("events-*.jsonl"))
+        self.assertEqual(len(copies), 1, copies)
+        return assert_valid_events(self, copies[0])
+
 
 class TestJournal(RefusedStart, JournalTaskCase):
     def test_start_files_the_prompt_in_the_journal_under_the_folders_stamp_and_slug(self):
@@ -1963,6 +1970,16 @@ class TestJournal(RefusedStart, JournalTaskCase):
                                 "run_ids": [self.progress(folder)["run_id"]], "session_ids": ["S1"]})
         self.assertEqual([row["session_id"] for row in json.loads(Path(beside, "sessions.json").read_text())],
                          ["S1"])
+
+    def test_finish_prunes_the_live_run_directory_after_its_analytics_copy(self):
+        analytics = os.path.join(self.tmpdir.name, "analytics")
+        folder, result = self.finish_with_session(analytics)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        run_id = self.progress(folder)["run_id"]
+        beside = os.path.join(analytics, "my-repo", os.path.basename(self.entry()))
+        self.assertTrue(os.path.isfile(os.path.join(beside, "events-01.jsonl")))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".ai", "runs", run_id)))
 
     def test_an_empty_analytics_path_keeps_the_analytics_in_the_journal_entry(self):
         analytics = os.path.join(self.tmpdir.name, "analytics")
@@ -2136,7 +2153,7 @@ class TestUsagePerCycle(JournalTaskCase):
         self.ok("finish", "--task", folder, "--report-file", "-", input="Fixed in round two.")
 
         usage = {e["payload"]["call_id"]: e["payload"]["cycle"]
-                 for e in self.events(folder) if e["type"] == "usage.reported"
+                 for e in self.archived_events(folder) if e["type"] == "usage.reported"
                  and e["payload"]["call_id"] != "main"}
         self.assertEqual(usage, {"first": 1, "second": 2})
 
@@ -2147,7 +2164,8 @@ class TestUsagePerCycle(JournalTaskCase):
                             self.entry())
         self.ok("finish", "--task", folder, "--report-file", "-", input="Done.")
         self.assertEqual([c["cycle"] for c in self.progress(folder)["flow"]["cycles"]], [1])
-        usage = {e["payload"]["cycle"] for e in self.events(folder) if e["type"] == "usage.reported"}
+        usage = {e["payload"]["cycle"] for e in self.archived_events(folder)
+                 if e["type"] == "usage.reported"}
         self.assertEqual(usage, {1})
 
 

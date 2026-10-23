@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+import analytics
 import journal
 import settings
 from test_plan_format import FENCED_LINES
@@ -394,13 +395,28 @@ class TestRegisterSessionInProcess(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
-        self.entry = Path(self.tmpdir.name)
-        patch = mock.patch.object(settings, "CONFIG_DIRS", ())
+        self.tmp = Path(self.tmpdir.name)
+        self.entry = self.tmp / "my-project" / "20260101-0000-case"
+        self.entry.mkdir(parents=True)
+        self.analytics = self.tmp / "analytics"
+        self.journal = self.tmp / "journal"
+        config = self.tmp / "config"
+        config.mkdir()
+        (config / "hoko.json").write_text(json.dumps(
+            {"analyticsPath": str(self.analytics), "journalPath": str(self.journal)}))
+        # The developer's own HOKO_* must not decide a case that runs in this process.
+        environment = mock.patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for name in list(os.environ):
+            if name.startswith("HOKO_"):
+                os.environ.pop(name)
+        patch = mock.patch.object(settings, "CONFIG_DIRS", (config,))
         patch.start()
         self.addCleanup(patch.stop)
 
     def rows(self):
-        return json.loads((self.entry / "sessions.json").read_text())
+        return json.loads((analytics.folder_for(self.entry) / "sessions.json").read_text())
 
     def test_register_session_with_since_stores_it_verbatim(self):
         journal.register_session(self.entry, "S1", "/t/S1.jsonl", 2, "execute",

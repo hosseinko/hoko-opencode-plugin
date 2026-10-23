@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DOC_DIRS = ("agents", "commands", "skills")
+DOC_DIRS = ("agents", "commands", "skills", "docs")
 DOC_FILES = ("README.md", "MIGRATION-V2.md")
 
 FENCE = re.compile(r"```.*?```", re.S)

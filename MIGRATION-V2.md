@@ -54,22 +54,22 @@ under `.ai/plans/`, a fresh session to open, and the run to start at step 1 with
 
 V1 relied on four things V2 removed. Each has a replacement or is simply gone.
 
-| V1 mechanism | V2 outcome |
+| V1 | V2 |
 | --- | --- |
-| `config` hook registering agents | Agents are files; install step above |
-| `config` hook appending to `instructions` | The plugin pushes them into every model request from the `context` hook — same effect |
-| `tui.showToast` | The server plugin has no TUI API; `tui.ts` announces the run, and the git guard's "cut from the wrong base" warning arrives as a synthetic notice in the session |
-| `tui.publish` moving the TUI to the run's fresh session, and `agent_cycle` moving the agent indicator | `tui.ts` listens for the run session's `hoko: run` marker, syncs it and navigates to it; the run still starts there |
-| `shell.env` exporting `HOKO_PROMPT_FILE` | The V2 shell hook carries no session id. Nothing read it |
-| A command naming an agent (`agent: hoko-researcher`) | Commands cannot name agents. `/hoko/research` now asks the current agent to delegate to `hoko-researcher`; `/hoko/plan`, `/hoko/task`, `/hoko/commit`, `/hoko/pr` and `/hoko/execute-plan` switch the session's agent explicitly |
-| The plugin detecting a hand-written `plan` block | A `plan` agent with a system prompt is treated as the user's own; an empty one receives this repo's protocol. The permission exception is always layered on, and a `HOKO_*_MODEL` is authoritative when set |
-| The plan agent's `tools:` map | V2 agents have no tool map; tool availability follows permissions |
+| The plugin registered the agents | Agents are files under `~/.config/opencode/agents/`, installed by `scripts/install-agents.sh` |
+| The plugin appended `instructions/*.md` to the config | The plugin adds them to every model request from the `context` hook — same effect, they are in context on every turn of every agent |
+| `tui.showToast` announced the handoff, the journaled report and the invoice | The server plugin has no TUI API; `plugin/tui.ts` announces the run, and the git guard's warning still arrives as a synthetic notice in the session |
+| Approving switched the TUI to the run's fresh session, and `agent_cycle` moved the agent indicator | `plugin/tui.ts` navigates the current view to the run's root session and syncs it, so the run appears in the approval's own tab; a child session that inherits the marker is ignored |
+| `HOKO_PROMPT_FILE` was exported into every shell | The V2 shell hook carries no session id, so it is gone. Nothing read it |
+| The plugin detected a hand-written `plan` block and left its prompt alone | A plan agent that already carries a system prompt is the user's own and is left alone; an empty one receives this repo's protocol. The permission exception is always layered on, and `HOKO_*_MODEL` is authoritative when set |
+| `/hoko/research` ran as a subtask because a command could name a subagent | A command cannot name an agent, and a session cannot run on a subagent-only agent, so the command asks the current agent to delegate to `hoko-researcher`; `/hoko/plan`, `/hoko/task`, `/hoko/commit`, `/hoko/pr` and `/hoko/execute-plan` switch the session's agent explicitly |
+| The plan agent's `tools` map was switched on | V2 agents have no `tools` map; tool availability follows permissions |
 
 ## What the port changed beyond the API
 
 The V2 port also replaced the conversational loop with a deterministic one. None of it is
-required by the API; it is the workflow this branch ships, and the README carries the
-detail.
+required by the API; it is the workflow this branch ships, and
+[the workflow](docs/workflow.md) carries the detail.
 
 - **The engine.** `scripts/` now owns what a run must not leave to memory: the plan lint
   at approval and before the loop, the plan's `## Progress` checklist and `progress.json`,

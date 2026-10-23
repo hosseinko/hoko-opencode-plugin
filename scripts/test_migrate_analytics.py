@@ -217,5 +217,70 @@ class TestSecondRun(MigrateTestCase):
         self.assertEqual(snapshot(self.root), before)
 
 
+class TestBackfill(MigrateTestCase):
+    def linked(self):
+        self.folder.mkdir(parents=True)
+        (self.folder / "entry.json").write_text(json.dumps({
+            "journal_entry": str(self.entry), "project": "shop",
+            "entry": self.entry.name, "run_ids": [], "session_ids": []}))
+
+    def backfill(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--synthesize", str(self.root),
+             "--backend", "claude-code"],
+            capture_output=True, text=True, env=self.env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc
+
+    def test_req8_a_claude_journals_synthesized_run_started_names_the_claude_code_backend(self):
+        self.linked()
+        self.dated("plan-01.md", "# Speed up the shop\n", PLAN_TIME)
+        self.dated("report-01.md", "# Report\n", REPORT_TIME)
+        self.backfill()
+
+        found = self.events()
+        self.assertEqual(found[0]["payload"]["backend"], "claude-code")
+        self.assertNotIn("opencode", json.dumps(found))
+
+    def test_an_existing_event_copy_stays_byte_for_byte(self):
+        self.linked()
+        self.dated("plan-01.md", "# Plan\n", PLAN_TIME)
+        self.dated("plan-02.md", "# Plan\n", PLAN_TIME)
+        copy = self.folder / "events-02.jsonl"
+        copy.write_bytes(b'{"kept": true}\n')
+
+        self.backfill()
+
+        self.assertEqual(copy.read_bytes(), b'{"kept": true}\n')
+        self.assertTrue((self.folder / "events-01.jsonl").is_file())
+
+    def test_entry_json_gains_the_synthesized_run_ids(self):
+        self.linked()
+        self.dated("plan-01.md", "# Plan\n", PLAN_TIME)
+        self.dated("report-01.md", "# Report\n", REPORT_TIME)
+        self.backfill()
+
+        link = json.loads((self.folder / "entry.json").read_text())
+        self.assertEqual(link["run_ids"], ["20261022-0950-speed-r01"])
+        self.assertEqual(link["journal_entry"], str(self.entry))
+
+    def test_the_backfilled_events_validate_against_the_committed_schema(self):
+        self.linked()
+        self.dated("plan-01.md", "# Plan\n", PLAN_TIME)
+        self.dated("report-01.md", "# Report\n", REPORT_TIME)
+        self.backfill()
+
+        assert_valid_events(self, self.folder / "events-01.jsonl")
+
+    def test_a_second_backfill_pass_changes_no_file(self):
+        self.linked()
+        self.dated("plan-01.md", "# Plan\n", PLAN_TIME)
+        self.dated("report-01.md", "# Report\n", REPORT_TIME)
+        self.backfill()
+        before = snapshot(self.root)
+        self.backfill()
+        self.assertEqual(snapshot(self.root), before)
+
+
 if __name__ == "__main__":
     unittest.main()

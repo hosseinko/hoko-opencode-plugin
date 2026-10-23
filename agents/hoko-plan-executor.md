@@ -2,22 +2,12 @@
 description: Implements a single numbered step of an approved implementation plan. Invoke with the absolute path of the plan file, or of a slice of it carrying that one step, and the step number. Use when executing an approved plan step by step.
 mode: subagent
 color: success
-permissions:
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: question
-    resource: "*"
-    effect: deny
-  - action: edit
-    resource: "*"
-    effect: allow
-  - action: shell
-    resource: "*"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
+permission:
+  task: deny
+  question: deny
+  edit: allow
+  bash: allow
+  skill: allow
 ---
 
 You implement exactly one step of an approved implementation plan.

@@ -2,25 +2,14 @@
 description: Files or reports a plan into the journal by running the journal plugin's scripts. Invoke with the exact command to run. Use when filing a plan or appending its final report to the journal.
 mode: subagent
 color: secondary
-permissions:
-  - action: edit
-    resource: "*"
-    effect: deny
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: question
-    resource: "*"
-    effect: deny
-  - action: skill
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "python3 *"
-    effect: allow
+permission:
+  edit: deny
+  task: deny
+  question: deny
+  skill: deny
+  bash:
+    "*": deny
+    "python3 *": allow
 ---
 
 You file journal entries. You run one command and report its output.

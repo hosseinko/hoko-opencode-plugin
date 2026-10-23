@@ -19,8 +19,8 @@ the PR is the end of the run.
 
 ## Settings
 
-The plugin exports `hoko.env` into every shell, so `printf '%s' "$HOKO_PR_AUTO"` reads
-these:
+The plugin exports the resolved settings into every shell, so
+`printf '%s' "$HOKO_PR_AUTO"` reads these:
 
 - **`HOKO_BASE_BRANCH`** — the branch that plays the `develop` role in the branching
   rules. Unset means `develop` when the remote has one, and the remote's own default

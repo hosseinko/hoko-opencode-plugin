@@ -113,25 +113,25 @@ to the built-in agent itself; the hoko subagents still need the symlinks.
 ### 4. Configure it (optional)
 
 ```sh
-cp hoko.env.example ~/.config/opencode/hoko.env
+cp hoko.json.example ~/.config/opencode/hoko.json
 ```
 
-Uncomment what you want — the table under [Configuration](#configuration) says what each
-variable does. Everything has a working default: leave the file untouched and every agent
-runs on the session's model, plans go to `.ai/plans/`, runs write their events under
-`.ai/runs/`, the coverage floor is 85%, three fix cycles is the task pipeline's limit, a
-PR targets `develop` where the repository has one, and nothing is journaled.
+Every key is there with its default, and every default works: leave the file untouched and
+every agent runs on the session's model, plans go to `.ai/plans/`, runs write their events
+under `.ai/runs/`, the coverage floor is 85%, three fix cycles is the task pipeline's
+limit, a PR targets `develop` where the repository has one, and nothing is journaled. The
+table under [Configuration](#configuration) says what each key does.
 
-Keeping the file at `~/.config/opencode/hoko.env` rather than in the repo means a
-`git pull` never touches your settings. Engine settings can also live in
-`~/.config/opencode/hoko.json`; see [Configuration](#configuration).
+Keeping the file at `~/.config/opencode/hoko.json` rather than in the repo means a
+`git pull` never touches your settings. `hoko.env` beside it is an optional override layer
+and the place for the plugin-only switches; see [Configuration](#configuration).
 
 ### 5. Reload opencode
 
 V2 watches its config directories and reloads them, so a change to `opencode.json`, to
-`hoko.env`, or to a file that was already mounted usually lands on its own; `opencode
-reload` forces it. A change to the *set* of plugins, or to the plugin's own source, may
-need `opencode service restart`.
+`hoko.json`, to `hoko.env`, or to a file that was already mounted usually lands on its
+own; `opencode reload` forces it. A change to the *set* of plugins, or to the plugin's own
+source, may need `opencode service restart`.
 
 ### 6. Check it took
 
@@ -213,7 +213,7 @@ change in an existing install:
    `HOKO_FINAL_REVIEW` names the model for `hoko-final-reviewer` and is a model reference
    like the others, so `provider/model` or `provider/model#variant`.
 5. **New settings.** `analyticsPath`, `events`, `eventsDir`, `loopLimit`, `planGate`,
-   `crap`, `mutation`, `crapMax`, `mutationMin`, `pricing` and `efforts` are read from
+   `crap`, `mutation`, `crapMax`, `mutationMin` and `pricing` are read from
    `hoko.json` and from `HOKO_*` variables; existing files need no edit, because every one
    has a working default. See [Configuration](#configuration).
 
@@ -280,77 +280,77 @@ scripts, the settings loader and the frontmatter parser are the V2 versions in
 
 ## Configuration
 
-Settings come from two files, because the plugin and the engine read them at different
-times.
+One file sets everything: `hoko.json`, a JSON object with one key per setting — the agent
+models included. Copy [`hoko.json.example`](hoko.json.example) to
+`~/.config/opencode/hoko.json` and edit it. Every key sits in that file with its default,
+so deleting a line is the same as leaving it at that default.
 
-- **`hoko.env`** — `hoko.env` in this repo, then `~/.config/opencode/hoko.env`, then the
-  real environment. The plugin reads it at startup for models, journaling, the handoff and
-  the loop guard, and exports every value into each shell an agent runs.
-- **`hoko.json`** — this repo's `hoko.json`, then `~/.config/opencode/hoko.json`. The
-  Python scripts read it for their own keys, then let a `HOKO_*` variable override them.
+Settings resolve in five layers, each overriding the one before:
 
-Put together, lowest precedence first: the repo's `hoko.json`, the machine's `hoko.json`,
-the repo's `hoko.env`, the machine's `hoko.env`, the real environment. Copy
-`hoko.env.example` for the first, and write the second by hand — it is a JSON object with
-one key per setting:
+1. this repo's `hoko.json`
+2. `~/.config/opencode/hoko.json`
+3. this repo's `hoko.env`
+4. `~/.config/opencode/hoko.env`
+5. the real environment
 
-```json
-{ "journalPath": "~/notes/journal", "analyticsPath": "~/ai/analytics/opencode", "loopLimit": 5 }
-```
+The plugin and `scripts/settings.py` read those five in that order. Every `hoko.json` key
+becomes the `HOKO_<UPPER_SNAKE>` variable of the same name — `planModel` →
+`HOKO_PLAN_MODEL` — so one setting means one value on both sides. The plugin resolves them
+at startup and exports them, plus `HOKO_ROOT`, into every shell an agent runs, which is how
+the skills and the engine read the settings that apply to them. An empty string in a file
+never overrides; only the real environment clears a value, so `HOKO_JOURNAL_PATH= opencode`
+turns journaling off for one session.
 
-| Variable | Sets | Default |
-| --- | --- | --- |
-| `HOKO_PLAN_MODEL` | model for the `plan` agent | the session's model |
-| `HOKO_BUILD_MODEL` | model for the `build` agent — the conductor of a run | the session's model |
-| `HOKO_EXECUTOR_MODEL` | model for `hoko-plan-executor` | the session's model |
-| `HOKO_REVIEWER_MODEL` | model for `hoko-code-reviewer`, on request | the session's model |
-| `HOKO_FINAL_REVIEW` | model for `hoko-final-reviewer`, the run's one review | the session's model |
-| `HOKO_QA_MODEL` | model for `hoko-quality-assurance` | the session's model |
-| `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` | the session's model |
-| `HOKO_JOURNAL_PATH` (`journalPath`) | journal root | **unset — journaling is off** |
-| `HOKO_ANALYTICS_PATH` (`analyticsPath`) | where a run's sessions, invoice and event copies go | **unset — they stay in the journal entry** |
-| `HOKO_PLANS_DIR` (`plansDir`) | plans and task folders, relative to the repo root | `.ai/plans` |
-| `HOKO_EVENTS` (`events`) | append the run's events | on |
-| `HOKO_EVENTS_DIR` (`eventsDir`) | run event folders, relative to the repo root | `.ai/runs` |
-| `HOKO_LOOP_LIMIT` (`loopLimit`) | fix cycles a `/hoko/task` run may take, 0 to 10; 0 accepts the open findings unasked | `3` |
-| `HOKO_PLAN_GATE` (`planGate`) | ask Approve / Revise / Stop before a task's steps start | on |
-| `HOKO_EFFORTS` (`efforts`) | per-stage effort as a JSON object over refine, spec, plan, implement, qa and review; a task stage's model ref carries it as its `#variant` | `high`, `qa` at `medium` |
-| `HOKO_SPECS` (`specs`) | the plan run's spec pass, and the task pipeline writing `specs/` instead of a local `spec.md` | off |
-| `HOKO_CRAP` (`crap`) | the CRAP index in the full gate | on |
-| `HOKO_CRAP_MAX` (`crapMax`) | the CRAP index's ceiling | `30` |
-| `HOKO_MUTATION` (`mutation`) | mutation testing in the full gate | on |
-| `HOKO_MUTATION_MIN` (`mutationMin`) | the mutation score floor | `70` |
-| `HOKO_PRICING` (`pricing`) | rate overrides for the invoice, laid over `scripts/pricing.json` | `{}` |
-| `HOKO_COVERAGE_MIN` (`coverageMin`) | the full gate's coverage floor, in percent | `85` |
-| `HOKO_FRESH_SESSION` | approval starts the run in a fresh session and `tui.ts` moves the screen to it. `0`, `false`, `no` or `off` hand off in the approval session | on |
-| `HOKO_LOOP_GUARD` | deny the conductor its own reads and edits while a run is in progress | on |
-| `HOKO_COMMIT_AUTO` (`commitAuto`) | `1` = `hoko-commit` commits without confirming the message | off |
-| `HOKO_BASE_BRANCH` | branch playing the `develop` role — what features branch from and target | `develop`, else the remote's default branch |
-| `HOKO_PR_AUTO` | `1` = `hoko-pull-request` pushes and opens the PR without confirming | off |
+The two `hoko.env` files remain a supported layer for machine-local overrides, and they are
+where the plugin-only switches live — `HOKO_FRESH_SESSION`, `HOKO_BASE_BRANCH` and
+`HOKO_PR_AUTO`, which `scripts/settings.py` does not read. `hoko.env.example` names those
+with their defaults. V1 also exported `HOKO_PROMPT_FILE`; V2's shell hook carries no
+session id, so it is gone, and nothing else read it.
 
-Models are `provider/model-id`, and a model variable may carry an opencode variant as
-`provider/model-id#variant`. `opencode models` lists them.
+| `hoko.json` key | Variable | Sets | Default |
+| --- | --- | --- | --- |
+| `planModel` | `HOKO_PLAN_MODEL` | model for the `plan` agent | the session's model |
+| `buildModel` | `HOKO_BUILD_MODEL` | model for the `build` agent — the conductor of a run | the session's model |
+| `executorModel` | `HOKO_EXECUTOR_MODEL` | model for `hoko-plan-executor` | the session's model |
+| `reviewerModel` | `HOKO_REVIEWER_MODEL` | model for `hoko-code-reviewer`, on request | the session's model |
+| `finalReview` | `HOKO_FINAL_REVIEW` | model for `hoko-final-reviewer`, the run's one review | the session's model |
+| `qaModel` | `HOKO_QA_MODEL` | model for `hoko-quality-assurance` | the session's model |
+| `researchModel` | `HOKO_RESEARCH_MODEL` | model for `hoko-researcher` | the session's model |
+| `journalPath` | `HOKO_JOURNAL_PATH` | journal root | **unset — journaling is off** |
+| `analyticsPath` | `HOKO_ANALYTICS_PATH` | where a run's sessions, invoice and event copies go | **unset — they stay in the journal entry** |
+| `plansDir` | `HOKO_PLANS_DIR` | plans and task folders, relative to the repo root | `.ai/plans` |
+| `events` | `HOKO_EVENTS` | append the run's events | on |
+| `eventsDir` | `HOKO_EVENTS_DIR` | run event folders, relative to the repo root | `.ai/runs` |
+| `loopLimit` | `HOKO_LOOP_LIMIT` | fix cycles a `/hoko/task` run may take, 0 to 10; 0 accepts the open findings unasked | `3` |
+| `planGate` | `HOKO_PLAN_GATE` | ask Approve / Revise / Stop before a task's steps start | on |
+| `specs` | `HOKO_SPECS` | the plan run's spec pass, and the task pipeline writing `specs/` instead of a local `spec.md` | off |
+| `crap` | `HOKO_CRAP` | the CRAP index in the full gate | on |
+| `crapMax` | `HOKO_CRAP_MAX` | the CRAP index's ceiling | `30` |
+| `mutation` | `HOKO_MUTATION` | mutation testing in the full gate | on |
+| `mutationMin` | `HOKO_MUTATION_MIN` | the mutation score floor | `70` |
+| `pricing` | `HOKO_PRICING` | rate overrides for the invoice, laid over `scripts/pricing.json` | `{}` |
+| `coverageMin` | `HOKO_COVERAGE_MIN` | the full gate's coverage floor, in percent | `85` |
+| `commitAuto` | `HOKO_COMMIT_AUTO` | `true` = `hoko-commit` commits without confirming the message | off |
+| `loopGuard` | `HOKO_LOOP_GUARD` | deny the conductor its own reads and edits while a run is in progress | on |
 
-The plugin exports all of these, plus `HOKO_ROOT`, into every shell the agent runs —
-which is how the skills and the engine read the settings that apply to them. V1 also
-exported `HOKO_PROMPT_FILE` (this session's captured prompt); V2's shell hook carries no
-session id, so it is gone. Nothing else read it.
+Three switches have no `hoko.json` key because only the plugin reads them, so they live in
+`hoko.env` or the environment: `HOKO_FRESH_SESSION` (approval starts the run in a fresh
+session and `tui.ts` moves the screen to it; `0`, `false`, `no` or `off` hand off in the
+approval session, default on), `HOKO_BASE_BRANCH` (the branch playing the `develop` role,
+default `develop`, else the remote's default branch) and `HOKO_PR_AUTO` (`1` = push and open
+the PR without confirming, default off). The plugin maps any key it finds, so naming one of
+them in `hoko.json` also reaches it.
 
-A model variable overrides whatever model the agent would otherwise use, including a model
-you set yourself in `opencode.json` or in the agent file; an unset variable leaves the
-agent alone. Every other setting is read by the scripts and never touches an agent's
-frontmatter.
+Models are `provider/model-id`, and a model key may carry an opencode variant as
+`provider/model-id#variant`. `opencode models` lists them. A model key overrides whatever
+model the agent would otherwise use, including a model you set yourself in `opencode.json`
+or in the agent file; an unset one leaves the agent alone. Every other key is read by the
+scripts and never touches an agent's frontmatter.
 
-`efforts` is applied as the `#variant` of the stage's model, by whichever side resolves that
-model. The plugin resolves each agent's model from its `HOKO_*_MODEL` and appends the
-stage's effort — `plan` for `plan`, `implement` for `build` and `hoko-plan-executor`, `qa`
-for `hoko-quality-assurance`, `review` for the two reviewers — unless the ref already names
-a variant, which wins. That is what puts `efforts.implement` on a plan run's executor,
-whose command passes no model. The task pipeline embeds the same suffix in the model ref on
-a spawn or step action; that explicit ref wins over the agent's because the conductor
-passes it, so the effort lands once. A stage whose agent has no model variable (the
-specifier, spec writer and planner) or no stage (`hoko-researcher`) gets no suffix; the
-run's `run.started` event still records every stage's effort.
+The reference reaches its agent exactly as written. A `#variant` on it is your choice about
+the ref, so it is passed through unchanged on both sides: the plugin resolves each agent's
+model from its key, and the task pipeline names the stage's model on a spawn or step
+action.
 
 ## The workflow
 
@@ -636,9 +636,9 @@ the home directory never counts, and an unresolvable project lands in
 ```
 plugin/
   index.ts            the server entry point V2 imports: re-exports hoko.ts's default
-  hoko.ts             registers everything; settings from hoko.env; the hoko_execute
-                      tool — lint, file, fresh session, handoff; prompt capture; usage
-                      collection and the run's close
+  hoko.ts             registers everything; settings from hoko.json / hoko.env; the
+                      hoko_execute tool — lint, file, fresh session, handoff; prompt
+                      capture; usage collection and the run's close
   guard.ts            the loop guard: the newest progress.json, and whether a call may
                       read or edit the repository
   status.ts           reads the run into the status line and the pane's view
@@ -700,8 +700,11 @@ instructions/
   docker-first.md         docker first: never install or run a language runtime on the
                           host — use docker and docker compose, and stop when docker
                           does not work
+  read-exclusion.md       what search never walks into: the excluded folders named once,
+                          reached only by a path the caller names, and the repository
+                          read before the web
 scripts/
-  settings.py             the hoko.json/env config the scripts share
+  settings.py             the hoko.json / hoko.env config the plugin and the scripts share
   plan_format.py          the plan's own format: steps, requirements, sections
   plan-lint.py            the machine checks on a plan: block approval or note
   plan-find.py            find the newest unfinished plan, this repo first
@@ -727,7 +730,8 @@ scripts/
   pricing.json            the bundled rates the invoice falls back to
   install-agents.sh       symlink agents/*.md into ~/.config/opencode/agents/
   run_tests.py            the parallel runner for the suites below
-hoko.env.example          every setting, commented, with its default
+hoko.json.example         every hoko.json key with its default
+hoko.env.example          the plugin-only switches and machine overrides, commented
 opencode.json.example     the one line that registers the plugin
 MIGRATION-V2.md           the V1 → V2 plugin-API migration
 ```

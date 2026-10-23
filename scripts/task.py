@@ -52,14 +52,14 @@ transition that already happened — asking twice writes nothing twice:
 
     branch      on a protected branch: create the branch (ticket key in `ticket`), then ask again
     preflight   run `command` (the fast gate) and `record --stage Preflight --exit-code N`
-    spawn       launch `agent` named `name` on `model` (its ref already carries the stage's
-                effort as the `#variant`) with `prompt`, then
+    spawn       launch `agent` named `name` on `model` (the stage's configured reference,
+                exactly as written) with `prompt`, then
                 `record --stage <stage> --agent-session <id>` with the child session the
                 `subagent` tool returned
     resume      continue the child session `session_id` that asked, with `message`
     ask         put `questions` (1–4) to the user, then `answer`
     step        the next unticked step: `slice` for `hoko-plan-executor` (its `model`, when
-                present, likewise carries the implement effort), then `step-commit.py`;
+                present, likewise the stage's configured reference), then `step-commit.py`;
                 `context` (when present) goes into the executor's prompt
     finish      every cycle is green: `finish --report-file -`
     stop        the run ended (`status`); report `reason` and end
@@ -151,6 +151,8 @@ SIZES = ("trivial", "small", "medium", "large")
 STATUSES = ("ok", "needs_input", "spec_invalid", "blocked")
 VERDICTS = ("green", "green with debt", "not ready")
 CHECKS = ("fast-gate", "lint", "analyse", "tests", "coverage", "crap", "mutation")
+SCOPED_CHECKS = ("crap", "mutation")
+SCOPED_CHECK_NAMES = {"crap": "the CRAP index", "mutation": "mutation testing"}
 GATE_STATUSES = ("passed", "failed", "skipped", "error")
 ACTIONABLE = ("blocking", "important")
 SEVERITIES = ACTIONABLE + ("nit", "suggestion", "learning", "praise")
@@ -226,21 +228,10 @@ def on_protected_branch(root):
     return current_branch(root) in script("step-commit").PROTECTED_BRANCHES
 
 
-def stage_effort(stage):
-    return settings.get(f"efforts.{stage.lower()}")
-
-
-def model_with_effort(model, effort):
-    """The model reference the conductor passes: the stage's model with its effort as the
-    `#variant`. A ref that already names a variant keeps it, because that is an explicit
-    choice and the stage default does not override it. No model, no effort, no suffix."""
-    if not model or not effort or "#" in model:
-        return model
-    return f"{model}#{effort}"
-
-
 def stage_model_ref(stage):
-    return model_with_effort(progress.stage_model(stage), stage_effort(stage))
+    """The model reference the conductor passes: the stage's configured model, untouched,
+    so a `#variant` the setting names stays on it."""
+    return progress.stage_model(stage)
 
 
 def project_slug(root):
@@ -360,6 +351,8 @@ def check_questions(name, questions, required):
             fail(name, f"{where}.options must be 2 to 4 non-empty strings")
         if item.get("recommended") not in options:
             fail(name, f"{where}.recommended must be one of its options")
+        if "multiple" in item and not isinstance(item["multiple"], bool):
+            fail(name, f"{where}.multiple must be true or false")
 
 
 def check_decisions(name, decisions):
@@ -407,6 +400,13 @@ def check_scope(name, data):
     for index, item in enumerate(unknowns):
         if not isinstance(item, dict) or not is_text(item.get("question")) or not is_text(item.get("resolution")):
             fail(name, f"unknowns[{index}] needs a question and a resolution")
+    if "checks" in data:
+        checks = data["checks"]
+        if not isinstance(checks, list) or not all(isinstance(check, str) for check in checks):
+            fail(name, "checks must be a list of crap and mutation")
+        unknown = [check for check in checks if check not in SCOPED_CHECKS]
+        if unknown:
+            fail(name, f"checks may name only crap and mutation, not {unknown[0]!r}")
 
 
 def check_spec(name, data):
@@ -560,6 +560,9 @@ def implicit_plan(task, scope, prompt, references=(), claimed=()):
     if len(change) > 1000:
         change = change[:1000].rsplit(" ", 1)[0] + " …"
     header = "".join(f"Spec: {line}\n" for line in references)
+    checks = qa_line(scope["checks"] if "checks" in scope else None)
+    if checks is not None:
+        header += f"QA: {checks}\n"
     satisfies = f"- Satisfies: {', '.join(claimed)}\n" if claimed else ""
     tests = ("a test for each claimed requirement that fails without the change; "
              if claimed else "") + "the project's own checks stay green."
@@ -741,7 +744,6 @@ def run_started_payload(task, source, text, plan_path):
         "text": text,
         "backend": events.BACKEND,
         "models": {stage: model for stage in STAGES if (model := progress.stage_model(stage))},
-        "efforts": {stage: stage_effort(stage) for stage in STAGES},
         "presets": [],
         "loop_limit": task.doc["loop_limit"],
         "engine": "hoko-plugin",
@@ -871,13 +873,12 @@ def spawn(task, stage, lines, **extra):
         name += f"-b{backs}"
     if flow["attempt"]:
         name += f"-a{flow['attempt']}"
-    effort = stage_effort(stage)
     if flow.get("announced") != key:
         flow["announced"] = key
         flow["spawned"] = name
         task.doc["stage"] = stage
         task.doc["stages"][stage] = "in_progress"
-        task.stage_event("stage.started", stage, effort=effort)
+        task.stage_event("stage.started", stage)
         task.commit()
     answers = task.path("answers.json")
     if answers.is_file():
@@ -905,7 +906,8 @@ def phase_refine(task):
     handoff = task.path("scope.json")
     return spawn(task, "Refine", prompt_lines(
         task, handoff, "Refine the prompt into scope.json: size, impact, needs_spec, needs_plan, ticket "
-        "and the unknowns you resolved from the code. Ask only product questions."),
+        "and the unknowns you resolved from the code. Ask the product questions, and always ask "
+        "which QA checks the run gets."),
         handoff=str(handoff))
 
 
@@ -928,6 +930,62 @@ def scope_lines(task):
     """The scope hand-off, for a task that has one: a task started from a spec skips Refine."""
     scope = task.path("scope.json")
     return [f"The scope: {scope}"] if scope.is_file() else []
+
+
+def selected_checks(task):
+    """The checks the Refine answer selected, or None when the task asked no such question:
+    a pre-change scope and a task started from a spec or a plan carry no `checks` list."""
+    scope = task.flow.get("scope") or {}
+    return scope["checks"] if "checks" in scope else None
+
+
+def qa_line(checks):
+    """The plan's `QA:` value for a checks selection, or None when there was no selection."""
+    return None if checks is None else ", ".join(checks) or "none"
+
+
+def plan_check_lines(task):
+    """What the planner writes on the plan's `QA:` line: the Refine answer when there is one,
+    else nothing and the plan in force or the settings decide."""
+    checks = selected_checks(task)
+    if checks is None:
+        return []
+    if not checks:
+        return ["Refine selected no QA check (Skip): write the plan's `QA:` line as `QA: none`."]
+    return [f"Refine selected the QA checks {', '.join(checks)}: write that list on the plan's `QA:` line."]
+
+
+def qa_check_lines(task):
+    checks = selected_checks(task)
+    if checks is None:
+        return []
+    if not checks:
+        return ["Refine selected no QA check (Skip): run neither the CRAP index nor mutation testing, "
+                "and report both as off."]
+    return [f"Refine selected the QA checks {', '.join(checks)}: run exactly those and report the rest as off."]
+
+
+def changed_files(task, base):
+    """The files the run's commit range touched, in git's own order: the one list the QA
+    stage scopes both expensive checks to."""
+    result = git(task.root, "-c", "core.quotepath=off", "diff", "--name-only", f"{base}..HEAD")
+    if result.returncode != 0:
+        raise TaskError(f"cannot list the files {base}..HEAD changed: {(result.stderr or result.stdout).strip()}")
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def qa_scope_line(task, files):
+    """The changed files the selected checks are scoped to. A check with an empty scope is
+    reported absent rather than widened, and a run with no check selected has nothing to
+    scope."""
+    checks = selected_checks(task)
+    names = [name for check, name in SCOPED_CHECK_NAMES.items() if checks is None or check in checks]
+    if not names:
+        return None
+    scope = " and ".join(names)
+    if not files:
+        return f"The run changed no files: report {scope} as absent rather than widening the scope."
+    return f"The files this run changed, and the only files in scope for {scope}: {', '.join(files)}."
 
 
 def phase_spec(task):
@@ -975,6 +1033,7 @@ def phase_plan(task):
                      f"write plan.json again, with these changes: {revision}")
     if task.flow.get("plan_against_spec_as_written"):
         lines.append("The user chose to plan against the spec as written: do not hand it back again.")
+    lines.extend(plan_check_lines(task))
     return spawn(task, "Plan", lines, handoff=str(handoff), **({"mode": "replan"} if replan else {}))
 
 
@@ -1029,10 +1088,17 @@ def phase_research(task):
 def phase_qa(task):
     plan, entry = plan_of_round(task)
     handoff = task.path(f"qa-{task.cycle:02d}.json")
-    return spawn(task, "QA", prompt_lines(
-        task, handoff, f"The plan: {plan}", f"The range: {plan_base(task, plan)}..HEAD",
-        "Run only the project's auto-fixers and commit their output; every other problem goes back "
-        "as a finding."), handoff=str(handoff), plan=str(plan), range=f"{plan_base(task, plan)}..HEAD")
+    base = plan_base(task, plan)
+    diff_range = f"{base}..HEAD"
+    lines = prompt_lines(
+        task, handoff, f"The plan: {plan}", f"The range: {diff_range}")
+    scope = qa_scope_line(task, changed_files(task, base))
+    if scope is not None:
+        lines.append(scope)
+    lines.append("Run only the project's auto-fixers and commit their output; every other problem goes "
+                 "back as a finding.")
+    lines.extend(qa_check_lines(task))
+    return spawn(task, "QA", lines, handoff=str(handoff), plan=str(plan), range=diff_range)
 
 
 def phase_review(task):
@@ -1188,6 +1254,8 @@ def record_refine(task, args):
     if not data["needs_plan"]:
         adopt_plan(task, implicit_plan(task, data, prompt), 1, "implicit")
     task.flow["scope"] = {key: data[key] for key in ("title", "size", "needs_spec", "needs_plan", "ticket")}
+    if "checks" in data:
+        task.flow["scope"]["checks"] = data["checks"]
     done_stage(task, "Refine", size=data["size"], needs_spec=data["needs_spec"], needs_plan=data["needs_plan"])
     if not data["needs_spec"]:
         skip_stage(task, "Spec")

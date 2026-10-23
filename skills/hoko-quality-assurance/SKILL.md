@@ -195,7 +195,8 @@ scores high. It runs on a plan run's full gate only, and only when the plan sele
 (see *Which checks run* below).
 
 **Scope: the diff, not the project.** Only methods and functions overlapping a line
-changed in `<Base>..HEAD` are scored. There is no project-wide CRAP pass.
+changed in `<Base>..HEAD` are scored, and only in the files *Which checks run* names.
+There is no project-wide CRAP pass.
 
 **Threshold:**
 
@@ -245,7 +246,7 @@ mutant that survives is behaviour no assertion pins down. It runs on a plan run'
 gate only, and only when the plan selected it.
 
 **Scope: the files the run changed**, not the whole project. Take the command
-`commands.py` resolved as `mutation` and narrow it to the run's diff with whatever the
+`commands.py` resolved as `mutation` and narrow it to that file list with whatever the
 tool offers: Infection `--git-diff-lines --git-diff-base=<Base>`, Stryker
 `--mutate <changed files>`, mutmut the changed paths, `cargo mutants --in-diff <diff
 file>`, and so on. Give it the timeout the tool supports, so a slow suite ends the check
@@ -297,6 +298,10 @@ Sections 4 and 5 are not both always on. The plan decides:
 - A check the line omits is reported as `off`. That is a decision, not an absent gate.
 - A plan with no `QA:` line, an older plan, falls back to the settings: run each check
   whose setting prints `true`, and report the other as `off`.
+
+Both checks are scoped to the run's diff, never the project. The prompt names the files
+the run changed: that list and nothing wider is the scope of both the CRAP index and
+mutation testing. When the list is empty, report both as absent rather than widening them.
 
 ```bash
 python3 "${HOKO_ROOT}/scripts/settings.py" crap

@@ -197,6 +197,10 @@ class TestQaChecksQuestion(PlanFlowTestCase):
         self.assertIn("- `Mutation`", self.qa_step())
         self.assertIn("never skip it", self.qa_step())
 
+    def test_the_protocol_offers_skip_as_a_third_option(self):
+        self.assertIn("- `Skip`", self.qa_step())
+        self.assertIn("`QA: none`", self.qa_step())
+
     def test_both_checks_are_pre_selected_by_default(self):
         self.env["HOKO_CRAP"] = "1"
         self.env["HOKO_MUTATION"] = "1"

@@ -5,3 +5,4 @@ hoko.json.backup
 node_modules/
 .ai/
 __pycache__/
+/.ai/

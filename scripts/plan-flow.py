@@ -122,15 +122,16 @@ contradicts is an *Open question*, not a silent override.__SPEC_OFFER__ Do not
 write the spec yourself here, and do not create `specs/` where the project has none.
 
 **3. Ask which QA checks this run gets.** Always, once the grilling is done and before
-you write anything: ask with the `question` tool as a multi-select, with these two options and
+you write anything: ask with the `question` tool as a multi-select, with these three options and
 no others, and never skip it because the change looks small or the answer looks obvious:
 
 - `CRAP` — scores the run's changed methods for complexity against missing coverage
   (__QA_CRAP__).
 - `Mutation` — mutation-tests the files the run changed (__QA_MUTATION__).
+- `Skip` — no extra check: the plan's `QA:` line is `QA: none`.
 
 Marking an option recommended is the default answer, not a decision: the user may take
-or drop either. Record the answer in the plan as the `QA:` header line described below.
+or drop any of them. Record the answer in the plan as the `QA:` header line described below.
 
 Before you ask, check whether the project's stack has a tool each check can run on:
 `python3 ${HOKO_ROOT}/scripts/commands.py --root <repo root>` prints a `mutation` command, or `null` when

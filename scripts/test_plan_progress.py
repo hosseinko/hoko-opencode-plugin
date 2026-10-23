@@ -72,11 +72,15 @@ class RecordingEvents:
 
 class StubSettings:
     """The settings a command reads, pinned so a developer's own hoko.json cannot decide
-    an in-process case."""
+    an in-process case. The model keys still follow the environment, which is the layer a
+    case sets to name a stage's model."""
 
     VALUES = {"journalPath": "", "loopLimit": 3}
+    MODEL_KEYS = ("executorModel", "qaModel", "finalReview")
 
     def get(self, key):
+        if key in self.MODEL_KEYS:
+            return os.environ.get(settings.env_name(key)) or None
         return self.VALUES.get(key)
 
 
@@ -540,6 +544,31 @@ class TestAnalyticsFolder(PlanProgressTestCase):
         self.assertEqual(link["journal_entry"], os.path.abspath(round_dir))
         self.assertEqual(link["run_ids"], [self.read_progress_json(plan)["run_id"]])
         self.assertEqual(os.listdir(round_dir).count("events-01.jsonl"), 0)
+
+
+class TestStageModelFromConfig(PlanProgressTestCase):
+    """A stage's model is a setting: hoko.json names it, not only the shell."""
+
+    def test_a_model_configured_in_hoko_json_reaches_the_stage_event(self):
+        self.configure_journal(None)
+        config = os.path.join(self.tmpdir.name, ".config", "opencode", "hoko.json")
+        with open(config, encoding="utf-8") as f:
+            data = json.load(f)
+        data["executorModel"] = "opencode-go/deepseek-v4-flash"
+        with open(config, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        plan = self.write_plan(NO_PROGRESS)
+        self.run_progress("init", "--plan", plan)
+        proc = self.run_progress("start", "--plan", plan, "--step", "1")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+        run_id = self.read_progress_json(plan)["run_id"]
+        events_file = os.path.join(self.tmpdir.name, ".ai", "runs", run_id, "events.jsonl")
+        with open(events_file, encoding="utf-8") as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        started = [event for event in events if event["type"] == "stage.started"]
+        self.assertEqual(started[0]["payload"]["model"], "opencode-go/deepseek-v4-flash")
 
 
 class TestProgressJson(PlanProgressTestCase):

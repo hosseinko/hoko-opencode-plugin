@@ -37,7 +37,9 @@ events file into the journal entry's analytics folder as `events-<NN>.jsonl` and
 the run's id in the folder's `entry.json` (`analytics.py`). A successful copy deletes the
 run's live folder under the events directory, since the analytics copy is then the
 record; a closing that makes no copy keeps that folder, and one that cannot be deleted is
-a note on stderr. `abort` marks the run
+a note on stderr. A `complete` whose `progress.json` is already `done` writes no closing
+events and leaves the first close's copy alone, so a retried close cannot replace it with
+the shorter log of a run whose live folder is already pruned. `abort` marks the run
 `stopped` and writes `stage.failed` for the stage it stopped in, then `run.finished`
 `failed`. An event that cannot be written never changes a command's exit status.
 
@@ -216,10 +218,11 @@ def cmd_tick(args):
 
 def cmd_complete(args):
     plan, text = read_plan(args.plan)
+    already_closed = (progress.load(progress.path_for(plan)) or {}).get("status") == "done"
     new_text = plan_format.write_status_complete(text)
     plan.write_text(new_text, encoding="utf-8")
     document = record(lambda: progress.complete(plan, new_text))
-    if document is not None:
+    if document is not None and not already_closed:
         write_closing_events(plan, new_text, document)
 
     if configured_journal_root() is None:

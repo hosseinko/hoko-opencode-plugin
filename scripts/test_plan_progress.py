@@ -598,6 +598,21 @@ class TestLiveEventFolder(PlanProgressTestCase):
         self.assertFalse(os.path.exists(os.path.join(self.analytics_folder(analytics_root),
                                                      "events-01.jsonl")))
 
+    def test_a_retried_complete_keeps_the_analytics_copy_of_the_first_close(self):
+        analytics_root = os.path.join(self.tmpdir.name, "analytics")
+        plan, report = self.started_run(analytics_root)
+        copy = os.path.join(self.analytics_folder(analytics_root), "events-01.jsonl")
+
+        failed = self.run_progress("complete", "--plan", plan, "--report-file", "-", input="")
+        self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
+        with open(copy, encoding="utf-8") as f:
+            first_close = f.read()
+
+        self.complete(plan, report)
+
+        with open(copy, encoding="utf-8") as f:
+            self.assertEqual(f.read(), first_close)
+
     def test_a_complete_with_journaling_off_makes_no_copy_and_keeps_the_live_events(self):
         plan = self.write_plan(NO_PROGRESS, name="plan-unlogged.md")
         self.run_progress("init", "--plan", plan)

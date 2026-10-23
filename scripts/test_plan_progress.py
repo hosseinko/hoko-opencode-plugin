@@ -546,6 +546,96 @@ class TestAnalyticsFolder(PlanProgressTestCase):
         self.assertEqual(os.listdir(round_dir).count("events-01.jsonl"), 0)
 
 
+class TestLiveEventFolder(PlanProgressTestCase):
+    """The live folder under the events directory is pruned once its analytics copy exists,
+    and every closing that makes no copy leaves it in place."""
+
+    ROUND = os.path.join("some-project", "20260106-0000-thing")
+
+    def started_run(self, analytics_path):
+        """A journalled plan whose run has started, plus the report that closes it."""
+        round_dir = os.path.join(self.tmpdir.name, "journal", self.ROUND)
+        os.makedirs(round_dir)
+        self.configure_journal(os.path.join(self.tmpdir.name, "journal"), analytics_path)
+        plan = self.write_plan(f"Journal: {os.path.join(round_dir, 'plan-01.md')}\n\n"
+                               + NO_PROGRESS, name="plan-live.md")
+        self.run_progress("init", "--plan", plan)
+        self.run_progress("start", "--plan", plan, "--step", "1")
+        return plan, self.write_report("report-live.md", "Done.\n")
+
+    def complete(self, plan, report):
+        proc = self.run_progress("complete", "--plan", plan, "--report-file", report)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return proc
+
+    def live_events(self, plan):
+        return os.path.join(self.tmpdir.name, ".ai", "runs",
+                            self.read_progress_json(plan)["run_id"], "events.jsonl")
+
+    def analytics_folder(self, root):
+        return os.path.join(root, self.ROUND)
+
+    def test_a_completed_runs_live_directory_is_pruned_after_the_copy(self):
+        analytics_root = os.path.join(self.tmpdir.name, "analytics")
+        plan, report = self.started_run(analytics_root)
+        live = self.live_events(plan)
+        self.assertTrue(os.path.isfile(live), live)
+
+        self.complete(plan, report)
+
+        self.assertTrue(os.path.isfile(os.path.join(self.analytics_folder(analytics_root),
+                                                    "events-01.jsonl")))
+        self.assertFalse(os.path.exists(os.path.dirname(live)), os.path.dirname(live))
+
+    def test_an_aborted_run_keeps_the_only_copy_of_its_events(self):
+        analytics_root = os.path.join(self.tmpdir.name, "analytics")
+        plan, _report = self.started_run(analytics_root)
+
+        proc = self.run_progress("abort", "--plan", plan, "--reason", "step 1 hit a blocker")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+        self.assertTrue(os.path.isfile(self.live_events(plan)))
+        self.assertFalse(os.path.exists(os.path.join(self.analytics_folder(analytics_root),
+                                                     "events-01.jsonl")))
+
+    def test_a_retried_complete_keeps_the_analytics_copy_of_the_first_close(self):
+        analytics_root = os.path.join(self.tmpdir.name, "analytics")
+        plan, report = self.started_run(analytics_root)
+        copy = os.path.join(self.analytics_folder(analytics_root), "events-01.jsonl")
+
+        failed = self.run_progress("complete", "--plan", plan, "--report-file", "-", input="")
+        self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
+        with open(copy, encoding="utf-8") as f:
+            first_close = f.read()
+
+        self.complete(plan, report)
+
+        with open(copy, encoding="utf-8") as f:
+            self.assertEqual(f.read(), first_close)
+
+    def test_a_complete_with_journaling_off_makes_no_copy_and_keeps_the_live_events(self):
+        plan = self.write_plan(NO_PROGRESS, name="plan-unlogged.md")
+        self.run_progress("init", "--plan", plan)
+        self.run_progress("start", "--plan", plan, "--step", "1")
+
+        self.complete(plan, self.write_report("report-unlogged.md", "Done.\n"))
+
+        self.assertTrue(os.path.isfile(self.live_events(plan)))
+
+    def test_a_complete_whose_analytics_folder_cannot_be_written_keeps_the_live_events(self):
+        blocker = os.path.join(self.tmpdir.name, "blocker")
+        with open(blocker, "w", encoding="utf-8") as f:
+            f.write("a file, not a directory")
+        analytics_root = os.path.join(blocker, "analytics")
+        plan, report = self.started_run(analytics_root)
+
+        proc = self.complete(plan, report)
+
+        self.assertIn("cannot write", proc.stderr)
+        self.assertTrue(os.path.isfile(self.live_events(plan)))
+        self.assertFalse(os.path.exists(analytics_root))
+
+
 class TestStageModelFromConfig(PlanProgressTestCase):
     """A stage's model is a setting: hoko.json names it, not only the shell."""
 

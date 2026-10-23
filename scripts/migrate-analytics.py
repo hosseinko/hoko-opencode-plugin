@@ -4,6 +4,7 @@ migrate-analytics.py — moves a journal's analytics into an analytics root.
 
     migrate-analytics.py <journal root> <analytics root>
     migrate-analytics.py --synthesize <analytics root> [--backend <name>]
+    migrate-analytics.py --rewrite-migrated <analytics root> [--backend <name>]
 
 For every journal entry, moves its `sessions.json`, `invoice.json`, `invoice.md` and
 `events-<NN>.jsonl` copies into `<analytics root>/<project>/<entry>/`, overwriting what
@@ -17,6 +18,12 @@ entry and listing its sessions.
 `--synthesize` backfills an analytics tree whose files already moved, reading each
 folder's journal entry from its `entry.json`, so it takes no journal root. `--backend`
 names the backend its synthesized events carry, `opencode` unless given.
+
+`--rewrite-migrated` slims the synthesized files a tree already holds: a `run.started`
+whose run id is `<entry>-r<NN>` gets the slim payload while its `event_id`, `seq`, `ts`
+and every other line stay as they are. A file whose run id is a real run's 26-character
+ULID is left untouched, and a file whose journal `plan-<NN>.md` is missing or unreadable
+keeps its payload with a note on stderr.
 
 The roots are arguments, not settings: the journal the migration empties and the analytics
 root it fills are the two places named on the command line. A round with neither a plan
@@ -155,15 +162,19 @@ def title_line(plan):
     return ""
 
 
+def slim_payload(plan, backend):
+    """The payload a synthesized `run.started` carries: the plan's title line as `text`,
+    the plan's journal path, the backend and the marker."""
+    return {"source": "plan", "text": title_line(plan), "path": str(plan.resolve()),
+            "backend": backend, "migrated": True}
+
+
 def synthesized(entry, number, plan, report, backend):
     run_id = f"{entry.name}-r{number:02d}"
     lines = []
     if plan is not None:
         lines.append(event(run_id, len(lines) + 1, "run.started", modified(plan),
-                           entry.parent.name,
-                           {"source": "plan", "text": title_line(plan),
-                            "path": str(plan.resolve()), "backend": backend,
-                            "migrated": True}))
+                           entry.parent.name, slim_payload(plan, backend)))
     if report is not None:
         lines.append(event(run_id, len(lines) + 1, "run.finished", modified(report),
                            entry.parent.name, {"status": "done"}))
@@ -256,17 +267,106 @@ def backfill(root, backend):
     return 0
 
 
+def synthesized_round(data, entry):
+    """The round number a synthesized run id names, or None when the event is not one of
+    `entry`'s synthesized runs."""
+    run_id = data.get("run_id")
+    prefix = f"{entry}-r"
+    if not isinstance(run_id, str) or not run_id.startswith(prefix):
+        return None
+    digits = run_id[len(prefix):]
+    return int(digits) if len(digits) == 2 and digits.isdigit() else None
+
+
+def parse_line(line):
+    try:
+        data = json.loads(line)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def slim_event_file(path, entry, journal, backend):
+    """Rewrites every synthesized `run.started` payload in one event file to the slim
+    shape, writing only when a line changes. A missing or unreadable plan leaves the file
+    alone: its old payload is then the only record of it."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        note(f"cannot read {path}: {exc}")
+        return False
+    payloads, lines, changed = {}, [], False
+    for line in text.splitlines(keepends=True):
+        found = parse_line(line)
+        number = synthesized_round(found, entry) if found is not None else None
+        if number is None or found.get("type") != "run.started":
+            lines.append(line)
+            continue
+        if number not in payloads:
+            plan = journal / f"plan-{number:02d}.md"
+            try:
+                payloads[number] = slim_payload(plan, backend)
+            except (OSError, ValueError) as exc:
+                note(f"{path} keeps its payload: cannot read {plan}: {exc}")
+                payloads[number] = None
+        payload = payloads[number]
+        if payload is None:
+            return False
+        if found.get("payload") == payload:
+            lines.append(line)
+            continue
+        found["payload"] = payload
+        newline = "\n" if line.endswith("\n") else ""
+        lines.append(json.dumps(found, ensure_ascii=False, separators=(",", ":"),
+                                allow_nan=False) + newline)
+        changed = True
+    if changed:
+        analytics.write_atomic(path, "".join(lines))
+    return changed
+
+
+def rewrite_folder(folder, backend):
+    linked = analytics.read_link(folder).get("journal_entry")
+    if not isinstance(linked, str) or not linked:
+        note(f"{folder} names no journal entry; skipped")
+        return False
+    journal = Path(linked).expanduser().resolve()
+    changed = False
+    for path in sorted(folder.iterdir()):
+        if path.is_file() and EVENT_COPY.match(path.name):
+            changed = slim_event_file(path, folder.name, journal, backend) or changed
+    return changed
+
+
+def rewrite(root, backend):
+    try:
+        for project in sorted(root.iterdir()):
+            if not project.is_dir():
+                continue
+            for folder in sorted(project.iterdir()):
+                if folder.is_dir() and rewrite_folder(folder, backend):
+                    print(folder)
+    except OSError as exc:
+        note(str(exc))
+        return 1
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="migrate-analytics.py", description=__doc__)
     parser.add_argument("journal_root", nargs="?", help="the folder holding <project>/<entry> journal entries")
     parser.add_argument("analytics_root", nargs="?", help="the root to move the analytics under")
     parser.add_argument("--synthesize", metavar="ANALYTICS_ROOT",
                         help="backfill the missing event copies of an existing analytics tree")
+    parser.add_argument("--rewrite-migrated", metavar="ANALYTICS_ROOT",
+                        help="rewrite the synthesized run.started payloads of an existing analytics tree")
     parser.add_argument("--backend", default=events.BACKEND,
                         help=f"the backend the synthesized events name (default: {events.BACKEND})")
     args = parser.parse_args(argv)
     if args.synthesize:
         return backfill(Path(args.synthesize).expanduser().resolve(), args.backend)
+    if args.rewrite_migrated:
+        return rewrite(Path(args.rewrite_migrated).expanduser().resolve(), args.backend)
     if not args.journal_root or not args.analytics_root:
         parser.error("the journal root and the analytics root are required")
     journal_root = Path(args.journal_root).expanduser().resolve()

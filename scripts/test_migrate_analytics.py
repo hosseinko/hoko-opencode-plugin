@@ -18,6 +18,7 @@ SCRIPTS = Path(__file__).resolve().parent
 SCRIPT = SCRIPTS / "migrate-analytics.py"
 PLAN_TIME = datetime(2026, 10, 21, 10, 0, tzinfo=timezone.utc)
 REPORT_TIME = datetime(2026, 10, 21, 10, 30, tzinfo=timezone.utc)
+WHOLE_PLAN = "# Speed up the shop\n\n## Goal\n" + "The shop is slow.\n" * 5000
 
 
 def snapshot(root):
@@ -280,6 +281,117 @@ class TestBackfill(MigrateTestCase):
         before = snapshot(self.root)
         self.backfill()
         self.assertEqual(snapshot(self.root), before)
+
+
+class TestRewrite(MigrateTestCase):
+    def linked(self):
+        self.folder.mkdir(parents=True)
+        (self.folder / "entry.json").write_text(json.dumps({
+            "journal_entry": str(self.entry), "project": "shop",
+            "entry": self.entry.name, "run_ids": [], "session_ids": []}))
+
+    def rewrite(self, backend=None):
+        command = [sys.executable, str(SCRIPT), "--rewrite-migrated", str(self.root)]
+        if backend:
+            command += ["--backend", backend]
+        proc = subprocess.run(command, capture_output=True, text=True, env=self.env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc
+
+    def write_events(self, name, *events):
+        path = self.folder / name
+        path.write_text("".join(
+            json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+            for event in events))
+        return path
+
+    def legacy_started(self, number, run_id=None):
+        return {
+            "v": 1, "event_id": "01M5J6WTBNWH596RPP6G74K3HY",
+            "run_id": run_id or f"{self.entry.name}-r{number:02d}", "seq": 1,
+            "ts": "2026-10-21T10:00:00.000Z", "type": "run.started", "project": "shop",
+            "payload": {"source": "plan", "text": WHOLE_PLAN,
+                        "path": str((self.entry / f"plan-{number:02d}.md").resolve()),
+                        "backend": "opencode"},
+        }
+
+    def finished(self, number):
+        return {
+            "v": 1, "event_id": "01M5J6WTBNWH596RPP6G74K3HZ",
+            "run_id": f"{self.entry.name}-r{number:02d}", "seq": 2,
+            "ts": "2026-10-21T10:30:00.000Z", "type": "run.finished", "project": "shop",
+            "payload": {"status": "done"},
+        }
+
+    def test_req10_an_existing_synthesized_files_run_started_payload_is_slimmed(self):
+        self.linked()
+        self.dated("plan-02.md", WHOLE_PLAN, PLAN_TIME)
+        self.write_events("events-02.jsonl", self.legacy_started(2), self.finished(2))
+        before = self.events("events-02.jsonl")[0]
+
+        self.rewrite()
+
+        found = self.events("events-02.jsonl")[0]
+        self.assertEqual(found["payload"], {
+            "source": "plan", "text": "Speed up the shop",
+            "path": str((self.entry / "plan-02.md").resolve()),
+            "backend": "opencode", "migrated": True})
+        for field in ("event_id", "seq", "ts"):
+            self.assertEqual(found[field], before[field])
+
+    def test_req10_every_other_event_in_the_file_is_left_unchanged(self):
+        self.linked()
+        self.dated("plan-02.md", WHOLE_PLAN, PLAN_TIME)
+        path = self.write_events("events-02.jsonl", self.legacy_started(2), self.finished(2))
+        before = path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+        self.rewrite()
+
+        self.assertEqual(path.read_text(encoding="utf-8").splitlines(keepends=True)[1:],
+                         before[1:])
+
+    def test_req10_the_rewritten_payload_carries_the_backend_the_command_names(self):
+        self.linked()
+        self.dated("plan-02.md", "# Speed up the shop\n", PLAN_TIME)
+        self.write_events("events-02.jsonl", self.legacy_started(2))
+
+        self.rewrite("claude-code")
+
+        self.assertEqual(self.events("events-02.jsonl")[0]["payload"]["backend"], "claude-code")
+
+    def test_req11_a_real_runs_event_file_survives_a_migration_pass(self):
+        self.linked()
+        self.dated("plan-01.md", WHOLE_PLAN, PLAN_TIME)
+        self.write_events("events-01.jsonl",
+                          self.legacy_started(1, run_id="01M5J6WTBNWH596RPP6G74K3HY"),
+                          self.finished(1))
+        before = snapshot(self.root)
+
+        self.rewrite()
+
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_a_second_pass_over_an_already_slimmed_tree_changes_no_bytes(self):
+        self.linked()
+        self.dated("plan-02.md", WHOLE_PLAN, PLAN_TIME)
+        self.write_events("events-02.jsonl", self.legacy_started(2), self.finished(2))
+        self.rewrite()
+        before = snapshot(self.root)
+
+        self.rewrite()
+
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_a_file_whose_journal_plan_is_gone_is_left_alone_with_a_note(self):
+        self.linked()
+        self.write_events("events-02.jsonl", self.legacy_started(2))
+        before = snapshot(self.root)
+
+        proc = self.rewrite()
+
+        self.assertEqual(snapshot(self.root), before)
+        self.assertIn("plan-02.md", proc.stderr)
+        self.assertIn("keeps its payload", proc.stderr)
 
 
 if __name__ == "__main__":

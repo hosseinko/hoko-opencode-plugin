@@ -1484,6 +1484,43 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   const envObject = process.env
   const fixture = JSON.stringify({ plansDir: "repo/plans" })
 
+  // The home is resolved when the config is read, not once when this module loaded, so a
+  // HOME the process is given later still decides which hoko.json the display reads.
+  {
+    const movedHome = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-home-moved-"))
+    const movedConfig = path.join(movedHome, ".config", "opencode")
+    fs.mkdirSync(movedConfig, { recursive: true })
+    fs.writeFileSync(path.join(movedConfig, "hoko.json"), JSON.stringify({ plansDir: "moved/plans" }))
+    runIn("moved/plans", "Moved run", "Refine")
+
+    const restore = (name: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+    const priorHome = process.env.HOME
+    const priorHomeRepoRoot = process.env.HOKO_REPO_ROOT
+    const priorHomePlansDir = process.env.HOKO_PLANS_DIR
+    const movedRepo = fs.mkdtempSync(path.join(os.tmpdir(), "hoko-test-repo-"))
+    fs.rmSync(configFile, { force: true })
+    process.env.HOME = movedHome
+    process.env.HOKO_REPO_ROOT = movedRepo
+    delete process.env.HOKO_PLANS_DIR
+    try {
+      const moved = display(theme)
+      runSlots(moved.context, one)
+      const movedLine = render(slotOf(moved.slots, "prompt.footer.status").render())
+      const movedPane = render(slotOf(moved.slots, "sidebar.content").render({ sessionID: "root" }))
+      check("the status line honours a HOME override the process is given after the plugin loaded",
+        movedLine === "hoko · one@main · Refine · cycle 1" && movedPane.includes("Moved run"),
+        `${movedLine} / ${movedPane}`)
+    } finally {
+      restore("HOME", priorHome)
+      restore("HOKO_REPO_ROOT", priorHomeRepoRoot)
+      restore("HOKO_PLANS_DIR", priorHomePlansDir)
+      fs.rmSync(movedRepo, { recursive: true, force: true })
+    }
+  }
+
   /**
    * One pass of the reader against a repo root of its own. The reader takes the checkout it
    * reads hoko.json from in HOKO_REPO_ROOT, so a case plants its fixture in a temp directory

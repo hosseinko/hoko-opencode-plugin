@@ -52,10 +52,13 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 function repoRoot(): string {
   return process.env.HOKO_REPO_ROOT || ROOT
 }
-// The home this process was given: os.homedir() is cached at process start by some
-// runtimes, so it can name a different home than the session actually runs under.
-const CONFIG_DIR = path.join(process.env.HOME || os.homedir(), ".config", "opencode")
-const AGENTS_DIR = path.join(CONFIG_DIR, "agents")
+// The machine's opencode config directory, read per call rather than once at load: the home
+// this process was given — os.homedir() is cached at process start by some runtimes, so it
+// can name a different home than the session actually runs under — is the one answer both
+// the guard and the display must read ~/.config/opencode/hoko.json from.
+function configDir(): string {
+  return path.join(process.env.HOME || os.homedir(), ".config", "opencode")
+}
 const JOURNAL_SCRIPT = path.join(ROOT, "scripts", "journal.py")
 const PLAN_FILE_SCRIPT = path.join(ROOT, "scripts", "plan-file.py")
 const PLAN_LINT_SCRIPT = path.join(ROOT, "scripts", "plan-lint.py")
@@ -158,7 +161,7 @@ function readEnvFile(file: string): Record<string, string> {
  *  that is missing or malformed contributes nothing, which leaves the defaults in place. */
 function fileSettings(): Record<string, any> {
   const merged: Record<string, any> = {}
-  for (const file of [path.join(repoRoot(), "hoko.json"), path.join(CONFIG_DIR, "hoko.json")]) {
+  for (const file of [path.join(repoRoot(), "hoko.json"), path.join(configDir(), "hoko.json")]) {
     try {
       const data = JSON.parse(fs.readFileSync(file, "utf8"))
       if (data && typeof data === "object" && !Array.isArray(data)) Object.assign(merged, data)
@@ -180,7 +183,7 @@ export function settings(): Record<string, string> {
     if (rendered) merged[envName(key)] = rendered
   }
   // The two hoko.env files sit above both hoko.json files and beneath the environment.
-  for (const file of [path.join(repoRoot(), "hoko.env"), path.join(CONFIG_DIR, "hoko.env")]) {
+  for (const file of [path.join(repoRoot(), "hoko.env"), path.join(configDir(), "hoko.env")]) {
     Object.assign(merged, readEnvFile(file))
   }
   // Any HOKO_* variable in the real environment wins, whether or not a file mentions it.
@@ -724,7 +727,7 @@ export default {
       console.warn(`hoko: could not read the agent list — ${String(error)}`)
     }
     if (!modes.has(PLAN_AGENT)) {
-      console.warn(`hoko: no ${PLAN_AGENT} agent — install this repo's agents into ${AGENTS_DIR} (scripts/install-agents.sh)`)
+      console.warn(`hoko: no ${PLAN_AGENT} agent — install this repo's agents into ${path.join(configDir(), "agents")} (scripts/install-agents.sh)`)
     }
 
     // V2's built-in plan agent shadows a `plan.md` installed under the config dir, and it

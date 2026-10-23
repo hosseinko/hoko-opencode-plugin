@@ -2,14 +2,14 @@
 """Parallel runner for the plugin's unittest suites, behind `make test`.
 
 Discovers what `python3 -m unittest discover -s scripts -p 'test_*.py'` discovers in
-`scripts/`, plus every suite the repository ships outside it, spreads the work over
-long-lived worker processes and prints a unittest-style summary. Exits 0 only when every
-unit passed.
+`scripts/`, plus every suite the pattern matches under each `skills/*/scripts/`
+directory that holds one, spreads the work over long-lived worker processes and prints a
+unittest-style summary. Exits 0 only when every unit passed.
 
 Work units: a class that defines `setUpClass`, or every class of a module that defines
 `setUpModule`, runs whole in one worker so its fixture is built once; every other test is
-its own unit. A suite outside `scripts/` is one unit run whole as its own interpreter
-call, from its own directory.
+its own unit. A suite under a skill's `scripts/` is one unit run whole as its own
+interpreter call, from its own directory.
 
 Usage: run_tests.py [--jobs N] [--start-dir DIR] [--pattern GLOB]
 """
@@ -29,12 +29,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+SKILLS = HERE.parent / "skills"
 LINE = "=" * 70
 THIN = "-" * 70
-
-# `scripts/test_*.py` discovery cannot see a suite that ships under a skill, so the
-# default roots carry those too and no gate silently skips them.
-EXTRA_ROOTS = (HERE.parent / "skills" / "hoko-senior-go-developer" / "scripts",)
 
 
 @dataclass
@@ -158,8 +155,12 @@ def script_units(roots, pattern):
     ]
 
 
-def default_roots():
-    return [HERE] + [root for root in EXTRA_ROOTS if root.is_dir()]
+def default_roots(pattern="test_*.py"):
+    return [HERE] + [
+        directory
+        for directory in sorted(SKILLS.glob("*/scripts"))
+        if any(directory.glob(pattern))
+    ]
 
 
 class Worker:
@@ -303,7 +304,7 @@ def main(argv=None):
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
 
-    roots = [Path(args.start_dir).resolve()] if args.start_dir else default_roots()
+    roots = [Path(args.start_dir).resolve()] if args.start_dir else default_roots(args.pattern)
     began = time.monotonic()
     suite = unittest.TestLoader().discover(
         str(roots[0]), pattern=args.pattern, top_level_dir=str(roots[0])

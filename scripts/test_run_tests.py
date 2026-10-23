@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "run_tests.py"
+MAKEFILE = SCRIPT.parent.parent / "Makefile"
 
 PASSING = """
     import unittest
@@ -270,11 +271,12 @@ class DefaultRootsCase(RunnerCase):
 
     def setUp(self):
         super().setUp()
-        repo = self.root / "repo"
+        repo = self.repo = self.root / "repo"
         self.suite = repo / "scripts"
         self.suite.mkdir(parents=True)
         self.script = self.suite / "run_tests.py"
         self.script.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        (repo / "Makefile").write_text(MAKEFILE.read_text(encoding="utf-8"), encoding="utf-8")
         self.go_suite = repo / "skills" / "hoko-senior-go-developer" / "scripts"
         self.go_suite.mkdir(parents=True)
 
@@ -312,6 +314,21 @@ class TestDefaultRoots(DefaultRootsCase):
         self.assertIn(f"ERROR: {self.go_suite / 'test_go_scripts.py'}", proc.stdout)
         self.assertIn("FAIL go_check exits 0 when every check passes", proc.stdout)
         self.assertIn("FAILED (errors=1)", proc.stdout)
+
+    def test_make_test_serial_runs_every_python_suite_including_the_one_under_skills(self):
+        marker = self.root / "go-suite-ran"
+        self.add("test_passing", PASSING)
+        self.add_go_suite(GO_SUITE)
+        proc = subprocess.run(
+            ["make", "-C", str(self.repo), "test-serial"],
+            capture_output=True,
+            text=True,
+            env=dict(os.environ, TMPDIR=str(self.tmpdir), GO_SUITE_MARKER=str(marker)),
+            timeout=120,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "ran")
+        self.assertEqual(self.ran(proc), 3)
 
     def test_the_pattern_selects_suites_from_both_roots(self):
         marker = self.root / "go-suite-ran"

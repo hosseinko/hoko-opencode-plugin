@@ -225,7 +225,7 @@ const registryFile = (root: string) =>
   const inside = path.join(proj, "packages", "inside")
   fs.mkdirSync(inside, { recursive: true })
   sessionDirs["sess-registered"] = inside
-  const { server } = await boot()
+  const { server, hooks } = await boot()
   server.push({ type: "session.created", data: { sessionID: "sess-registered" } })
   await server.drain()
   const rows = JSON.parse(fs.readFileSync(registryFile(proj), "utf8"))
@@ -248,6 +248,27 @@ const registryFile = (root: string) =>
   await server.drain()
   check("a turn end refreshes the session's registry row",
     Date.parse(stamped()) > Date.parse(atCreation), `${atCreation} -> ${stamped()}`)
+
+  // A task run that asks no question starts and finishes inside one turn, so the turn end
+  // that would refresh the row comes after `task.py finish` read it.
+  const atTurnEnd = stamped()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await hooks["tool.execute.before"]({
+    tool: "shell",
+    sessionID: "sess-registered",
+    input: { command: 'python3 "/repo/scripts/task.py" finish --task /proj/.ai/plans/x --report-file -' },
+  })
+  check("a task.py call stamps the conductor's row before finish reads it",
+    Date.parse(stamped()) > Date.parse(atTurnEnd), `${atTurnEnd} -> ${stamped()}`)
+
+  await hooks["tool.execute.before"]({
+    tool: "shell",
+    sessionID: "sess-registered-child",
+    input: { command: 'python3 "/repo/scripts/task.py" finish --task /proj/.ai/plans/x' },
+  })
+  const afterTask = JSON.parse(fs.readFileSync(registryFile(proj), "utf8"))
+  check("a task.py call in a child session adds no registry row",
+    !afterTask.some((row: any) => row.session_id === "sess-registered-child"), JSON.stringify(afterTask))
 }
 
 // -------------------------------------------------------------- prompt capture --

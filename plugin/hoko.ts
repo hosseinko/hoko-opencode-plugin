@@ -850,6 +850,12 @@ export default {
 
       if (["shell", "bash"].includes(tool)) {
         const command = String(event.input?.command ?? "")
+        // `task.py finish` reads the project registry before the turn that ran it ends, so
+        // a task started and finished in one turn needs the conductor's row stamped by the
+        // task.py call itself, not by the turn end that follows it.
+        if (event.sessionID && !descendants.has(event.sessionID) && /\btask\.py\b/.test(command)) {
+          await recordSession(event.sessionID)
+        }
         if (/\bgit\b/.test(command)) {
           const verdict = gitVerdict(command, gitAt(cwd, "rev-parse", "--abbrev-ref", "HEAD"), baseBranches(cwd))
           if (verdict?.level === "refuse") throw new Error(verdict.message)

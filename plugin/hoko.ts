@@ -498,6 +498,19 @@ export default {
       }
     }
 
+    /** Records a top-level session against the repository its directory belongs to. That
+     *  resolved root, not the parent folder it was reached from, is the key `task.py`
+     *  reads the registry with at finish; a directory outside git records nothing. */
+    const recordSession = async (sessionID: string) => {
+      const root = gitAt(await sessionDir(sessionID), "rev-parse", "--show-toplevel")
+      if (!root) return
+      try {
+        journal(env, root, ["record", "--root", root, "--session", sessionID])
+      } catch (error: any) {
+        console.error(`hoko: could not record session ${sessionID} — ${String(error)}`)
+      }
+    }
+
     /** The run's session title: the plan's own `#` heading, else the filename slug. */
     const planTitle = (file: string) => {
       const heading = /^#\s+(.+)$/m.exec(read(file))?.[1]?.trim()
@@ -1010,6 +1023,8 @@ export default {
             const data = event.data ?? {}
             if (data.sessionID && data.parentID) {
               descendants.set(data.sessionID, { parentID: data.parentID, agent: data.agent || MAIN_AGENT })
+            } else if (data.sessionID) {
+              await recordSession(data.sessionID)
             }
             continue
           }

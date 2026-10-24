@@ -3,7 +3,7 @@
 journal.py — files a plan cycle's initial prompt and plan, round by round, into a
 per-project journal folder.
 
-Ships with the `hoko` opencode plugin. Three modes:
+Ships with the `hoko` opencode plugin. Four modes:
 
   write   Creates `<journalPath>/<project>/<stamp>-<slug>/`, with the initial prompt
           copied verbatim into `prompt.md` and the plan copied verbatim into
@@ -21,6 +21,10 @@ Ships with the `hoko` opencode plugin. Three modes:
           role), so the invoice can find its usage later. The row goes into the
           `sessions.json` of the entry's analytics folder (`analytics.py`), and the
           folder's `entry.json` is rewritten after it.
+
+  record  Records a session in the project registry of the repository at `--root`:
+          every session the plugin saw created, one row each, so a task's finish can
+          carry them into its journal entry. Prints the registry file it wrote.
 
 The journal root comes from HOKO_JOURNAL_PATH, else "journalPath" in
 ~/.config/opencode/hoko.json. There is no default: with neither set, journaling is off
@@ -252,14 +256,30 @@ def recorded_sessions_file(root):
     return STATE_DIR / f"sessions-{digest}.json"
 
 
-def written_since(row, after):
-    """Whether the row's transcript was written to at or after `after`; a transcript
-    that is gone or unreadable was not."""
+def row_since(row):
+    """The row's own `since` as a UTC-aware datetime, a value with no offset being read as
+    UTC; None when it is missing or unparseable."""
     try:
-        modified = Path(str(row.get("transcript_path") or "")).stat().st_mtime
-    except OSError:
-        return False
-    return datetime.fromtimestamp(modified, timezone.utc) >= after
+        since = datetime.fromisoformat(str(row.get("since") or ""))
+    except ValueError:
+        return None
+    return since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+
+
+def written_since(row, after):
+    """Whether the session was in use at or after `after`. opencode exposes no
+    transcript, so a transcript that is absent or unreadable falls back to the row's own
+    `since`; a row with neither was not in use."""
+    transcript = str(row.get("transcript_path") or "")
+    if transcript:
+        try:
+            modified = Path(transcript).stat().st_mtime
+        except OSError:
+            pass
+        else:
+            return datetime.fromtimestamp(modified, timezone.utc) >= after
+    since = row_since(row)
+    return since is not None and since >= after
 
 
 def recorded_sessions(root, after=None):
@@ -399,6 +419,11 @@ def cmd_register(args):
     print(path)
 
 
+def cmd_record(args):
+    record_session(args.root, args.session, args.transcript or "")
+    print(recorded_sessions_file(args.root))
+
+
 def main():
     parser = argparse.ArgumentParser(prog="journal.py", description=__doc__)
     modes = parser.add_subparsers(dest="mode", required=True)
@@ -427,11 +452,18 @@ def main():
     register_parser.add_argument("--since", help="registration time (default: now, UTC)")
     register_parser.add_argument("--transcript", help="the session's transcript path, when one exists")
 
+    record_parser = modes.add_parser("record", help="record a session in a project's own registry")
+    record_parser.add_argument("--root", required=True, help="the project's repository root")
+    record_parser.add_argument("--session", required=True, help="the session id")
+    record_parser.add_argument("--transcript", help="the session's transcript path, when one exists")
+
     args = parser.parse_args()
     if args.mode == "write":
         cmd_write(args)
     elif args.mode == "report":
         cmd_report(args)
+    elif args.mode == "record":
+        cmd_record(args)
     else:
         cmd_register(args)
 

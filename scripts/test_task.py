@@ -147,27 +147,30 @@ class TaskTestCase(unittest.TestCase):
                 "gates": gates if gates is not None else
                 [{"check": "tests", "status": "passed", "exit_code": 0, "duration_ms": 12}]}
 
-    def record_session(self, session_id, calls=(), entry=None):
+    def record_session(self, session_id, calls=(), entry=None, transcript=True):
         """The session recorded against the project, as the plugin records it, and, when
         `entry` is given, its assistant responses in that entry's `usage.json`: one for the
         main session plus one per `(agent, moment)` in `calls`, each reporting 100 input
-        and 50 output tokens."""
-        transcript = Path(self.tmpdir.name, "projects", f"{session_id}.jsonl")
-        transcript.parent.mkdir(parents=True, exist_ok=True)
-        transcript.write_text("{}\n", encoding="utf-8")
+        and 50 output tokens. `transcript=False` writes the row the plugin records for a
+        session opencode holds no transcript path for."""
+        path = Path(self.tmpdir.name, "projects", f"{session_id}.jsonl")
+        if transcript:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}\n", encoding="utf-8")
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import journal\n"
                 "journal.record_session(sys.argv[2], sys.argv[3], sys.argv[4])\n")
         recorded = subprocess.run([sys.executable, "-c", code, str(SCRIPTS), self.repo, session_id,
-                                   str(transcript)], capture_output=True, text=True, env=self.env)
+                                   str(path) if transcript else ""],
+                                  capture_output=True, text=True, env=self.env)
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         if entry is not None:
             moment = calls[0][1] if calls else None
             rows = [self.usage_row(session_id, "main", moment)]
             rows += [self.usage_row(session_id, agent, moment) for agent, moment in calls]
-            path = Path(entry, "usage.json")
-            written = json.loads(path.read_text()) if path.is_file() else []
-            path.write_text(json.dumps(written + rows), encoding="utf-8")
-        return transcript
+            usage = Path(entry, "usage.json")
+            written = json.loads(usage.read_text()) if usage.is_file() else []
+            usage.write_text(json.dumps(written + rows), encoding="utf-8")
+        return path
 
     def usage_row(self, session_id, agent, moment):
         return {"session_id": session_id, "time": moment, "agent": agent,
@@ -2064,6 +2067,17 @@ class TestJournal(RefusedStart, JournalTaskCase):
         self.assertEqual([(row["session_id"], row["round"], row["role"], row["since"]) for row in rows],
                          [(session, entry["round"], "execute", entry["started"])
                           for session in ("S1", "S2") for entry in starts])
+
+    def test_R5_R7_a_transcriptless_session_still_registers_in_every_round_conductor_included(self):
+        folder, document = self.three_round_task()
+        starts = document["flow"]["round_starts"]
+        self.record_session("C1", transcript=False)
+        self.record_session("S1")
+        self.ok("finish", "--task", folder, "--report-file", "-", input="Done.")
+        rows = json.loads(Path(self.entry(), "sessions.json").read_text())
+        self.assertEqual([(row["session_id"], row["round"], row["role"], row["since"]) for row in rows],
+                         [(session, entry["round"], "execute", entry["started"])
+                          for session in ("C1", "S1") for entry in starts])
 
     def test_R8_the_invoice_bills_each_response_to_the_round_that_was_running(self):
         folder, document = self.three_round_task()

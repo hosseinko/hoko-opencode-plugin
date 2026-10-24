@@ -214,6 +214,32 @@ async function boot(overrides: any = {}) {
     `${state("sess-1")} vs ${scriptAnchor}`)
 }
 
+// ------------------------------------------------------- the project registry --
+
+/** The registry file the plugin writes for a repository root: journal.py's
+ *  `recorded_sessions_file`, keyed on the root resolved. */
+const registryFile = (root: string) =>
+  path.join(STATE, `sessions-${createHash("sha256").update(fs.realpathSync(root)).digest("hex").slice(0, 16)}.json`)
+
+{
+  const inside = path.join(proj, "packages", "inside")
+  fs.mkdirSync(inside, { recursive: true })
+  sessionDirs["sess-registered"] = inside
+  const { server } = await boot()
+  server.push({ type: "session.created", data: { sessionID: "sess-registered" } })
+  await server.drain()
+  const rows = JSON.parse(fs.readFileSync(registryFile(proj), "utf8"))
+  check("a parentless session lands in its directory's git-root registry",
+    rows.some((row: any) => row.session_id === "sess-registered" && row.round === 1 && row.role === "execute"),
+    JSON.stringify(rows))
+
+  server.push({ type: "session.created", data: { sessionID: "sess-registered-child", parentID: "sess-registered", agent: "hoko-plan-executor" } })
+  await server.drain()
+  const after = JSON.parse(fs.readFileSync(registryFile(proj), "utf8"))
+  check("a child session adds no registry row",
+    !after.some((row: any) => row.session_id === "sess-registered-child"), JSON.stringify(after))
+}
+
 // -------------------------------------------------------------- prompt capture --
 
 {

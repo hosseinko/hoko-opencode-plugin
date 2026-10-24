@@ -1862,6 +1862,23 @@ class TestJournal(RefusedStart, JournalTaskCase):
         self.assertEqual(Path(entry, "report-01.md").read_text(), "All good.\n")
         self.assertTrue(os.path.isfile(os.path.join(entry, "events-01.jsonl")))
 
+    def test_finish_leaves_the_marker_the_plugin_invoices_from(self):
+        self.scope = {"size": "trivial", "needs_plan": False}
+        folder = self.start()["dir"]
+        self.drive(folder, "finish")
+        self.ok("finish", "--task", folder, "--report-file", "-", input="All good.")
+        marker = json.loads(Path(folder, "finish-pending.json").read_text())
+        self.assertEqual(marker, {"entry": self.entry(), "plan": str(Path(folder, "plan-01.md")),
+                                  "task": self.progress(folder)["task"]})
+
+    def test_a_finish_with_journaling_off_leaves_no_finish_marker(self):
+        self.write_hoko({"journalPath": ""})
+        self.scope = {"size": "trivial", "needs_plan": False}
+        folder = self.start()["dir"]
+        self.drive(folder, "finish")
+        self.ok("finish", "--task", folder, "--report-file", "-", input="All good.")
+        self.assertFalse(os.path.exists(os.path.join(folder, "finish-pending.json")))
+
     def test_a_forwarded_plan_that_is_already_journaled_keeps_its_entry_and_files_no_second_one(self):
         entry = os.path.join(self.journal, "my-repo", "20261001-0900-forwarded")
         os.makedirs(entry)

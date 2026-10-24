@@ -10,12 +10,17 @@
  * A session whose messages cannot be read is named and skipped, so one broken session
  * never costs a run its invoice. A session that is both a registered row and a descendant
  * of another row is read once, as its own row.
+ *
+ * A task run is closed from the marker `task.py finish` leaves in its task folder: the
+ * newest `progress.json` must say `done`, and the marker's journal entry is where the
+ * files go. That is why the close needs no plan file in the ending session.
  */
 
 import fs from "node:fs"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import { newestProgressFile } from "./guard.ts"
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const JOURNAL_SCRIPT = path.join(ROOT, "scripts", "journal.py")
@@ -24,12 +29,15 @@ const SESSIONS_FILE = "sessions.json"
 const USAGE_FILE = "usage.json"
 const RATES_FILE = "rates.json"
 const INVOICE_FILE = "invoice.json"
+const MARKER_FILE = "finish-pending.json"
 const MAIN_AGENT = "main"
 
 export type InvoicerOptions = {
   env: Record<string, string>
   /** The directory the plugin's Python scripts run in: the project the run belongs to. */
   project: string
+  /** The configured plans directory, relative to `project`. */
+  plansDir: string
   /** The child sessions the plugin saw created, by id. */
   descendants: Map<string, { parentID: string; agent: string }>
   notify: (sessionID: string | undefined, message: string) => void
@@ -39,21 +47,12 @@ export type InvoicerOptions = {
   listModels: () => Promise<any>
 }
 
-export type TaskClose = {
-  /** The run's plan-NN.md; its folder's `progress.json` says whether the task is done. */
-  plan: string
-  /** The journal entry the session recorded, when it did. `progress.json`'s own
-   *  `flow.journal` is the fallback. */
-  entry: string
-  cwd: string
-  sessionID: string
-}
-
 export type Invoicer = {
   /** Writes the run's usage and rates into the entry's analytics folder. */
   writeUsage(entry: string): Promise<void>
-  /** Prices a finished task run's entry, unless it already has an invoice. */
-  closeTask(task: TaskClose): Promise<void>
+  /** Prices the project's newest finished task run from the marker `task.py finish` left,
+   *  unless that run already has an invoice. */
+  closeFinished(sessionID: string): Promise<void>
 }
 
 /** One of the plugin's Python scripts, run where the project is. Throws with the
@@ -85,6 +84,7 @@ function write(file: string, text: string) {
 export function createInvoicer({
   env,
   project,
+  plansDir,
   descendants,
   notify,
   context,
@@ -187,30 +187,47 @@ export function createInvoicer({
 
   const writeUsage = async (entry: string) => writeUsageInto(analyticsFolder(entry))
 
-  /** Closes a finished task run: its `progress.json` must report `done`, its journal entry
-   *  must exist, and an analytics folder that already holds `invoice.json` is left alone.
-   *  A failed invoice is announced rather than ending the close, so a later turn end
-   *  retries it. */
-  const closeTask = async ({ plan, entry, cwd, sessionID }: TaskClose) => {
+  /** Closes the newest task run when it finished and left its marker. A run that is not
+   *  the newest, is not `done`, or whose marker names no journal entry folder is left
+   *  untouched. An invoice already in the analytics folder ends it without a write, and a
+   *  failed invoice keeps the marker so the next turn end retries it. */
+  const closeFinished = async (sessionID: string) => {
+    const progressFile = newestProgressFile(project, plansDir)
+    if (!progressFile) return
     let document: any
     try {
-      document = JSON.parse(fs.readFileSync(path.join(path.dirname(plan), "progress.json"), "utf8"))
+      document = JSON.parse(fs.readFileSync(progressFile, "utf8"))
     } catch {
       return
     }
     if (document?.status !== "done") return
-    const journalEntry = entry || String(document?.flow?.journal ?? "")
-    if (!journalEntry || !fs.existsSync(journalEntry)) return
+    const marker = path.join(path.dirname(progressFile), MARKER_FILE)
+    let pending: any
     try {
-      const folder = analyticsFolder(journalEntry)
-      if (fs.existsSync(path.join(folder, INVOICE_FILE))) return
+      pending = JSON.parse(fs.readFileSync(marker, "utf8"))
+    } catch {
+      return
+    }
+    const entry = String(pending?.entry ?? "")
+    try {
+      if (!entry || !fs.statSync(entry).isDirectory()) return
+    } catch {
+      return
+    }
+    try {
+      const folder = analyticsFolder(entry)
+      if (fs.existsSync(path.join(folder, INVOICE_FILE))) {
+        fs.rmSync(marker, { force: true })
+        return
+      }
       await writeUsageInto(folder)
-      run(INVOICE_SCRIPT, ["write", "--entry", journalEntry], cwd, env)
-      console.log(`hoko: invoiced ${path.basename(journalEntry)}`)
+      run(INVOICE_SCRIPT, ["write", "--entry", entry], project, env)
+      fs.rmSync(marker, { force: true })
+      console.log(`hoko: invoiced ${path.basename(entry)}`)
     } catch (error: any) {
       notify(sessionID, `could not invoice the run — ${error.message}`)
     }
   }
 
-  return { writeUsage, closeTask }
+  return { writeUsage, closeFinished }
 }

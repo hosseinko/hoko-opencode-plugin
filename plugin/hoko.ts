@@ -542,6 +542,7 @@ export default {
     const invoicer = createInvoicer({
       env,
       project,
+      plansDir,
       descendants,
       notify,
       context: (sessionID: string) => ctx.session.context({ sessionID }),
@@ -568,11 +569,10 @@ export default {
     }
 
     /**
-     * Closes a run once it has finished. A plan run is closed by `plan-progress.py
-     * complete`, so the report and the invoice are filed by the one command that owns
-     * `Status: complete`. A task run is already closed by `task.py finish`, which cannot
-     * invoice because only this plugin can read a session's messages; it therefore gets
-     * its usage written here and its invoice rendered again.
+     * Closes a plan run once it has finished. `plan-progress.py complete` files the report,
+     * so the report and the invoice are written by the one command that owns
+     * `Status: complete`. A task run is not a plan run: `task.py finish` leaves it to
+     * `invoicer.closeFinished`, which needs no plan in the session that ends its turn.
      *
      * The plan's own `progress.json` is what makes this run once: `complete` marks it
      * `done`, and a later turn end sees that and stops.
@@ -586,10 +586,7 @@ export default {
 
       const taskFile = path.join(path.dirname(plan), "progress.json")
       const taskPlan = /^plan-\d+\.md$/.test(path.basename(plan)) && fs.existsSync(taskFile)
-      if (taskPlan) {
-        await invoicer.closeTask({ plan, entry, cwd, sessionID })
-        return
-      }
+      if (taskPlan) return
 
       // `Status:` lives in the header block; a plan that merely quotes the word further
       // down has not finished.
@@ -945,8 +942,10 @@ export default {
             continue
           }
 
-          // A run that finished is closed from the plan's own status; the run's
-          // progress.json is what keeps a closed run closed.
+          // A task run finished by `task.py finish` is invoiced from its marker at any
+          // turn end in the project; a plan run is closed from the plan's own status,
+          // and the run's progress.json is what keeps a closed run closed.
+          await invoicer.closeFinished(sessionID)
           await closeRun(sessionID)
         }
       } catch (error: any) {

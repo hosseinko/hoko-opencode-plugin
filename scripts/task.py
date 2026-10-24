@@ -107,7 +107,10 @@ each step the plan marks `- Irreversible: <text>`, with its text.
 The run's events are written through `events.py`; `finish` closes them like
 `plan-progress.py complete` does and files the report in the journal, under the last
 round's plan, and writes the invoice only when the plugin has already written the
-analytics folder's `usage.json`. `flow.cycles` records when each cycle opened, so a
+analytics folder's `usage.json`. A successful `finish` then leaves
+`<task folder>/finish-pending.json` naming the entry and the plan, so the plugin — the
+only reader of a session's messages — can invoice the run at that session's next turn
+end. `flow.cycles` records when each cycle opened, so a
 `usage.reported` event names the cycle that was running when its call started. A task
 started from a prompt has no registered session of its own, so `finish` files the sessions
 (those written to since the task began) in the `sessions.json` of the entry's analytics
@@ -145,6 +148,7 @@ PHASE_OF = {"Refine": "refine", "Spec": "spec", "Plan": "plan", "Implement": "im
             "Review": "review", "Preflight": "preflight"}
 
 SLUG_LIMIT = 40
+FINISH_MARKER = "finish-pending.json"
 SPEC_HANDBACK_LIMIT = 3
 REPLAN_LIMIT = 2
 BLOCKER_KINDS = ("spec", "plan", "external", "product")
@@ -1821,6 +1825,25 @@ def close_in_journal(task, report_path, plan):
         note("the report was not filed in the journal: " + quiet.getvalue().strip())
 
 
+def write_finish_marker(task, plan):
+    """Leaves the run for the plugin to invoice at the next turn end: the journal entry,
+    the round's plan and the task id, under the task folder. A failed write is a note,
+    never a failed `finish`, and an entry that is not a folder has nothing to invoice
+    into."""
+    folder = task.flow.get("journal")
+    if not folder:
+        return
+    entry = Path(folder)
+    if not entry.is_dir():
+        return
+    try:
+        task.path(FINISH_MARKER).write_text(
+            json.dumps({"entry": str(entry), "plan": str(plan), "task": task.doc["task"]}),
+            encoding="utf-8")
+    except OSError as exc:
+        note(f"the run was not left for invoicing: {exc}")
+
+
 def cmd_finish(args):
     task = open_task(args)
     if task.flow.get("closed"):
@@ -1842,6 +1865,7 @@ def cmd_finish(args):
     register_run_sessions(task)
     script("plan-progress").write_closing_events(plan, plan.read_text(encoding="utf-8"), task.doc)
     close_in_journal(task, report_path, plan)
+    write_finish_marker(task, plan)
     print(json.dumps({"finished": task.doc["task"], "report": str(report_path)}))
     return 0
 

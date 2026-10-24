@@ -138,8 +138,8 @@ progress, the gates, the step commit, events and analytics, journaling, the invo
 task pipeline, the follow-up renderer, the docs and the manifests — and the Go script suite
 under `skills/hoko-senior-go-developer/scripts/`, which `unittest discover` over `scripts/`
 cannot see. `--start-dir <dir>` narrows discovery to that one folder and drops the other
-root. `make test` is the same runner; `make test-serial` runs the `scripts/` suites one
-after another when a failure needs readable output.
+root. `make test` is the same runner; `make test-serial` runs the same two roots one after
+another (`--jobs 1`) when a failure needs readable output.
 
 Run a single Python suite by path — `python3 scripts/test_settings.py` — one suite through
 the runner with `python3 scripts/run_tests.py --pattern test_settings.py`, and the

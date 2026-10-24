@@ -2,14 +2,14 @@
 """Parallel runner for the plugin's unittest suites, behind `make test`.
 
 Discovers what `python3 -m unittest discover -s scripts -p 'test_*.py'` discovers in
-`scripts/`, plus every suite the repository ships outside it, spreads the work over
-long-lived worker processes and prints a unittest-style summary. Exits 0 only when every
-unit passed.
+`scripts/`, plus every suite the pattern matches under each `skills/*/scripts/`
+directory that holds one, spreads the work over long-lived worker processes and prints a
+unittest-style summary. Exits 0 only when every unit passed.
 
 Work units: a class that defines `setUpClass`, or every class of a module that defines
 `setUpModule`, runs whole in one worker so its fixture is built once; every other test is
-its own unit. A suite outside `scripts/` is one unit run whole as its own interpreter
-call, from its own directory.
+its own unit. A suite under a skill's `scripts/` is one unit run whole as its own
+interpreter call, from its own directory.
 
 Usage: run_tests.py [--jobs N] [--start-dir DIR] [--pattern GLOB]
 """
@@ -18,6 +18,7 @@ import argparse
 import multiprocessing
 import multiprocessing.connection
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,12 +30,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+SKILLS = HERE.parent / "skills"
 LINE = "=" * 70
 THIN = "-" * 70
-
-# `scripts/test_*.py` discovery cannot see a suite that ships under a skill, so the
-# default roots carry those too and no gate silently skips them.
-EXTRA_ROOTS = (HERE.parent / "skills" / "hoko-senior-go-developer" / "scripts",)
 
 
 @dataclass
@@ -85,6 +83,19 @@ def run_unittest_unit(unit, loader):
     )
 
 
+RAN_SUMMARY = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
+CHECK_LINE = re.compile(r"^(?:ok   |FAIL )", re.MULTILINE)
+
+
+def reported_tests(output):
+    """How many tests a whole script ran, read from its own output."""
+    summary = RAN_SUMMARY.search(output)
+    if summary:
+        return int(summary.group(1))
+    # The skill suites print one `ok`/`FAIL` line per check; a silent script still ran.
+    return len(CHECK_LINE.findall(output)) or 1
+
+
 def run_script_unit(unit):
     proc = subprocess.run(
         [sys.executable, unit.script.name],
@@ -92,12 +103,13 @@ def run_script_unit(unit):
         capture_output=True,
         text=True,
     )
-    if proc.returncode == 0:
-        return Outcome(ran=1)
     output = proc.stdout + proc.stderr
+    ran = reported_tests(output)
+    if proc.returncode == 0:
+        return Outcome(ran=ran)
     if not output.endswith("\n"):
         output += f"\nexit code {proc.returncode}\n"
-    return Outcome(ran=1, errors=[(unit.label, output)])
+    return Outcome(ran=ran, errors=[(unit.label, output)])
 
 
 def class_suites(suite):
@@ -158,8 +170,12 @@ def script_units(roots, pattern):
     ]
 
 
-def default_roots():
-    return [HERE] + [root for root in EXTRA_ROOTS if root.is_dir()]
+def default_roots(pattern="test_*.py"):
+    return [HERE] + [
+        directory
+        for directory in sorted(SKILLS.glob("*/scripts"))
+        if any(directory.glob(pattern))
+    ]
 
 
 class Worker:
@@ -255,7 +271,8 @@ def merge(total, unit, outcome):
     total.expected_failures += outcome.expected_failures
     total.unexpected_successes += outcome.unexpected_successes
     clean = not (outcome.failures or outcome.errors or outcome.unexpected_successes)
-    if clean and outcome.ran != unit.size:
+    # A script unit runs whole and reports its own count, so `size` only bounds a split.
+    if clean and unit.script is None and outcome.ran != unit.size:
         total.errors.append((unit.label, f"ran {outcome.ran} of {unit.size} discovered tests\n"))
 
 
@@ -303,7 +320,7 @@ def main(argv=None):
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
 
-    roots = [Path(args.start_dir).resolve()] if args.start_dir else default_roots()
+    roots = [Path(args.start_dir).resolve()] if args.start_dir else default_roots(args.pattern)
     began = time.monotonic()
     suite = unittest.TestLoader().discover(
         str(roots[0]), pattern=args.pattern, top_level_dir=str(roots[0])

@@ -2,6 +2,8 @@
 """Tests for run_tests.py — the runner is driven as a subprocess over a scratch suite
 folder, with its own scratch TMPDIR so the per-worker temp dirs can be inspected."""
 
+import importlib.util
+import inspect
 import os
 import re
 import subprocess
@@ -12,6 +14,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "run_tests.py"
+MAKEFILE = SCRIPT.parent.parent / "Makefile"
 
 PASSING = """
     import unittest
@@ -105,31 +108,66 @@ TEMP_DIRS = """
                 handle.write(os.environ["TMPDIR"] + "|" + tempfile.gettempdir() + "\\n")
 """
 
+GO_SUITE_CHECKS = (
+    "go_check builds gofmt, go vet, golangci-lint, govulncheck in order",
+    "go_check exits 0 when every check passes",
+    "go_test names every Go package",
+)
+
 GO_SUITE = """
     import os
     from pathlib import Path
 
     MARKER = Path(os.environ["GO_SUITE_MARKER"])
+    CHECKS = %r
 
     def main():
         MARKER.write_text("ran")
-        print("ok   go_check builds gofmt, go vet, golangci-lint, govulncheck in order")
+        for name in CHECKS:
+            print("ok   " + name)
         print("all passed")
 
     if __name__ == "__main__":
         main()
-"""
+""" % (list(GO_SUITE_CHECKS),)
+
+OTHER_SUITE_CHECKS = (
+    "go_test names every Go package",
+    "go_test refuses an unknown layout",
+)
+
+OTHER_SUITE = """
+    CHECKS = %r
+
+    def main():
+        for name in CHECKS:
+            print("ok   " + name)
+
+    if __name__ == "__main__":
+        main()
+""" % (list(OTHER_SUITE_CHECKS),)
+
+GO_SUITE_FAILING_COUNT = 2
 
 GO_SUITE_FAILING = """
     import sys
 
     def main():
+        print("ok   go_check builds gofmt, go vet, golangci-lint, govulncheck in order")
         print("FAIL go_check exits 0 when every check passes")
         sys.exit(1)
 
     if __name__ == "__main__":
         main()
 """
+
+
+def load_runner(path, name):
+    """Import a runner module from a path, so its defaults can be read without running it."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class RunnerCase(unittest.TestCase):
@@ -270,18 +308,26 @@ class DefaultRootsCase(RunnerCase):
 
     def setUp(self):
         super().setUp()
-        repo = self.root / "repo"
+        repo = self.repo = self.root / "repo"
         self.suite = repo / "scripts"
         self.suite.mkdir(parents=True)
         self.script = self.suite / "run_tests.py"
         self.script.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        (repo / "Makefile").write_text(MAKEFILE.read_text(encoding="utf-8"), encoding="utf-8")
         self.go_suite = repo / "skills" / "hoko-senior-go-developer" / "scripts"
         self.go_suite.mkdir(parents=True)
+        self.other_suite = repo / "skills" / "hoko-code-review" / "scripts"
+        self.other_suite.mkdir(parents=True)
+        (self.other_suite / "pr-analyzer.py").write_text("", encoding="utf-8")
+
+    def add_suite(self, directory, name, source):
+        (directory / name).write_text(textwrap.dedent(source), encoding="utf-8")
 
     def add_go_suite(self, source):
-        (self.go_suite / "test_go_scripts.py").write_text(
-            textwrap.dedent(source), encoding="utf-8"
-        )
+        self.add_suite(self.go_suite, "test_go_scripts.py", source)
+
+    def add_other_suite(self, source):
+        self.add_suite(self.other_suite, "test_pr_analyzer.py", source)
 
     def run_default(self, *extra, **env):
         environment = dict(os.environ, TMPDIR=str(self.tmpdir), **env)
@@ -302,7 +348,53 @@ class TestDefaultRoots(DefaultRootsCase):
         proc = self.run_default(GO_SUITE_MARKER=str(marker))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(marker.read_text(encoding="utf-8"), "ran")
-        self.assertEqual(self.ran(proc), 3)
+        self.assertEqual(self.ran(proc), 2 + len(GO_SUITE_CHECKS))
+
+    def test_each_skill_suite_contributes_its_own_count_to_the_summary(self):
+        marker = self.root / "go-suite-ran"
+        self.add("test_passing", PASSING)
+        self.add_go_suite(GO_SUITE)
+        self.add_other_suite(OTHER_SUITE)
+        proc = self.run_default(GO_SUITE_MARKER=str(marker))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.ran(proc), 2 + len(GO_SUITE_CHECKS) + len(OTHER_SUITE_CHECKS))
+
+    def test_a_silent_suite_is_counted_as_one_instead_of_zero(self):
+        self.add_go_suite(
+            """
+    def main():
+        pass
+"""
+        )
+        proc = self.run_default()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.ran(proc), 1)
+
+    def test_every_skill_scripts_directory_with_a_suite_is_a_default_root(self):
+        self.add_go_suite(GO_SUITE)
+        self.add_other_suite(GO_SUITE)
+        runner = load_runner(self.script, "fixture_run_tests")
+        self.assertEqual(runner.default_roots(), [self.suite, self.other_suite, self.go_suite])
+
+    def test_a_skill_scripts_directory_with_no_suite_is_not_a_default_root(self):
+        self.add_go_suite(GO_SUITE)
+        runner = load_runner(self.script, "fixture_run_tests")
+        self.assertEqual(runner.default_roots(), [self.suite, self.go_suite])
+
+    def test_the_description_names_the_roots_the_runner_discovers(self):
+        runner = load_runner(self.script, "fixture_run_tests")
+        self.assertIn("skills/*/scripts", inspect.getdoc(runner))
+        self.assertIn("`scripts/`", inspect.getdoc(runner))
+
+    def test_a_second_skill_scripts_suite_is_discovered(self):
+        marker = self.root / "go-suite-ran"
+        self.add("test_passing", PASSING)
+        self.add_go_suite(GO_SUITE)
+        self.add_other_suite(GO_SUITE)
+        proc = self.run_default(GO_SUITE_MARKER=str(marker))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "ran")
+        self.assertEqual(self.ran(proc), 2 + 2 * len(GO_SUITE_CHECKS))
 
     def test_a_failing_suite_under_skills_fails_the_run_with_its_output(self):
         self.add("test_passing", PASSING)
@@ -312,14 +404,38 @@ class TestDefaultRoots(DefaultRootsCase):
         self.assertIn(f"ERROR: {self.go_suite / 'test_go_scripts.py'}", proc.stdout)
         self.assertIn("FAIL go_check exits 0 when every check passes", proc.stdout)
         self.assertIn("FAILED (errors=1)", proc.stdout)
+        self.assertEqual(self.ran(proc), 2 + GO_SUITE_FAILING_COUNT)
 
-    def test_the_pattern_selects_suites_from_both_roots(self):
+    def test_make_test_serial_runs_every_python_suite_including_the_one_under_skills(self):
         marker = self.root / "go-suite-ran"
         self.add("test_passing", PASSING)
         self.add_go_suite(GO_SUITE)
+        proc = subprocess.run(
+            ["make", "-C", str(self.repo), "test-serial"],
+            capture_output=True,
+            text=True,
+            env=dict(os.environ, TMPDIR=str(self.tmpdir), GO_SUITE_MARKER=str(marker)),
+            timeout=120,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "ran")
+        self.assertEqual(self.ran(proc), 2 + len(GO_SUITE_CHECKS))
+
+    def test_the_pattern_selects_suites_from_every_skill_root(self):
+        marker = self.root / "go-suite-ran"
+        self.add("test_passing", PASSING)
+        self.add_go_suite(GO_SUITE)
+        self.add_other_suite(GO_SUITE)
         only_go = self.run_default("--pattern", "test_go_scripts.py", GO_SUITE_MARKER=str(marker))
         self.assertEqual(only_go.returncode, 0, only_go.stdout + only_go.stderr)
-        self.assertEqual(self.ran(only_go), 1)
+        self.assertEqual(self.ran(only_go), len(GO_SUITE_CHECKS))
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        only_other = self.run_default(
+            "--pattern", "test_pr_analyzer.py", GO_SUITE_MARKER=str(marker)
+        )
+        self.assertEqual(only_other.returncode, 0, only_other.stdout + only_other.stderr)
+        self.assertEqual(self.ran(only_other), len(GO_SUITE_CHECKS))
         self.assertTrue(marker.exists())
         marker.unlink()
         only_scripts = self.run_default("--pattern", "test_passing.py", GO_SUITE_MARKER=str(marker))
@@ -335,6 +451,15 @@ class TestDefaultRoots(DefaultRootsCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(self.ran(proc), 2)
         self.assertFalse(marker.exists())
+
+
+class TestTheRepositorysOwnSuites(unittest.TestCase):
+    def test_every_suite_the_repository_ships_under_skills_is_a_default_root(self):
+        shipped = sorted((SCRIPT.parent.parent / "skills").glob("*/scripts/test_*.py"))
+        roots = load_runner(SCRIPT, "repository_run_tests").default_roots()
+        self.assertTrue(shipped)
+        for path in shipped:
+            self.assertIn(path.parent, roots)
 
 
 if __name__ == "__main__":

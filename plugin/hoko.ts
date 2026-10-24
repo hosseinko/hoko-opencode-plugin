@@ -930,6 +930,10 @@ export default {
           if (!END_OF_TURN.has(event?.type)) continue
           const sessionID = event.data?.sessionID
           if (!sessionID) continue
+          // A session's row is stamped when the session is created, which can predate the
+          // task that later runs in it; recording it again at every turn end keeps `since`
+          // inside that run, where `task.py finish` reads it.
+          if (!descendants.has(sessionID)) await recordSession(sessionID)
           const pending = state(sessionID, ".handoff")
           const plan = read(pending)
           if (plan) {

@@ -2108,6 +2108,15 @@ class TestJournal(RefusedStart, JournalTaskCase):
                          [(session, entry["round"], "execute", entry["started"])
                           for session in ("C1", "S1") for entry in starts])
 
+    def test_R1_a_session_recorded_before_the_task_started_still_registers_at_finish(self):
+        self.record_session("C1", transcript=False)
+        folder = self.start()["dir"]
+        self.drive(folder, "finish")
+        self.record_session("C1", transcript=False)
+        self.ok("finish", "--task", folder, "--report-file", "-", input="Done.")
+        rows = json.loads(Path(self.entry(), "sessions.json").read_text())
+        self.assertEqual([row["session_id"] for row in rows], ["C1"])
+
     def test_R8_the_invoice_bills_each_response_to_the_round_that_was_running(self):
         folder, document = self.three_round_task()
         document["started"] = "2026-10-21T10:00:00.000Z"

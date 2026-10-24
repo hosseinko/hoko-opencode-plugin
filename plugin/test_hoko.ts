@@ -238,6 +238,16 @@ const registryFile = (root: string) =>
   const after = JSON.parse(fs.readFileSync(registryFile(proj), "utf8"))
   check("a child session adds no registry row",
     !after.some((row: any) => row.session_id === "sess-registered-child"), JSON.stringify(after))
+
+  // A task can start in a session that was opened long before it, so the row's `since`
+  // has to follow the session's use rather than its creation.
+  const stamped = () => JSON.parse(fs.readFileSync(registryFile(proj), "utf8"))
+    .find((row: any) => row.session_id === "sess-registered").since
+  const atCreation = stamped()
+  server.push({ type: "session.execution.succeeded", data: { sessionID: "sess-registered" } })
+  await server.drain()
+  check("a turn end refreshes the session's registry row",
+    Date.parse(stamped()) > Date.parse(atCreation), `${atCreation} -> ${stamped()}`)
 }
 
 // -------------------------------------------------------------- prompt capture --

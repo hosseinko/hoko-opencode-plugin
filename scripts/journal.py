@@ -23,8 +23,9 @@ Ships with the `hoko` opencode plugin. Five modes:
           folder's `entry.json` is rewritten after it.
 
   record  Records a session in the project registry of the repository at `--root`:
-          every session the plugin saw created, one row each, so a task's finish can
-          carry them into its journal entry. Prints the registry file it wrote.
+          every session the plugin saw created or used, one row each stamped with the
+          moment it was last recorded, so a task's finish can carry them into its journal
+          entry. Prints the registry file it wrote.
 
   folder  Prints the analytics folder of the journal entry at `--entry` (`analytics.py`),
           so the plugin files a run's usage and rates where the invoice reads them.
@@ -304,13 +305,17 @@ def recorded_sessions(root, after=None):
 
 def record_session(root, session_id, transcript_path=""):
     """Keeps one row per session in the project's state file, newest last, at most
-    `RECORDED_SESSIONS_LIMIT` of them; the file is replaced atomically."""
+    `RECORDED_SESSIONS_LIMIT` of them; the file is replaced atomically. Recording a
+    session again moves its row to the end with a fresh `since`, so a row stamped when the
+    session was created still marks it in use at its latest turn end."""
     rows = recorded_sessions(root)
-    if any(row["session_id"] == session_id for row in rows):
-        return
-    rows.append({"session_id": session_id, "transcript_path": transcript_path,
-                 "round": 1, "role": "execute",
-                 "since": datetime.now(timezone.utc).isoformat(timespec="milliseconds")})
+    row = next((entry for entry in rows if entry["session_id"] == session_id),
+               {"session_id": session_id, "transcript_path": "", "round": 1, "role": "execute"})
+    rows = [entry for entry in rows if entry["session_id"] != session_id]
+    row["since"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    if transcript_path:
+        row["transcript_path"] = transcript_path
+    rows.append(row)
     path = recorded_sessions_file(root)
     scratch = path.with_name(path.name + ".tmp")
     scratch.write_text(json.dumps(rows[-RECORDED_SESSIONS_LIMIT:], indent=2) + "\n", encoding="utf-8")

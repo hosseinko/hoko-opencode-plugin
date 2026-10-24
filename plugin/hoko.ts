@@ -947,9 +947,9 @@ export default {
           }
 
           // A task run finished by `task.py finish` is invoiced from its marker at any
-          // turn end in the project; a plan run is closed from the plan's own status,
-          // and the run's progress.json is what keeps a closed run closed.
-          await invoicer.closeFinished(sessionID)
+          // turn end in the session's own project; a plan run is closed from the plan's
+          // own status, and the run's progress.json is what keeps a closed run closed.
+          await invoicer.closeFinished(sessionID, await sessionDir(sessionID))
           await closeRun(sessionID)
         }
       } catch (error: any) {

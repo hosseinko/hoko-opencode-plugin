@@ -1055,11 +1055,12 @@ function writeFinishMarker(entry: string, folder: string, plan: string, task: st
 
 /** A task run: its journal entry, its plan, its `progress.json` and the finish marker.
  *  A case that sets an analytics path gives `registryFolder` so `sessions.json` sits where
- *  the plugin reads it; `status` and `entry` override what a turn must not invoice. */
+ *  the plugin reads it; `status` and `entry` override what a turn must not invoice; `root`
+ *  plants the task folder in another project, as a run in a worktree does. */
 function finishedTask(
   folderName: string,
   sessionIDs: string[],
-  options: { registryFolder?: (entry: string) => string; status?: string; entry?: string } = {},
+  options: { registryFolder?: (entry: string) => string; status?: string; entry?: string; root?: string } = {},
 ) {
   const entry = fs.mkdtempSync(path.join(journalRoot, `${folderName}-`))
   const registry = options.registryFolder ? options.registryFolder(entry) : entry
@@ -1067,7 +1068,7 @@ function finishedTask(
   fs.writeFileSync(path.join(registry, "sessions.json"), JSON.stringify(
     sessionIDs.map((id) => ({ session_id: id, round: 1, role: "execute", since: "2020-01-01T00:00:00.000Z" })),
   ))
-  const folder = path.join(proj, ".ai", "plans", folderName)
+  const folder = path.join(options.root ?? proj, ".ai", "plans", folderName)
   fs.mkdirSync(folder, { recursive: true })
   const plan = path.join(folder, "plan-01.md")
   fs.writeFileSync(plan, "# Task plan\n\n## Goal\nDone.\n")
@@ -1269,6 +1270,29 @@ function taskResponse(sessionID: string, cost: number, agent = "hoko-plan-execut
   check("a session that is both a row and a descendant contributes its responses once",
     usage.filter((row: any) => row.session_id === "sess-child").length === 1 && invoice.totals.cost === 0.3,
     JSON.stringify({ usage, cost: invoice.totals.cost }))
+}
+
+// A task run in a worktree files its task folder under the worktree, so the close has to
+// read the ending session's own plans directory rather than the checkout the server
+// started in, whose newest run carries no marker.
+{
+  const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "worktree-"))
+  const checkout = finishedTask("20261022-1900-checkout", ["sess-checkout"])
+  fs.rmSync(path.join(checkout.folder, "finish-pending.json"), { force: true })
+  const { entry, folder } = finishedTask("20261022-1910-worktree", ["sess-worktree"], { root: worktree })
+  taskResponse("sess-worktree", 0.6)
+
+  const { server } = await boot()
+  const s = "sess-worktree-conductor"
+  sessionAgent[s] = "build"
+  sessionDirs[s] = worktree
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("a task run in a worktree is invoiced from the ending session's own plans directory",
+    fs.existsSync(path.join(entry, "invoice.json")) && !fs.existsSync(path.join(checkout.entry, "invoice.json")),
+    fs.readdirSync(entry).join(","))
+  check("the worktree run's marker is gone once the invoice exists",
+    !fs.existsSync(path.join(folder, "finish-pending.json")))
 }
 
 // ------------------------------------------------------------- the TUI plugin --

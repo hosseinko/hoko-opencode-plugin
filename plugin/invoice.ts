@@ -50,9 +50,9 @@ export type InvoicerOptions = {
 export type Invoicer = {
   /** Writes the run's usage and rates into the entry's analytics folder. */
   writeUsage(entry: string): Promise<void>
-  /** Prices the project's newest finished task run from the marker `task.py finish` left,
-   *  unless that run already has an invoice. */
-  closeFinished(sessionID: string): Promise<void>
+  /** Prices the newest finished task run in the ending session's own project from the
+   *  marker `task.py finish` left, unless that run already has an invoice. */
+  closeFinished(sessionID: string, root: string): Promise<void>
 }
 
 /** One of the plugin's Python scripts, run where the project is. Throws with the
@@ -187,12 +187,12 @@ export function createInvoicer({
 
   const writeUsage = async (entry: string) => writeUsageInto(analyticsFolder(entry))
 
-  /** Closes the newest task run when it finished and left its marker. A run that is not
-   *  the newest, is not `done`, or whose marker names no journal entry folder is left
+  /** Closes the newest task run in `root` when it finished and left its marker. A run that
+   *  is not the newest, is not `done`, or whose marker names no journal entry folder is left
    *  untouched. An invoice already in the analytics folder ends it without a write, and a
    *  failed invoice keeps the marker so the next turn end retries it. */
-  const closeFinished = async (sessionID: string) => {
-    const progressFile = newestProgressFile(project, plansDir)
+  const closeFinished = async (sessionID: string, root: string) => {
+    const progressFile = newestProgressFile(root, plansDir)
     if (!progressFile) return
     let document: any
     try {

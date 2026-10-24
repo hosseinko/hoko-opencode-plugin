@@ -106,10 +106,10 @@ each step the plan marks `- Irreversible: <text>`, with its text.
 
 The run's events are written through `events.py`; `finish` closes them like
 `plan-progress.py complete` does and files the report in the journal, under the last
-round's plan, and writes the invoice only when the plugin has already written the entry's
-`usage.json`. `flow.cycles` records when each cycle opened, so a `usage.reported` event
-names the cycle that was running when its call started. A task started from a prompt has
-no registered session of its own, so `finish` files the sessions recorded for the project
+round's plan, and writes the invoice only when the plugin has already written the
+analytics folder's `usage.json`. `flow.cycles` records when each cycle opened, so a
+`usage.reported` event names the cycle that was running when its call started. A task
+started from a prompt has no registered session of its own, so `finish` files the sessions
 (those written to since the task began) in the `sessions.json` of the entry's analytics
 folder (`analytics.py`) before it writes the invoice there, copies the events file there
 and lists the run's id in the folder's `entry.json`.
@@ -128,6 +128,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import analytics
 import events
 import followup
 import invoice
@@ -1798,10 +1799,10 @@ def register_run_sessions(task):
 
 
 def usage_recorded(task):
-    """Whether the plugin has written the entry's `usage.json`: the invoice prices that
-    file, and a task run with nothing recorded has no invoice to regenerate."""
+    """Whether the plugin has written the analytics folder's `usage.json`: the invoice
+    prices that file, and a task run with nothing recorded has no invoice to regenerate."""
     folder = task.flow.get("journal")
-    return bool(folder) and (Path(folder) / invoice.USAGE_FILE).is_file()
+    return bool(folder) and (analytics.folder_for(folder) / invoice.USAGE_FILE).is_file()
 
 
 def close_in_journal(task, report_path, plan):

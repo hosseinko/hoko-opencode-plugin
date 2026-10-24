@@ -44,6 +44,7 @@ import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 
 import { activeRun, guardVerdict } from "./guard.ts"
+import { createInvoicer } from "./invoice.ts"
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 // The checkout the settings loader reads its repo-scoped files from. A caller that must not
@@ -63,7 +64,6 @@ const JOURNAL_SCRIPT = path.join(ROOT, "scripts", "journal.py")
 const PLAN_FILE_SCRIPT = path.join(ROOT, "scripts", "plan-file.py")
 const PLAN_LINT_SCRIPT = path.join(ROOT, "scripts", "plan-lint.py")
 const PLAN_PROGRESS_SCRIPT = path.join(ROOT, "scripts", "plan-progress.py")
-const INVOICE_SCRIPT = path.join(ROOT, "scripts", "invoice.py")
 const PLAN_PROMPT_FILE = path.join(ROOT, "agents", "plan.md")
 const MAIN_AGENT = "main"
 // Skills only bind when a model invokes one, so rules that must hold even in plain
@@ -362,12 +362,6 @@ function lintPlan(plan: string, cwd: string): string {
   }
 }
 
-/** Epoch milliseconds for an opencode message time (a number) or an ISO `since`. */
-function moment(value: any): number | undefined {
-  const at = typeof value === "number" ? value : Date.parse(String(value ?? ""))
-  return Number.isNaN(at) ? undefined : at
-}
-
 function write(file: string, text: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, text, "utf8")
@@ -542,85 +536,17 @@ export default {
       }
     }
 
-    /** Every assistant response in the registered sessions and their descendants,
-     *  flattened for invoice.py, from the entry's cycle start onward. A session whose
-     *  messages cannot be read is named and skipped rather than failing the invoice. */
-    const collectUsage = async (entry: string) => {
-      let rows: any[] = []
-      try {
-        rows = JSON.parse(fs.readFileSync(path.join(entry, "sessions.json"), "utf8"))
-      } catch {
-        rows = []
-      }
-      const roots = [...new Set(rows.map((row: any) => row?.session_id).filter(Boolean))] as string[]
-      // A session reused across cycles keeps every earlier turn, so only responses at or
-      // after the cycle's first registration count for this entry.
-      const starts = rows.map((row: any) => moment(row?.since)).filter((at): at is number => at !== undefined)
-      const start = starts.length ? Math.min(...starts) : undefined
-      const records: any[] = []
-      // Descendant responses are billed to the registered session that spawned them, so
-      // they carry its id; their own loop's agent name is what tells them apart.
-      const visit = async (root: string, sessionID: string, agent: string) => {
-        try {
-          const messages: any[] = await ctx.session.context({ sessionID })
-          for (const message of messages) {
-            if (message?.type !== "assistant") continue
-            const time = message.time?.created ?? message.time?.completed
-            const at = moment(time)
-            if (start !== undefined && (at === undefined || at < start)) continue
-            const tokens = message.tokens ?? {}
-            records.push({
-              session_id: root,
-              time,
-              model: message.model?.id ?? "",
-              provider: message.model?.providerID ?? "",
-              agent: message.agent || agent,
-              cost: message.cost ?? 0,
-              input: tokens.input ?? 0,
-              output: tokens.output ?? 0,
-              reasoning: tokens.reasoning ?? 0,
-              cache_read: tokens.cache?.read ?? 0,
-              cache_write: tokens.cache?.write ?? 0,
-            })
-          }
-        } catch (error: any) {
-          notify(sessionID, `could not read usage for ${sessionID} — ${String(error)}`)
-        }
-        let kids: { id: string; agent: string }[] = []
-        for (const [id, info] of descendants) {
-          if (info.parentID === sessionID) kids.push({ id, agent: info.agent })
-        }
-        for (const child of kids) await visit(root, child.id, child.agent || MAIN_AGENT)
-      }
-      for (const root of roots) await visit(root, root, MAIN_AGENT)
-      return records
-    }
-
-    /** The model catalog's rates at completion, `providerID/modelID` → USD per million
-     *  tokens. A build without models yields an empty table, not a failure. */
-    const collectRates = async () => {
-      let models: any[] = []
-      try {
-        const listed: any = await ctx.model.list()
-        models = listed?.data ?? []
-      } catch (error: any) {
-        notify(undefined, `could not read model rates — ${String(error)}`)
-        return {}
-      }
-      const rates: Record<string, any> = {}
-      for (const model of models) {
-        const tiers: any[] = model?.cost ?? []
-        const tier = tiers.find((entry) => !entry?.tier) ?? tiers[0]
-        if (!tier) continue
-        rates[`${model.providerID}/${model.modelID ?? model.id}`] = {
-          input: tier.input ?? 0,
-          output: tier.output ?? 0,
-          cache_read: tier.cache?.read ?? 0,
-          cache_write: tier.cache?.write ?? 0,
-        }
-      }
-      return rates
-    }
+    // Usage collection, the model rates and the invoice live together in
+    // plugin/invoice.ts; the event wiring below asks it for the usage write and the
+    // task close, and keeps only the plan run's report path.
+    const invoicer = createInvoicer({
+      env,
+      project,
+      descendants,
+      notify,
+      context: (sessionID: string) => ctx.session.context({ sessionID }),
+      listModels: () => ctx.model.list(),
+    })
 
     /** The closing report is the last thing the conductor posts once the plan is complete,
      *  so that message is the report — no model has to hand it over. `plan-progress.py
@@ -639,14 +565,6 @@ export default {
         if (text) report = text
       }
       return report
-    }
-
-    /** `usage.json` and `rates.json` in the entry: what the invoice prices from. */
-    const writeUsage = async (entry: string) => {
-      const usage = await collectUsage(entry)
-      write(path.join(entry, "usage.json"), JSON.stringify(usage, null, 2) + "\n")
-      const rates = await collectRates()
-      write(path.join(entry, "rates.json"), JSON.stringify(rates, null, 2) + "\n")
     }
 
     /**
@@ -669,23 +587,7 @@ export default {
       const taskFile = path.join(path.dirname(plan), "progress.json")
       const taskPlan = /^plan-\d+\.md$/.test(path.basename(plan)) && fs.existsSync(taskFile)
       if (taskPlan) {
-        let document: any
-        try {
-          document = JSON.parse(fs.readFileSync(taskFile, "utf8"))
-        } catch {
-          return
-        }
-        if (document?.status !== "done") return
-        const folder = entry || String(document?.flow?.journal ?? "")
-        if (!folder || !fs.existsSync(folder)) return
-        if (fs.existsSync(path.join(folder, "usage.json"))) return
-        try {
-          await writeUsage(folder)
-          run(INVOICE_SCRIPT, ["write", "--entry", folder], cwd, env)
-          console.log(`hoko: invoiced ${path.basename(folder)}`)
-        } catch (error: any) {
-          notify(sessionID, `could not invoice the run — ${error.message}`)
-        }
+        await invoicer.closeTask({ plan, entry, cwd, sessionID })
         return
       }
 
@@ -700,7 +602,7 @@ export default {
 
       if (entry) {
         try {
-          await writeUsage(entry)
+          await invoicer.writeUsage(entry)
         } catch (error: any) {
           notify(sessionID, `could not collect the run's usage — ${error.message}`)
           return

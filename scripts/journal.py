@@ -3,7 +3,7 @@
 journal.py — files a plan cycle's initial prompt and plan, round by round, into a
 per-project journal folder.
 
-Ships with the `hoko` opencode plugin. Four modes:
+Ships with the `hoko` opencode plugin. Five modes:
 
   write   Creates `<journalPath>/<project>/<stamp>-<slug>/`, with the initial prompt
           copied verbatim into `prompt.md` and the plan copied verbatim into
@@ -25,6 +25,9 @@ Ships with the `hoko` opencode plugin. Four modes:
   record  Records a session in the project registry of the repository at `--root`:
           every session the plugin saw created, one row each, so a task's finish can
           carry them into its journal entry. Prints the registry file it wrote.
+
+  folder  Prints the analytics folder of the journal entry at `--entry` (`analytics.py`),
+          so the plugin files a run's usage and rates where the invoice reads them.
 
 The journal root comes from HOKO_JOURNAL_PATH, else "journalPath" in
 ~/.config/opencode/hoko.json. There is no default: with neither set, journaling is off
@@ -424,6 +427,10 @@ def cmd_record(args):
     print(recorded_sessions_file(args.root))
 
 
+def cmd_folder(args):
+    print(analytics.folder_for(Path(args.entry).expanduser()))
+
+
 def main():
     parser = argparse.ArgumentParser(prog="journal.py", description=__doc__)
     modes = parser.add_subparsers(dest="mode", required=True)
@@ -457,6 +464,10 @@ def main():
     record_parser.add_argument("--session", required=True, help="the session id")
     record_parser.add_argument("--transcript", help="the session's transcript path, when one exists")
 
+    folder_parser = modes.add_parser("folder", help="print a journal entry's analytics folder")
+    folder_parser.add_argument("--entry", required=True,
+                               help="the journal entry folder, or its analytics folder")
+
     args = parser.parse_args()
     if args.mode == "write":
         cmd_write(args)
@@ -464,6 +475,8 @@ def main():
         cmd_report(args)
     elif args.mode == "record":
         cmd_record(args)
+    elif args.mode == "folder":
+        cmd_folder(args)
     else:
         cmd_register(args)
 

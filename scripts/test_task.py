@@ -149,10 +149,10 @@ class TaskTestCase(unittest.TestCase):
 
     def record_session(self, session_id, calls=(), entry=None, transcript=True):
         """The session recorded against the project, as the plugin records it, and, when
-        `entry` is given, its assistant responses in that entry's `usage.json`: one for the
-        main session plus one per `(agent, moment)` in `calls`, each reporting 100 input
-        and 50 output tokens. `transcript=False` writes the row the plugin records for a
-        session opencode holds no transcript path for."""
+        `entry` is given, its assistant responses in the entry's analytics folder
+        (`usage.json`): one for the main session plus one per `(agent, moment)` in `calls`,
+        each reporting 100 input and 50 output tokens. `transcript=False` writes the row
+        the plugin records for a session opencode holds no transcript path for."""
         path = Path(self.tmpdir.name, "projects", f"{session_id}.jsonl")
         if transcript:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -167,9 +167,21 @@ class TaskTestCase(unittest.TestCase):
             moment = calls[0][1] if calls else None
             rows = [self.usage_row(session_id, "main", moment)]
             rows += [self.usage_row(session_id, agent, moment) for agent, moment in calls]
-            usage = Path(entry, "usage.json")
-            written = json.loads(usage.read_text()) if usage.is_file() else []
-            usage.write_text(json.dumps(written + rows), encoding="utf-8")
+            # The plugin writes usage into the entry's analytics folder (analytics.py), not
+            # beside it; a folder the analytics path blocks takes that write with it, which
+            # is the case the unwritable-folder test covers.
+            code = ("import json, sys; sys.path.insert(0, sys.argv[1]); import analytics, invoice\n"
+                    "try:\n"
+                    "    folder = analytics.folder_for(sys.argv[2])\n"
+                    "    folder.mkdir(parents=True, exist_ok=True)\n"
+                    "    usage = folder / invoice.USAGE_FILE\n"
+                    "    written = json.loads(usage.read_text()) if usage.is_file() else []\n"
+                    "    usage.write_text(json.dumps(written + json.loads(sys.argv[3])))\n"
+                    "except OSError:\n"
+                    "    pass\n")
+            written = subprocess.run([sys.executable, "-c", code, str(SCRIPTS), entry, json.dumps(rows)],
+                                     capture_output=True, text=True, env=self.env)
+            self.assertEqual(written.returncode, 0, written.stdout + written.stderr)
         return path
 
     def usage_row(self, session_id, agent, moment):

@@ -363,6 +363,28 @@ class TestRegister(JournalTestCase):
         self.assertEqual((link["journal_entry"], link["session_ids"]), (str(entry), ["sess-a"]))
 
 
+class TestFolder(JournalTestCase):
+    def folder(self, *args, **kwargs):
+        return self.run_script("folder", *args, **kwargs)
+
+    def test_folder_prints_the_analytics_folder(self):
+        entry = self.filed().parent
+        home_config = self.home / ".config" / "opencode"
+        home_config.mkdir(parents=True)
+        analytics_root = self.tmp / "analytics"
+        (home_config / "hoko.json").write_text(json.dumps({
+            "journalPath": str(self.journal), "analyticsPath": str(analytics_root)}))
+        result = self.folder("--entry", str(entry), journal_root=None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()), analytics_root / "my-project" / entry.name)
+
+    def test_folder_prints_the_entry_itself_when_no_analytics_path_is_set(self):
+        entry = self.filed().parent
+        result = self.folder("--entry", str(entry))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()), entry)
+
+
 class TestRecord(JournalTestCase):
     def record(self, *args):
         return self.run_script("record", "--root", str(self.repo), *args)

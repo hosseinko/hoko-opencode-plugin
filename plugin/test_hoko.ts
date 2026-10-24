@@ -1069,10 +1069,14 @@ const registryFile = (root: string) =>
 
 // ---------------------------------- a close survives what it cannot read or price --
 
-/** A finished task run: its journal entry, its plan and its done progress.json. */
-function finishedTask(folderName: string, sessionIDs: string[]) {
+/** A finished task run: its journal entry, its plan and its done progress.json. A case
+ *  that sets an analytics path gives `registryFolder` so `sessions.json` sits where the
+ *  plugin reads it. */
+function finishedTask(folderName: string, sessionIDs: string[], registryFolder?: (entry: string) => string) {
   const entry = fs.mkdtempSync(path.join(journalRoot, `${folderName}-`))
-  fs.writeFileSync(path.join(entry, "sessions.json"), JSON.stringify(
+  const registry = registryFolder ? registryFolder(entry) : entry
+  fs.mkdirSync(registry, { recursive: true })
+  fs.writeFileSync(path.join(registry, "sessions.json"), JSON.stringify(
     sessionIDs.map((id) => ({ session_id: id, round: 1, role: "execute", since: "2020-01-01T00:00:00.000Z" })),
   ))
   const folder = path.join(proj, ".ai", "plans", folderName)
@@ -1131,6 +1135,58 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
   check("a session stays usable after a failed invoice",
     fs.existsSync(path.join(next.entry, "invoice.json")),
     fs.existsSync(path.join(next.entry, "usage.json")) ? "usage written, no invoice" : "no usage written")
+}
+
+// -------------------- invoicing locates every file by the analytics folder rule --
+{
+  const before = { ...process.env }
+  const analyticsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "analytics-"))
+  process.env.HOKO_ANALYTICS_PATH = analyticsRoot
+  /** The entry's analytics folder: `analyticsPath/<project>/<entry>`, the rule
+   *  `analytics.folder_for` owns. */
+  const folderOf = (entry: string) =>
+    path.join(analyticsRoot, path.basename(journalRoot), path.basename(entry))
+  const { entry, plan } = finishedTask("20261022-1700-analytics", ["sess-analytics"], folderOf)
+  const folder = folderOf(entry)
+  sessionMessages("sess-analytics").push({ type: "assistant", agent: "hoko-plan-executor", model: { id: "claude-test", providerID: "anthropic" }, time: { created: Date.now() + 1000 }, cost: 0.4, tokens: { input: 10, output: 5, cache: { read: 0, write: 0 } }, content: [] })
+
+  const { hooks, server } = await boot()
+  const s = "sess-analytics-close"
+  sessionAgent[s] = "build"
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: plan } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("usage.json and rates.json land in the journal entry's analytics folder",
+    fs.existsSync(path.join(folder, "usage.json")) && fs.existsSync(path.join(folder, "rates.json")),
+    fs.existsSync(folder) ? fs.readdirSync(folder).join(",") : "no analytics folder")
+  check("the journal entry keeps no copy beside its analytics folder",
+    !fs.existsSync(path.join(entry, "usage.json")) && !fs.existsSync(path.join(entry, "rates.json")),
+    fs.readdirSync(entry).join(","))
+  check("the invoice is written into the analytics folder",
+    fs.existsSync(path.join(folder, "invoice.json")) && !fs.existsSync(path.join(entry, "invoice.json")),
+    fs.existsSync(folder) ? fs.readdirSync(folder).join(",") : "no analytics folder")
+  process.env = before
+}
+
+// --------------------- a registry row is billed once, even when it is also a child --
+{
+  const { entry, plan } = finishedTask("20261022-1800-descendant-row", ["sess-row", "sess-child"])
+  sessionMessages("sess-row").push({ type: "assistant", agent: "hoko-plan-executor", model: { id: "claude-test", providerID: "anthropic" }, time: { created: Date.now() + 1000 }, cost: 0.1, tokens: { input: 10, output: 5, cache: { read: 0, write: 0 } }, content: [] })
+  sessionMessages("sess-child").push({ type: "assistant", agent: "hoko-plan-executor", model: { id: "claude-test", providerID: "anthropic" }, time: { created: Date.now() + 2000 }, cost: 0.2, tokens: { input: 10, output: 5, cache: { read: 0, write: 0 } }, content: [] })
+
+  const { hooks, server } = await boot()
+  const s = "sess-dedupe-close"
+  sessionAgent[s] = "build"
+  server.push({ type: "session.created", data: { sessionID: "sess-child", parentID: "sess-row", agent: "hoko-plan-executor" } })
+  await server.drain()
+  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: plan } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  const usage = JSON.parse(fs.readFileSync(path.join(entry, "usage.json"), "utf8"))
+  const invoice = JSON.parse(fs.readFileSync(path.join(entry, "invoice.json"), "utf8"))
+  check("a session that is both a row and a descendant contributes its responses once",
+    usage.filter((row: any) => row.session_id === "sess-child").length === 1 && invoice.totals.cost === 0.3,
+    JSON.stringify({ usage, cost: invoice.totals.cost }))
 }
 
 // ------------------------------------------------------------- the TUI plugin --

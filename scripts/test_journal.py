@@ -363,6 +363,53 @@ class TestRegister(JournalTestCase):
         self.assertEqual((link["journal_entry"], link["session_ids"]), (str(entry), ["sess-a"]))
 
 
+class TestFolder(JournalTestCase):
+    def folder(self, *args, **kwargs):
+        return self.run_script("folder", *args, **kwargs)
+
+    def test_folder_prints_the_analytics_folder(self):
+        entry = self.filed().parent
+        home_config = self.home / ".config" / "opencode"
+        home_config.mkdir(parents=True)
+        analytics_root = self.tmp / "analytics"
+        (home_config / "hoko.json").write_text(json.dumps({
+            "journalPath": str(self.journal), "analyticsPath": str(analytics_root)}))
+        result = self.folder("--entry", str(entry), journal_root=None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()), analytics_root / "my-project" / entry.name)
+
+    def test_folder_prints_the_entry_itself_when_no_analytics_path_is_set(self):
+        entry = self.filed().parent
+        result = self.folder("--entry", str(entry))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()), entry)
+
+
+class TestRecord(JournalTestCase):
+    def record(self, *args):
+        return self.run_script("record", "--root", str(self.repo), *args)
+
+    def registry(self):
+        files = list(self.state.glob("sessions-*.json"))
+        self.assertEqual(len(files), 1, files)
+        return json.loads(files[0].read_text())
+
+    def test_a_repeated_record_keeps_one_row_and_prints_the_registry_file(self):
+        first = self.record("--session", "S1")
+        second = self.record("--session", "S1")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(Path(second.stdout.strip()), Path(first.stdout.strip()))
+        self.assertEqual([(row["session_id"], row["round"], row["role"]) for row in self.registry()],
+                         [("S1", 1, "execute")])
+
+    def test_a_record_without_a_session_exits_non_zero_and_writes_no_file(self):
+        result = self.record()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--session", result.stderr)
+        self.assertEqual(list(self.state.glob("sessions-*.json")), [])
+
+
 class TestRecordedSessions(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -389,6 +436,27 @@ class TestRecordedSessions(unittest.TestCase):
         earlier = later - timedelta(days=1)
         self.assertEqual(len(journal.recorded_sessions(self.root, after=earlier)), 1)
         self.assertEqual(journal.recorded_sessions(self.root, after=later), [])
+
+    def test_the_registry_keeps_the_newest_hundred_rows(self):
+        for index in range(101):
+            journal.record_session(self.root, f"S{index}")
+        ids = [row["session_id"] for row in journal.recorded_sessions(self.root)]
+        self.assertEqual(len(ids), 100)
+        self.assertEqual((ids[0], ids[-1]), ("S1", "S100"))
+
+    def test_a_transcriptless_row_counts_from_its_own_since(self):
+        journal.record_session(self.root, "S1")
+        since = datetime.fromisoformat(journal.recorded_sessions(self.root)[0]["since"])
+        self.assertEqual(len(journal.recorded_sessions(self.root, after=since)), 1)
+        self.assertEqual(journal.recorded_sessions(self.root, after=since + timedelta(milliseconds=1)), [])
+
+    def test_a_naive_since_is_read_as_utc_and_a_row_without_one_is_dropped(self):
+        journal.recorded_sessions_file(self.root).write_text(json.dumps([
+            {"session_id": "S1", "transcript_path": "", "since": "2026-10-21T10:00:00.000"},
+            {"session_id": "S0", "transcript_path": ""},
+        ]))
+        rows = journal.recorded_sessions(self.root, after=datetime(2026, 10, 21, 10, 0, tzinfo=timezone.utc))
+        self.assertEqual([row["session_id"] for row in rows], ["S1"])
 
 
 class TestRegisterSessionInProcess(unittest.TestCase):

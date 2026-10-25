@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Tests for invoice.py — fixture sessions, usage and rates in a temp entry.
 
-The invoice reads `sessions.json` from the analytics folder and `usage.json` from the
-journal entry: cost is the reported cost summed, a response without one is priced from
-the catalog snapshot or `pricing.json`, and each response is attributed to the row
-registered latest at or before its time.
+The invoice reads `sessions.json`, `usage.json` and `rates.json` from the analytics
+folder: cost is the reported cost summed, a response without one is priced from the
+catalog snapshot or `pricing.json`, and each response is attributed to the row registered
+latest at or before its time.
 """
 
 import json
@@ -81,7 +81,7 @@ class InvoiceTestCase(unittest.TestCase):
 
     def usage(self, session_id, model, agent="main", provider="opencode", time=None,
               cost=0.0, with_cost=True, **tokens):
-        path = self.entry / "usage.json"
+        path = self.registry_dir / "usage.json"
         records = json.loads(path.read_text()) if path.exists() else []
         record = {"session_id": session_id, "model": model, "provider": provider,
                   "agent": agent}
@@ -95,7 +95,7 @@ class InvoiceTestCase(unittest.TestCase):
         path.write_text(json.dumps(records))
 
     def rates(self, mapping):
-        (self.entry / "rates.json").write_text(json.dumps(mapping))
+        (self.registry_dir / "rates.json").write_text(json.dumps(mapping))
 
     def generate(self, overrides=None):
         invoice.write_invoice(self.entry, overrides)
@@ -390,9 +390,8 @@ class TestCalls(InvoiceTestCase):
 
 
 class TestAnalyticsFolder(InvoiceTestCase):
-    """With `analyticsPath` set the registry is read from, and the invoice written to,
-    the journal entry's analytics folder; `usage.json` and `rates.json` stay in the
-    journal entry, and `--entry` takes either folder."""
+    """With `analyticsPath` set the registry, `usage.json`, `rates.json` and the invoice
+    all live in the journal entry's analytics folder, and `--entry` takes either folder."""
 
     def setUp(self):
         super().setUp()
@@ -412,8 +411,8 @@ class TestAnalyticsFolder(InvoiceTestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), str(self.folder / "invoice.md"))
         self.assertEqual(self.names(self.folder),
-                         ["entry.json", "invoice.json", "invoice.md", "sessions.json"])
-        self.assertEqual(self.names(self.entry), ["usage.json"])
+                         ["entry.json", "invoice.json", "invoice.md", "sessions.json", "usage.json"])
+        self.assertEqual(self.names(self.entry), [])
         data = json.loads((self.folder / "invoice.json").read_text())
         self.assertEqual((data["project"], data["entry"]), ("my-project", "20261001-0020-ship-it"))
 
@@ -432,7 +431,7 @@ class TestAnalyticsFolder(InvoiceTestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), str(self.folder / "invoice.md"))
         self.assertEqual(self.names(self.folder),
-                         ["entry.json", "invoice.json", "invoice.md", "sessions.json"])
+                         ["entry.json", "invoice.json", "invoice.md", "sessions.json", "usage.json"])
 
     def test_frozen_rates_are_read_from_the_analytics_folder(self):
         self.register("S1")
@@ -454,7 +453,7 @@ class TestAnalyticsFolder(InvoiceTestCase):
         proc = self.command(self.entry)
         self.assertEqual(proc.returncode, 1)
         self.assertIn(str(self.folder), proc.stderr)
-        self.assertEqual(self.names(self.entry), ["usage.json"])
+        self.assertEqual(self.names(self.entry), [])
 
 
 if __name__ == "__main__":

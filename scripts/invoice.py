@@ -6,18 +6,16 @@ Ships with the `hoko` opencode plugin.
 
     invoice.py write --entry <journal entry dir>
 
-Reads the `sessions.json` of the entry's analytics folder (`analytics.py`:
-`<analyticsPath>/<project>/<entry>/`, or the entry itself when `analyticsPath` is
-empty), the entry's `usage.json` (each assistant response's reported cost and token
-counts, written by the plugin at run completion) and its optional `rates.json` (the
-model catalog's rates at completion, `providerID/modelID` → USD per million tokens).
-Writes `invoice.json` and `invoice.md` into the analytics folder, each atomically,
-`invoice.json` first. `--entry` takes the journal entry or its analytics folder.
-`invoice.md` is rendered from the same structure as `invoice.json`, so the two never
-disagree.
+Reads the analytics folder's `sessions.json` (the sessions the run used), `usage.json`
+(each assistant response's reported cost and token counts, written by the plugin at run
+completion) and its optional `rates.json` (the model catalog's rates at completion,
+`providerID/modelID` → USD per million tokens). Writes `invoice.json` and `invoice.md`
+into that same folder, each atomically, `invoice.json` first. `--entry` takes the journal
+entry or its analytics folder. `invoice.md` is rendered from the same structure as
+`invoice.json`, so the two never disagree.
 
 Cost is the cost opencode reported per response (`cost_source: reported`), summed. A
-response with no reported cost is priced from its tokens: the entry's `rates.json`
+response with no reported cost is priced from its tokens: the folder's `rates.json`
 first, then `pricing.json` next to this script with a `pricing` object in `hoko.json`
 laid over it. The rates each round and model were resolved at are stored in
 `invoice.json` (`rates`) and shown in `invoice.md`; a rewrite prices a round and model
@@ -156,15 +154,8 @@ def read_sessions(folder):
     return [row for row in data if isinstance(row, dict) and row.get("session_id")]
 
 
-def source_entry(entry):
-    """The journal entry a folder belongs to: the folder itself, or, for an analytics
-    folder, the entry its `entry.json` links back to."""
-    linked = analytics.journal_entry_of(entry)
-    return linked if linked is not None else entry
-
-
 def read_usage(folder):
-    path = source_entry(folder) / USAGE_FILE
+    path = folder / USAGE_FILE
     data = read_json(path)
     if not isinstance(data, list):
         raise ValueError(f"{path} is not a list")
@@ -172,7 +163,7 @@ def read_usage(folder):
 
 
 def read_rates(folder):
-    path = source_entry(folder) / RATES_FILE
+    path = folder / RATES_FILE
     if not path.is_file():
         return {}
     data = read_json(path)

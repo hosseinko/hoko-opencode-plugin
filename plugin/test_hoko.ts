@@ -214,6 +214,63 @@ async function boot(overrides: any = {}) {
     `${state("sess-1")} vs ${scriptAnchor}`)
 }
 
+// ------------------------------------------------------- the project registry --
+
+/** The registry file the plugin writes for a repository root: journal.py's
+ *  `recorded_sessions_file`, keyed on the root resolved. */
+const registryFile = (root: string) =>
+  path.join(STATE, `sessions-${createHash("sha256").update(fs.realpathSync(root)).digest("hex").slice(0, 16)}.json`)
+
+{
+  const inside = path.join(proj, "packages", "inside")
+  fs.mkdirSync(inside, { recursive: true })
+  sessionDirs["sess-registered"] = inside
+  const { server, hooks } = await boot()
+  server.push({ type: "session.created", data: { sessionID: "sess-registered" } })
+  await server.drain()
+  const rows = JSON.parse(fs.readFileSync(registryFile(proj), "utf8"))
+  check("a parentless session lands in its directory's git-root registry",
+    rows.some((row: any) => row.session_id === "sess-registered" && row.round === 1 && row.role === "execute"),
+    JSON.stringify(rows))
+
+  server.push({ type: "session.created", data: { sessionID: "sess-registered-child", parentID: "sess-registered", agent: "hoko-plan-executor" } })
+  await server.drain()
+  const after = JSON.parse(fs.readFileSync(registryFile(proj), "utf8"))
+  check("a child session adds no registry row",
+    !after.some((row: any) => row.session_id === "sess-registered-child"), JSON.stringify(after))
+
+  // A task can start in a session that was opened long before it, so the row's `since`
+  // has to follow the session's use rather than its creation.
+  const stamped = () => JSON.parse(fs.readFileSync(registryFile(proj), "utf8"))
+    .find((row: any) => row.session_id === "sess-registered").since
+  const atCreation = stamped()
+  server.push({ type: "session.execution.succeeded", data: { sessionID: "sess-registered" } })
+  await server.drain()
+  check("a turn end refreshes the session's registry row",
+    Date.parse(stamped()) > Date.parse(atCreation), `${atCreation} -> ${stamped()}`)
+
+  // A task run that asks no question starts and finishes inside one turn, so the turn end
+  // that would refresh the row comes after `task.py finish` read it.
+  const atTurnEnd = stamped()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await hooks["tool.execute.before"]({
+    tool: "shell",
+    sessionID: "sess-registered",
+    input: { command: 'python3 "/repo/scripts/task.py" finish --task /proj/.ai/plans/x --report-file -' },
+  })
+  check("a task.py call stamps the conductor's row before finish reads it",
+    Date.parse(stamped()) > Date.parse(atTurnEnd), `${atTurnEnd} -> ${stamped()}`)
+
+  await hooks["tool.execute.before"]({
+    tool: "shell",
+    sessionID: "sess-registered-child",
+    input: { command: 'python3 "/repo/scripts/task.py" finish --task /proj/.ai/plans/x' },
+  })
+  const afterTask = JSON.parse(fs.readFileSync(registryFile(proj), "utf8"))
+  check("a task.py call in a child session adds no registry row",
+    !afterTask.some((row: any) => row.session_id === "sess-registered-child"), JSON.stringify(afterTask))
+}
+
 // -------------------------------------------------------------- prompt capture --
 
 {
@@ -1009,63 +1066,144 @@ async function boot(overrides: any = {}) {
   process.env = before
 }
 
-// ---------------------------------- a task run is invoiced after task.py finish --
-{
-  const taskEntry = fs.mkdtempSync(path.join(journalRoot, "task-entry-"))
-  fs.writeFileSync(path.join(taskEntry, "sessions.json"), JSON.stringify([
-    { session_id: "sess-task", round: 1, role: "execute", since: "2020-01-01T00:00:00.000Z" },
-  ]))
-  const folder = path.join(proj, ".ai", "plans", "20261022-1200-taskrun")
-  fs.mkdirSync(folder, { recursive: true })
-  const taskPlan = path.join(folder, "plan-01.md")
-  fs.writeFileSync(taskPlan, "# Task plan\n\n## Goal\nDone.\n")
-  fs.writeFileSync(path.join(folder, "progress.json"), JSON.stringify({
-    version: 1, task: "20261022-1200-taskrun", status: "done", flow: { journal: taskEntry, phase: "finish" }, rounds: [],
-  }))
-  sessionMessages("sess-task").push({ type: "assistant", agent: "hoko-plan-executor", model: { id: "claude-test", providerID: "anthropic" }, time: { created: Date.now() + 1000 }, cost: 0.3, tokens: { input: 10, output: 5, cache: { read: 0, write: 0 } }, content: [] })
+// ----------------------- a finished task run closes from the marker task.py leaves --
 
-  const { hooks, server } = await boot()
-  const s = "sess-task-close"
-  sessionAgent[s] = "build"
-  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: taskPlan } })
-  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
-  await server.drain()
-  check("a finished task gets its usage written into its journal entry",
-    JSON.parse(fs.readFileSync(path.join(taskEntry, "usage.json"), "utf8")).some((row: any) => row.session_id === "sess-task"),
-    fs.existsSync(path.join(taskEntry, "usage.json")) ? fs.readFileSync(path.join(taskEntry, "usage.json"), "utf8") : "missing")
-  check("a finished task is invoiced from that usage",
-    fs.existsSync(path.join(taskEntry, "invoice.json"))
-      && JSON.parse(fs.readFileSync(path.join(taskEntry, "invoice.json"), "utf8")).totals.cost === 0.3,
-    fs.existsSync(path.join(taskEntry, "invoice.json")) ? fs.readFileSync(path.join(taskEntry, "invoice.json"), "utf8").slice(0, 120) : "missing")
-  check("a task run is not closed by plan-progress complete", !/Status: complete/.test(fs.readFileSync(taskPlan, "utf8")),
-    fs.readFileSync(taskPlan, "utf8"))
+/** How a task run reaches a turn end with no plan file: `task.py finish` leaves this
+ *  marker in the task folder, and the plugin closes the newest `done` run it names. */
+function writeFinishMarker(entry: string, folder: string, plan: string, task: string) {
+  fs.writeFileSync(path.join(folder, "finish-pending.json"), JSON.stringify({ entry, plan, task }))
 }
 
-// ---------------------------------- a close survives what it cannot read or price --
-
-/** A finished task run: its journal entry, its plan and its done progress.json. */
-function finishedTask(folderName: string, sessionIDs: string[]) {
+/** A task run: its journal entry, its plan, its `progress.json` and the finish marker.
+ *  A case that sets an analytics path gives `registryFolder` so `sessions.json` sits where
+ *  the plugin reads it; `status` and `entry` override what a turn must not invoice; `root`
+ *  plants the task folder in another project, as a run in a worktree does. */
+function finishedTask(
+  folderName: string,
+  sessionIDs: string[],
+  options: { registryFolder?: (entry: string) => string; status?: string; entry?: string; root?: string } = {},
+) {
   const entry = fs.mkdtempSync(path.join(journalRoot, `${folderName}-`))
-  fs.writeFileSync(path.join(entry, "sessions.json"), JSON.stringify(
+  const registry = options.registryFolder ? options.registryFolder(entry) : entry
+  fs.mkdirSync(registry, { recursive: true })
+  fs.writeFileSync(path.join(registry, "sessions.json"), JSON.stringify(
     sessionIDs.map((id) => ({ session_id: id, round: 1, role: "execute", since: "2020-01-01T00:00:00.000Z" })),
   ))
-  const folder = path.join(proj, ".ai", "plans", folderName)
+  const folder = path.join(options.root ?? proj, ".ai", "plans", folderName)
   fs.mkdirSync(folder, { recursive: true })
   const plan = path.join(folder, "plan-01.md")
   fs.writeFileSync(plan, "# Task plan\n\n## Goal\nDone.\n")
   fs.writeFileSync(path.join(folder, "progress.json"), JSON.stringify({
-    version: 1, task: folderName, status: "done", flow: { journal: entry, phase: "finish" }, rounds: [],
+    version: 1, task: folderName, status: options.status ?? "done", flow: { journal: entry, phase: "finish" }, rounds: [],
   }))
-  return { entry, plan }
+  writeFinishMarker(options.entry ?? entry, folder, plan, folderName)
+  return { entry, plan, folder }
+}
+
+/** An assistant response in `sessionID` priced at `cost`, as the run's sessions report
+ *  them. */
+function taskResponse(sessionID: string, cost: number, agent = "hoko-plan-executor") {
+  sessionMessages(sessionID).push({
+    type: "assistant", agent, model: { id: "claude-test", providerID: "anthropic" },
+    time: { created: Date.now() + 1000 }, cost,
+    tokens: { input: 10, output: 5, cache: { read: 0, write: 0 } }, content: [],
+  })
+}
+
+// The spec's "a task run is invoiced from the conductor's turn end": the plan belongs to
+// a subagent, so the conductor wrote none, and only the marker says which run closed.
+{
+  const { entry, folder, plan } = finishedTask("20261022-1200-taskrun", ["sess-task"])
+  taskResponse("sess-task", 0.3)
+  const { server } = await boot()
+  const s = "sess-task-conductor"
+  sessionAgent[s] = "build"
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+
+  const analyticsFiles = ["usage.json", "rates.json", "invoice.json", "invoice.md"]
+  check("a finished task run is invoiced from a turn end in a session that wrote no plan",
+    analyticsFiles.every((name) => fs.existsSync(path.join(entry, name))),
+    fs.readdirSync(entry).join(","))
+  const usage = JSON.parse(fs.readFileSync(path.join(entry, "usage.json"), "utf8"))
+  const invoice = JSON.parse(fs.readFileSync(path.join(entry, "invoice.json"), "utf8"))
+  check("the invoice total is the sum of the usage rows' costs",
+    invoice.totals.cost === usage.reduce((sum: number, row: any) => sum + row.cost, 0),
+    JSON.stringify({ total: invoice.totals.cost, rows: usage.length }))
+  check("the marker is gone once the invoice exists", !fs.existsSync(path.join(folder, "finish-pending.json")))
+
+  // A second turn end finds no marker and writes nothing at all.
+  const written = Object.fromEntries(
+    analyticsFiles.map((name) => [name, fs.readFileSync(path.join(entry, name), "utf8")]),
+  )
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("a second turn end invoices the same run once",
+    analyticsFiles.every((name) => fs.readFileSync(path.join(entry, name), "utf8") === written[name]),
+    fs.readdirSync(entry).join(","))
+
+  // A later finish writes the marker again; the invoice already there is what stops the
+  // plugin from collecting the run's usage a second time.
+  writeFinishMarker(entry, folder, plan, "20261022-1200-taskrun")
+  taskResponse("sess-task", 0.5)
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("a finished task run that already has an invoice writes no usage, no rates and no invoice again",
+    analyticsFiles.every((name) => fs.readFileSync(path.join(entry, name), "utf8") === written[name])
+      && !fs.existsSync(path.join(folder, "finish-pending.json")),
+    fs.readdirSync(entry).join(","))
+}
+
+// The spec's "a run still in progress is not invoiced", and its stopped sibling.
+{
+  const { entry } = finishedTask("20261022-1300-running", ["sess-running"], { status: "in_progress" })
+  const { server } = await boot()
+  const s = "sess-running-conductor"
+  sessionAgent[s] = "build"
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("a task run still in progress is not invoiced",
+    !fs.existsSync(path.join(entry, "usage.json")) && !fs.existsSync(path.join(entry, "invoice.json")),
+    fs.readdirSync(entry).join(","))
 }
 
 {
-  const { entry, plan } = finishedTask("20261022-1400-ghost", ["sess-ghost"])
-  failMessages.add("sess-ghost")
-  const { hooks, server } = await boot()
-  const s = "sess-ghost-close"
+  const { entry } = finishedTask("20261022-1310-stopped", ["sess-stopped"], { status: "stopped" })
+  const { server } = await boot()
+  const s = "sess-stopped-conductor"
   sessionAgent[s] = "build"
-  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: plan } })
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("a stopped task run is not invoiced",
+    !fs.existsSync(path.join(entry, "usage.json")) && !fs.existsSync(path.join(entry, "invoice.json")),
+    fs.readdirSync(entry).join(","))
+}
+
+// A run whose marker names no journal entry has nowhere to file anything, so the turn
+// ends as it would have and the marker waits.
+{
+  const missing = path.join(journalRoot, "no-such-entry")
+  const { entry, folder } = finishedTask("20261022-1320-no-entry", ["sess-no-entry"], { entry: missing })
+  const { server } = await boot()
+  const s = "sess-no-entry-conductor"
+  sessionAgent[s] = "build"
+  const before = notices.length
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("a marker naming no journal entry writes no usage and no invoice",
+    !fs.existsSync(path.join(entry, "usage.json")) && !fs.existsSync(path.join(entry, "invoice.json")),
+    fs.readdirSync(entry).join(","))
+  check("a marker naming a missing entry leaves the turn unchanged and the marker in place",
+    notices.length === before && fs.existsSync(path.join(folder, "finish-pending.json")),
+    JSON.stringify(notices.slice(before)))
+}
+
+{
+  const { entry } = finishedTask("20261022-1400-ghost", ["sess-ghost"])
+  failMessages.add("sess-ghost")
+  const { server } = await boot()
+  const s = "sess-ghost-conductor"
+  sessionAgent[s] = "build"
   const before = notices.length
   server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
   await server.drain()
@@ -1080,14 +1218,13 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
 }
 
 {
-  const { entry, plan } = finishedTask("20261022-1500-unpriceable", ["sess-unpriceable"])
+  const { entry } = finishedTask("20261022-1500-unpriceable", ["sess-unpriceable"])
   // invoice.py cannot price an entry that lost its sessions.json; the plugin has to
   // announce that rather than let it end the run.
   fs.rmSync(path.join(entry, "sessions.json"))
-  const { hooks, server } = await boot()
-  const s = "sess-invoice-close"
+  const { server } = await boot()
+  const s = "sess-invoice-conductor"
   sessionAgent[s] = "build"
-  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: plan } })
   const before = notices.length
   server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
   await server.drain()
@@ -1099,12 +1236,84 @@ function finishedTask(folderName: string, sessionIDs: string[]) {
 
   // Usable means the session's next finished run still closes.
   const next = finishedTask("20261022-1600-after-failure", ["sess-after"])
-  await hooks["tool.execute.after"]({ status: "completed", tool: "write", sessionID: s, input: { path: next.plan } })
   server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
   await server.drain()
   check("a session stays usable after a failed invoice",
     fs.existsSync(path.join(next.entry, "invoice.json")),
     fs.existsSync(path.join(next.entry, "usage.json")) ? "usage written, no invoice" : "no usage written")
+}
+
+// -------------------- invoicing locates every file by the analytics folder rule --
+{
+  const before = { ...process.env }
+  const analyticsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "analytics-"))
+  process.env.HOKO_ANALYTICS_PATH = analyticsRoot
+  /** The entry's analytics folder: `analyticsPath/<project>/<entry>`, the rule
+   *  `analytics.folder_for` owns. */
+  const folderOf = (entry: string) =>
+    path.join(analyticsRoot, path.basename(journalRoot), path.basename(entry))
+  const { entry } = finishedTask("20261022-1700-analytics", ["sess-analytics"], { registryFolder: folderOf })
+  const folder = folderOf(entry)
+  taskResponse("sess-analytics", 0.4)
+
+  const { server } = await boot()
+  const s = "sess-analytics-conductor"
+  sessionAgent[s] = "build"
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("usage.json and rates.json land in the journal entry's analytics folder",
+    fs.existsSync(path.join(folder, "usage.json")) && fs.existsSync(path.join(folder, "rates.json")),
+    fs.existsSync(folder) ? fs.readdirSync(folder).join(",") : "no analytics folder")
+  check("the journal entry keeps no copy beside its analytics folder",
+    !fs.existsSync(path.join(entry, "usage.json")) && !fs.existsSync(path.join(entry, "rates.json")),
+    fs.readdirSync(entry).join(","))
+  check("the invoice is written into the analytics folder",
+    fs.existsSync(path.join(folder, "invoice.json")) && !fs.existsSync(path.join(entry, "invoice.json")),
+    fs.existsSync(folder) ? fs.readdirSync(folder).join(",") : "no analytics folder")
+  process.env = before
+}
+
+// --------------------- a registry row is billed once, even when it is also a child --
+{
+  const { entry } = finishedTask("20261022-1800-descendant-row", ["sess-row", "sess-child"])
+  taskResponse("sess-row", 0.1)
+  taskResponse("sess-child", 0.2)
+
+  const { server } = await boot()
+  const s = "sess-dedupe-conductor"
+  sessionAgent[s] = "build"
+  server.push({ type: "session.created", data: { sessionID: "sess-child", parentID: "sess-row", agent: "hoko-plan-executor" } })
+  await server.drain()
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  const usage = JSON.parse(fs.readFileSync(path.join(entry, "usage.json"), "utf8"))
+  const invoice = JSON.parse(fs.readFileSync(path.join(entry, "invoice.json"), "utf8"))
+  check("a session that is both a row and a descendant contributes its responses once",
+    usage.filter((row: any) => row.session_id === "sess-child").length === 1 && invoice.totals.cost === 0.3,
+    JSON.stringify({ usage, cost: invoice.totals.cost }))
+}
+
+// A task run in a worktree files its task folder under the worktree, so the close has to
+// read the ending session's own plans directory rather than the checkout the server
+// started in, whose newest run carries no marker.
+{
+  const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "worktree-"))
+  const checkout = finishedTask("20261022-1900-checkout", ["sess-checkout"])
+  fs.rmSync(path.join(checkout.folder, "finish-pending.json"), { force: true })
+  const { entry, folder } = finishedTask("20261022-1910-worktree", ["sess-worktree"], { root: worktree })
+  taskResponse("sess-worktree", 0.6)
+
+  const { server } = await boot()
+  const s = "sess-worktree-conductor"
+  sessionAgent[s] = "build"
+  sessionDirs[s] = worktree
+  server.push({ type: "session.execution.succeeded", data: { sessionID: s } })
+  await server.drain()
+  check("a task run in a worktree is invoiced from the ending session's own plans directory",
+    fs.existsSync(path.join(entry, "invoice.json")) && !fs.existsSync(path.join(checkout.entry, "invoice.json")),
+    fs.readdirSync(entry).join(","))
+  check("the worktree run's marker is gone once the invoice exists",
+    !fs.existsSync(path.join(folder, "finish-pending.json")))
 }
 
 // ------------------------------------------------------------- the TUI plugin --

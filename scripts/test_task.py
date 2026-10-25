@@ -147,27 +147,42 @@ class TaskTestCase(unittest.TestCase):
                 "gates": gates if gates is not None else
                 [{"check": "tests", "status": "passed", "exit_code": 0, "duration_ms": 12}]}
 
-    def record_session(self, session_id, calls=(), entry=None):
+    def record_session(self, session_id, calls=(), entry=None, transcript=True):
         """The session recorded against the project, as the plugin records it, and, when
-        `entry` is given, its assistant responses in that entry's `usage.json`: one for the
-        main session plus one per `(agent, moment)` in `calls`, each reporting 100 input
-        and 50 output tokens."""
-        transcript = Path(self.tmpdir.name, "projects", f"{session_id}.jsonl")
-        transcript.parent.mkdir(parents=True, exist_ok=True)
-        transcript.write_text("{}\n", encoding="utf-8")
+        `entry` is given, its assistant responses in the entry's analytics folder
+        (`usage.json`): one for the main session plus one per `(agent, moment)` in `calls`,
+        each reporting 100 input and 50 output tokens. `transcript=False` writes the row
+        the plugin records for a session opencode holds no transcript path for."""
+        path = Path(self.tmpdir.name, "projects", f"{session_id}.jsonl")
+        if transcript:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}\n", encoding="utf-8")
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import journal\n"
                 "journal.record_session(sys.argv[2], sys.argv[3], sys.argv[4])\n")
         recorded = subprocess.run([sys.executable, "-c", code, str(SCRIPTS), self.repo, session_id,
-                                   str(transcript)], capture_output=True, text=True, env=self.env)
+                                   str(path) if transcript else ""],
+                                  capture_output=True, text=True, env=self.env)
         self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
         if entry is not None:
             moment = calls[0][1] if calls else None
             rows = [self.usage_row(session_id, "main", moment)]
             rows += [self.usage_row(session_id, agent, moment) for agent, moment in calls]
-            path = Path(entry, "usage.json")
-            written = json.loads(path.read_text()) if path.is_file() else []
-            path.write_text(json.dumps(written + rows), encoding="utf-8")
-        return transcript
+            # The plugin writes usage into the entry's analytics folder (analytics.py), not
+            # beside it; a folder the analytics path blocks takes that write with it, which
+            # is the case the unwritable-folder test covers.
+            code = ("import json, sys; sys.path.insert(0, sys.argv[1]); import analytics, invoice\n"
+                    "try:\n"
+                    "    folder = analytics.folder_for(sys.argv[2])\n"
+                    "    folder.mkdir(parents=True, exist_ok=True)\n"
+                    "    usage = folder / invoice.USAGE_FILE\n"
+                    "    written = json.loads(usage.read_text()) if usage.is_file() else []\n"
+                    "    usage.write_text(json.dumps(written + json.loads(sys.argv[3])))\n"
+                    "except OSError:\n"
+                    "    pass\n")
+            written = subprocess.run([sys.executable, "-c", code, str(SCRIPTS), entry, json.dumps(rows)],
+                                     capture_output=True, text=True, env=self.env)
+            self.assertEqual(written.returncode, 0, written.stdout + written.stderr)
+        return path
 
     def usage_row(self, session_id, agent, moment):
         return {"session_id": session_id, "time": moment, "agent": agent,
@@ -1847,6 +1862,23 @@ class TestJournal(RefusedStart, JournalTaskCase):
         self.assertEqual(Path(entry, "report-01.md").read_text(), "All good.\n")
         self.assertTrue(os.path.isfile(os.path.join(entry, "events-01.jsonl")))
 
+    def test_finish_leaves_the_marker_the_plugin_invoices_from(self):
+        self.scope = {"size": "trivial", "needs_plan": False}
+        folder = self.start()["dir"]
+        self.drive(folder, "finish")
+        self.ok("finish", "--task", folder, "--report-file", "-", input="All good.")
+        marker = json.loads(Path(folder, "finish-pending.json").read_text())
+        self.assertEqual(marker, {"entry": self.entry(), "plan": str(Path(folder, "plan-01.md")),
+                                  "task": self.progress(folder)["task"]})
+
+    def test_a_finish_with_journaling_off_leaves_no_finish_marker(self):
+        self.write_hoko({"journalPath": ""})
+        self.scope = {"size": "trivial", "needs_plan": False}
+        folder = self.start()["dir"]
+        self.drive(folder, "finish")
+        self.ok("finish", "--task", folder, "--report-file", "-", input="All good.")
+        self.assertFalse(os.path.exists(os.path.join(folder, "finish-pending.json")))
+
     def test_a_forwarded_plan_that_is_already_journaled_keeps_its_entry_and_files_no_second_one(self):
         entry = os.path.join(self.journal, "my-repo", "20261001-0900-forwarded")
         os.makedirs(entry)
@@ -2064,6 +2096,26 @@ class TestJournal(RefusedStart, JournalTaskCase):
         self.assertEqual([(row["session_id"], row["round"], row["role"], row["since"]) for row in rows],
                          [(session, entry["round"], "execute", entry["started"])
                           for session in ("S1", "S2") for entry in starts])
+
+    def test_R5_R7_a_transcriptless_session_still_registers_in_every_round_conductor_included(self):
+        folder, document = self.three_round_task()
+        starts = document["flow"]["round_starts"]
+        self.record_session("C1", transcript=False)
+        self.record_session("S1")
+        self.ok("finish", "--task", folder, "--report-file", "-", input="Done.")
+        rows = json.loads(Path(self.entry(), "sessions.json").read_text())
+        self.assertEqual([(row["session_id"], row["round"], row["role"], row["since"]) for row in rows],
+                         [(session, entry["round"], "execute", entry["started"])
+                          for session in ("C1", "S1") for entry in starts])
+
+    def test_R1_a_session_recorded_before_the_task_started_still_registers_at_finish(self):
+        self.record_session("C1", transcript=False)
+        folder = self.start()["dir"]
+        self.drive(folder, "finish")
+        self.record_session("C1", transcript=False)
+        self.ok("finish", "--task", folder, "--report-file", "-", input="Done.")
+        rows = json.loads(Path(self.entry(), "sessions.json").read_text())
+        self.assertEqual([row["session_id"] for row in rows], ["C1"])
 
     def test_R8_the_invoice_bills_each_response_to_the_round_that_was_running(self):
         folder, document = self.three_round_task()

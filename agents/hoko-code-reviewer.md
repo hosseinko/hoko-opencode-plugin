@@ -13,6 +13,11 @@ permission:
     "git show*": allow
     "git status*": allow
     "git rev-parse*": allow
+    "pwd": allow
+    "ls*": allow
+    "head*": allow
+    "tail*": allow
+    "wc*": allow
   skill: allow
 ---
 
@@ -44,6 +49,9 @@ see on its own.
    there is one.
 4. Read enough surrounding code to judge the change in context. A diff can be locally
    correct and still wrong for the codebase it lands in.
+
+Run one command per call: no pipes, no `;` and no `echo` separators. The shell tool
+truncates long output itself, and a composed command is denied as a whole.
 
 ## What the skill cannot know
 

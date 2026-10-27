@@ -17,6 +17,11 @@ permission:
     "git show*": allow
     "git status*": allow
     "git rev-parse*": allow
+    "pwd": allow
+    "ls*": allow
+    "head*": allow
+    "tail*": allow
+    "wc*": allow
   skill: allow
 ---
 
@@ -49,6 +54,9 @@ to. If any is missing, say so and stop.
    do what that requirement says, and a test must fail without the change. A requirement
    in `ids` that no step claims, a claimed one the code does not deliver and a test that
    does not cover one are findings.
+
+Run one command per call: no pipes, no `;` and no `echo` separators. The shell tool
+truncates long output itself, and a composed command is denied as a whole.
 
 You fix nothing and commit nothing: a finding is a report, not a patch.
 

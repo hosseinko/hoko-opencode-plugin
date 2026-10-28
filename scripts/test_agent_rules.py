@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Every agent declares its tool rules in the V2 permission map, the final reviewer's git
-access, and the specifier and planner's Refine checks question."""
+"""Every agent declares its tool rules in the V2 permission map with its catch-all deny
+first, both reviewers allow only the read-only commands a review needs, and the specifier
+and planner ask the Refine checks question."""
 
 import re
 import unittest
@@ -11,6 +12,7 @@ AGENTS = ROOT / "agents"
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---", re.S)
 V1_PERMISSIONS = re.compile(r"^permissions:", re.M)
 GIT_COMMANDS = ("git diff*", "git log*", "git show*", "git status*", "git rev-parse*")
+READ_ONLY_COMMANDS = GIT_COMMANDS + ("pwd*", "ls*", "head*", "tail*", "wc*")
 
 
 def read(path):
@@ -72,14 +74,33 @@ class AgentPermissionTestCase(unittest.TestCase):
         # plan.md declares no rules: the plugin layers the plan agent's permissions at runtime.
         self.assertEqual(["plan.md"], without, "agents with no permission map: " + ", ".join(without))
 
+    def test_every_permission_map_puts_the_catch_all_deny_first(self):
+        # opencode applies the last matching rule, so a catch-all deny that is not first
+        # swallows every allow below it.
+        misplaced = []
+        for path in sorted(AGENTS.glob("*.md")):
+            for tool, rules in (permission_map(path) or {}).items():
+                if "*" in rules and next(iter(rules)) != "*":
+                    misplaced.append(f"{path.name}: {tool}")
+        self.assertEqual(
+            [], misplaced, "maps whose catch-all deny is not first: " + ", ".join(misplaced))
 
-class FinalReviewerShellTestCase(unittest.TestCase):
-    """REQ-10 — the final reviewer runs exactly the five git commands it reviews with."""
 
-    def test_the_final_reviewer_denies_every_shell_command_but_the_five_git_commands(self):
-        bash = permission_map(AGENTS / "hoko-final-reviewer.md")["bash"]
-        expected = {"*": "deny", **{command: "allow" for command in GIT_COMMANDS}}
-        self.assertEqual(expected, bash)
+class ReviewerShellTestCase(unittest.TestCase):
+    """Both reviewers allow only the read-only commands a review needs, one call each."""
+
+    REVIEWERS = ("hoko-final-reviewer.md", "hoko-code-reviewer.md")
+
+    def test_each_reviewer_denies_every_shell_command_but_the_read_only_ones(self):
+        expected = {"*": "deny", **{command: "allow" for command in READ_ONLY_COMMANDS}}
+        for name in self.REVIEWERS:
+            self.assertEqual(expected, permission_map(AGENTS / name)["bash"], name)
+
+    def test_each_reviewer_is_told_to_run_one_command_per_call(self):
+        for name in self.REVIEWERS:
+            text = " ".join(read(AGENTS / name).split())
+            self.assertIn(
+                "Run one command per call: no pipes, no `;` and no `echo` separators.", text)
 
 
 class RefineChecksTestCase(unittest.TestCase):

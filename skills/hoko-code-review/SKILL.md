@@ -77,7 +77,7 @@ Before diving into code, understand:
 4. Understand the business requirement
 5. Note any relevant architectural decisions
 
-> For large diffs, pipe the diff through the plugin's analyzer (`git diff main...HEAD | python3 "${HOKO_ROOT}/skills/hoko-code-review/scripts/pr-analyzer.py"`) to triage complexity and get a suggested review approach before reading.
+> For large diffs, run `git diff main...HEAD -- <path>` one path at a time instead of piping the whole diff: the shell tool truncates long output itself, and a composed command is denied as a whole.
 
 ### Phase 2: High-Level Review
 

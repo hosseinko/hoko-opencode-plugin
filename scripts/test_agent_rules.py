@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Every agent declares its tool rules in the V2 permission map, the final reviewer's git
-access, and the specifier and planner's Refine checks question."""
+"""Every agent declares its tool rules in the V2 permission map with its catch-all deny
+first, both reviewers allow only the read-only commands a review needs, and the specifier
+and planner ask the Refine checks question."""
 
 import re
 import unittest
@@ -11,7 +12,7 @@ AGENTS = ROOT / "agents"
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---", re.S)
 V1_PERMISSIONS = re.compile(r"^permissions:", re.M)
 GIT_COMMANDS = ("git diff*", "git log*", "git show*", "git status*", "git rev-parse*")
-READ_ONLY_COMMANDS = GIT_COMMANDS + ("pwd", "ls*", "head*", "tail*", "wc*")
+READ_ONLY_COMMANDS = GIT_COMMANDS + ("pwd*", "ls*", "head*", "tail*", "wc*")
 
 
 def read(path):
@@ -72,6 +73,17 @@ class AgentPermissionTestCase(unittest.TestCase):
         self.assertEqual([], v1, "agents still using the V1 permissions list: " + ", ".join(v1))
         # plan.md declares no rules: the plugin layers the plan agent's permissions at runtime.
         self.assertEqual(["plan.md"], without, "agents with no permission map: " + ", ".join(without))
+
+    def test_every_permission_map_puts_the_catch_all_deny_first(self):
+        # opencode applies the last matching rule, so a catch-all deny that is not first
+        # swallows every allow below it.
+        misplaced = []
+        for path in sorted(AGENTS.glob("*.md")):
+            for tool, rules in (permission_map(path) or {}).items():
+                if "*" in rules and next(iter(rules)) != "*":
+                    misplaced.append(f"{path.name}: {tool}")
+        self.assertEqual(
+            [], misplaced, "maps whose catch-all deny is not first: " + ", ".join(misplaced))
 
 
 class ReviewerShellTestCase(unittest.TestCase):

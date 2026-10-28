@@ -13,7 +13,7 @@ permission:
     "git show*": allow
     "git status*": allow
     "git rev-parse*": allow
-    "pwd": allow
+    "pwd*": allow
     "ls*": allow
     "head*": allow
     "tail*": allow
